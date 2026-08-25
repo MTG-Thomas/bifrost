@@ -6,6 +6,7 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -148,6 +149,210 @@ def test_promote_submits_exact_bundle_and_has_no_activation_option(
     assert "closure_id" not in captured["payload"]["snapshot"]
     assert "content_base64" not in captured["payload"]["snapshot"]["closure"][0]
     assert "No source bytes were activated" in capsys.readouterr().out
+
+
+def test_preview_can_include_all_reviewed_executable_changes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    selected = _workspace(tmp_path)
+    second = tmp_path / "features/second.py"
+    second.write_text(
+        "from bifrost import workflow\n"
+        "@workflow(effects=[{'kind': 'bifrost.read'}], "
+        "enforced_bounds={'max_duration_seconds': 30, 'max_external_calls': 1, "
+        "'max_records_read': 10, 'max_output_bytes': 1000})\n"
+        "async def second(): return []\n",
+        encoding="utf-8",
+    )
+    selected.write_text(
+        selected.read_text() + "\n# reviewed change\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "cohort"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"],
+        cwd=tmp_path,
+        check=True,
+    )
+    monkeypatch.chdir(tmp_path)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    monkeypatch.setattr(
+        promote,
+        "refresh_protected_main",
+        lambda _root: SimpleNamespace(commit_sha=head),
+    )
+    captured = {}
+
+    class Response:
+        is_success = True
+
+        @staticmethod
+        def json():
+            return {"candidate_id": "sha256:" + "a" * 64, "closure": []}
+
+    class Client:
+        def post_sync(self, endpoint, **kwargs):
+            captured["payload"] = kwargs["json"]
+            return Response()
+
+    monkeypatch.setattr(
+        promote.BifrostClient, "get_instance", lambda **_kwargs: Client()
+    )
+    monkeypatch.setattr(promote, "raise_for_status_with_detail", lambda _response: None)
+
+    assert (
+        promote.handle_promote(
+            [
+                "preview",
+                str(selected),
+                "-w",
+                "demo",
+                "--include-declared-changes",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    assert captured["payload"]["cohort_paths"] == [
+        "features/demo.py",
+        "features/second.py",
+    ]
+    assert {item["path"] for item in captured["payload"]["snapshot"]["closure"]} == {
+        "features/demo.py",
+        "features/second.py",
+    }
+
+
+def test_declared_helper_change_uses_unchanged_workflow_anchor(
+    tmp_path: Path, monkeypatch
+) -> None:
+    selected = _workspace(tmp_path)
+    helper = tmp_path / "helpers/shared.py"
+    helper.parent.mkdir()
+    helper.write_text("VALUE = 1\n", encoding="utf-8")
+    selected.write_text(
+        "from bifrost import workflow\n"
+        "from helpers.shared import VALUE\n"
+        "@workflow(effects=[{'kind': 'bifrost.read'}], "
+        "enforced_bounds={'max_duration_seconds': 30, 'max_external_calls': 1, "
+        "'max_records_read': 10, 'max_output_bytes': 1000})\n"
+        "async def demo(): return VALUE\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "commit", "-qm", "baseline helper"], cwd=tmp_path, check=True
+    )
+    helper.write_text("VALUE = 2\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "change helper"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"],
+        cwd=tmp_path,
+        check=True,
+    )
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        promote,
+        "refresh_protected_main",
+        lambda _root: SimpleNamespace(commit_sha=head),
+    )
+    captured = {}
+
+    class Response:
+        is_success = True
+
+        @staticmethod
+        def json():
+            return {"candidate_id": "sha256:" + "a" * 64, "closure": []}
+
+    class Client:
+        def post_sync(self, _endpoint, **kwargs):
+            captured["payload"] = kwargs["json"]
+            return Response()
+
+    monkeypatch.setattr(
+        promote.BifrostClient, "get_instance", lambda **_kwargs: Client()
+    )
+    monkeypatch.setattr(promote, "raise_for_status_with_detail", lambda _response: None)
+
+    assert (
+        promote.handle_promote(
+            [
+                "preview",
+                str(selected),
+                "-w",
+                "demo",
+                "--include-declared-changes",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    assert captured["payload"]["cohort_paths"] == ["helpers/shared.py"]
+    assert {item["path"] for item in captured["payload"]["snapshot"]["closure"]} == {
+        "features/demo.py",
+        "helpers/shared.py",
+    }
+
+
+def test_local_run_evidence_is_bound_to_declared_cohort(tmp_path: Path) -> None:
+    bundle = promote.PromotionBundle(
+        snapshot_id="sha256:" + "1" * 64,
+        snapshot_files={
+            "features/demo.py": "a" * 64,
+            "helpers/shared.py": "b" * 64,
+        },
+        files=(
+            {"path": "features/demo.py", "sha256": "a" * 64},
+            {"path": "helpers/shared.py", "sha256": "b" * 64},
+        ),
+    )
+    cohort_paths = ["helpers/shared.py"]
+    closure_id = promote._closure_id(
+        bundle,
+        selected_path="features/demo.py",
+        function_name="demo",
+        cohort_paths=cohort_paths,
+    )
+    evidence_path = tmp_path / "evidence.json"
+    evidence_path.write_text(
+        json.dumps(
+            {
+                "schema_version": promote.LOCAL_RUN_SCHEMA,
+                "authority": "local_only",
+                "activatable": False,
+                "succeeded": True,
+                "closure_id": closure_id,
+                "entry": {"path": "features/demo.py", "function": "demo"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    evidence = promote._load_run_evidence(
+        evidence_path,
+        bundle=bundle,
+        selected_path="features/demo.py",
+        function_name="demo",
+        cohort_paths=cohort_paths,
+    )
+
+    assert evidence is not None
+    assert evidence["closure_id"] == closure_id
 
 
 def test_draft_is_private_local_only_and_includes_complete_graph(

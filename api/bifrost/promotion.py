@@ -155,7 +155,9 @@ def discover_python_snapshot(
     return first_hashes, second
 
 
-def _run_git_bytes(root: pathlib.Path, *args: str, input_bytes: bytes | None = None) -> bytes:
+def _run_git_bytes(
+    root: pathlib.Path, *args: str, input_bytes: bytes | None = None
+) -> bytes:
     try:
         result = subprocess.run(
             ["git", *args],
@@ -172,9 +174,15 @@ def _run_git_bytes(root: pathlib.Path, *args: str, input_bytes: bytes | None = N
 
 
 def _git_hex(root: pathlib.Path, revision: str) -> str:
-    value = _run_git_bytes(root, "rev-parse", "--verify", revision).decode().strip().lower()
-    if len(value) != 40 or any(character not in "0123456789abcdef" for character in value):
-        raise PromotionBundleError(f"Git revision did not resolve to a full SHA: {revision}")
+    value = (
+        _run_git_bytes(root, "rev-parse", "--verify", revision).decode().strip().lower()
+    )
+    if len(value) != 40 or any(
+        character not in "0123456789abcdef" for character in value
+    ):
+        raise PromotionBundleError(
+            f"Git revision did not resolve to a full SHA: {revision}"
+        )
     return value
 
 
@@ -256,11 +264,15 @@ def discover_git_python_snapshot(
             mode, object_type, object_id = metadata.decode("ascii").split(" ")
             path = normalize_workspace_path(raw_path.decode("utf-8"))
         except (UnicodeDecodeError, ValueError) as exc:
-            raise PromotionBundleError("reviewed Git tree contains an invalid entry") from exc
+            raise PromotionBundleError(
+                "reviewed Git tree contains an invalid entry"
+            ) from exc
         if not is_executable_workspace_path(path):
             continue
         if mode == "120000":
-            raise PromotionBundleError(f"symlinks are not eligible for promotion: {path}")
+            raise PromotionBundleError(
+                f"symlinks are not eligible for promotion: {path}"
+            )
         if object_type != "blob" or mode not in {"100644", "100755"}:
             raise PromotionBundleError(f"unsupported reviewed Git object for {path}")
         entries.append((path, object_id))
@@ -271,25 +283,35 @@ def discover_git_python_snapshot(
         )
     reject_path_collisions(path for path, _object_id in entries)
 
-    batch_input = b"".join(object_id.encode("ascii") + b"\n" for _, object_id in entries)
+    batch_input = b"".join(
+        object_id.encode("ascii") + b"\n" for _, object_id in entries
+    )
     batch = _run_git_bytes(root, "cat-file", "--batch", input_bytes=batch_input)
     offset = 0
     contents: dict[str, bytes] = {}
     for path, expected_object_id in entries:
         newline = batch.find(b"\n", offset)
         if newline < 0:
-            raise PromotionBundleError("Git stopped while reading reviewed source blobs")
+            raise PromotionBundleError(
+                "Git stopped while reading reviewed source blobs"
+            )
         header = batch[offset:newline].decode("ascii", errors="replace").split(" ")
         if len(header) != 3 or header[0] != expected_object_id or header[1] != "blob":
-            raise PromotionBundleError(f"Git returned unexpected reviewed blob metadata for {path}")
+            raise PromotionBundleError(
+                f"Git returned unexpected reviewed blob metadata for {path}"
+            )
         try:
             size = int(header[2])
         except ValueError as exc:
-            raise PromotionBundleError(f"Git returned an invalid blob size for {path}") from exc
+            raise PromotionBundleError(
+                f"Git returned an invalid blob size for {path}"
+            ) from exc
         start = newline + 1
         end = start + size
         if end >= len(batch) or batch[end : end + 1] != b"\n":
-            raise PromotionBundleError(f"Git returned incomplete reviewed bytes for {path}")
+            raise PromotionBundleError(
+                f"Git returned incomplete reviewed bytes for {path}"
+            )
         contents[path] = batch[start:end]
         offset = end + 1
     hashes = {path: sha256_bytes(raw) for path, raw in contents.items()}
@@ -428,6 +450,7 @@ class WorkspaceImportResolver:
 def _build_bundle_from_snapshot(
     *,
     selected_path: str,
+    cohort_paths: tuple[str, ...] = (),
     snapshot_files: dict[str, str],
     contents: dict[str, bytes],
 ) -> PromotionBundle:
@@ -437,8 +460,15 @@ def _build_bundle_from_snapshot(
             f"selected path is not in the Workspace snapshot: {selected_path}"
         )
     modules = _module_index(snapshot_files)
+    roots = tuple(sorted(set(cohort_paths) | {selected_path}))
+    missing_roots = [path for path in roots if path not in snapshot_files]
+    if missing_roots:
+        raise PromotionBundleError(
+            "promotion cohort paths are absent from reviewed source: "
+            + ", ".join(missing_roots)
+        )
     closure: set[str] = set()
-    queue = deque([selected_path])
+    queue = deque(roots)
     while queue:
         path = queue.popleft()
         if path in closure:
@@ -487,6 +517,7 @@ def build_reviewed_promotion_bundle(
     selected_path: str,
     *,
     source_ref: str = "origin/main",
+    cohort_paths: tuple[str, ...] = (),
 ) -> tuple[PromotionBundle, ProtectedMainProvenance]:
     """Build a production candidate from exact protected Git objects only."""
 
@@ -497,11 +528,55 @@ def build_reviewed_promotion_bundle(
     return (
         _build_bundle_from_snapshot(
             selected_path=selected_path,
+            cohort_paths=cohort_paths,
             snapshot_files=snapshot_files,
             contents=contents,
         ),
         provenance,
     )
+
+
+def reviewed_changed_python_paths(
+    root: pathlib.Path, *, commit_sha: str
+) -> tuple[str, ...]:
+    """Return executable paths changed by one reviewed commit's first parent."""
+
+    parent = _git_hex(root, f"{commit_sha}^")
+    raw = _run_git_bytes(
+        root,
+        "diff-tree",
+        "--no-commit-id",
+        "--name-only",
+        "-r",
+        "-z",
+        parent,
+        commit_sha,
+    )
+    paths: list[str] = []
+    for item in raw.split(b"\0"):
+        if not item:
+            continue
+        try:
+            path = normalize_workspace_path(item.decode("utf-8"))
+        except UnicodeDecodeError as exc:
+            raise PromotionBundleError(
+                "reviewed commit contains an invalid path"
+            ) from exc
+        if not is_executable_workspace_path(path):
+            continue
+        try:
+            _run_git_bytes(root, "cat-file", "-e", f"{commit_sha}:{path}")
+        except PromotionBundleError as exc:
+            raise PromotionBundleError(
+                "declared-change promotion does not support deleted executable paths: "
+                + path
+            ) from exc
+        paths.append(path)
+    if not paths:
+        raise PromotionBundleError(
+            "reviewed commit has no executable Workspace paths to promote"
+        )
+    return tuple(sorted(set(paths)))
 
 
 def dependency_edges(contents: dict[str, bytes]) -> dict[str, set[str]]:

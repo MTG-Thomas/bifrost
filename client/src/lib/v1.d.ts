@@ -16085,6 +16085,7 @@ export interface components {
              *             - IN: {"category": {"in": ["a", "b"]}}
              *             - NULL: {"deleted_at": {"is_null": true}}
              *             - Has field: {"field": {"has_key": true}}
+             *
              */
             where?: {
                 [key: string]: unknown;
@@ -28862,6 +28863,10 @@ export interface components {
             policy_version: string;
             registration: components["schemas"]["PromotionRegistrationEvidence"];
             protected_source: components["schemas"]["PromotionSourceEvidence"];
+            /** Source Release Id */
+            source_release_id?: string | null;
+            /** Cohort Paths */
+            cohort_paths?: string[];
             /** Declared Effects */
             declared_effects: string[];
             /** Static Effects */
@@ -29041,6 +29046,8 @@ export interface components {
             /** Expected Base Release Id */
             expected_base_release_id?: string | null;
             protected_source: components["schemas"]["PromotionProtectedSource"];
+            /** Cohort Paths */
+            cohort_paths?: string[];
             /** Supersedes Candidate Id */
             supersedes_candidate_id?: string | null;
             local_run?: components["schemas"]["PromotionRunEvidence"] | null;
@@ -29137,6 +29144,10 @@ export interface components {
             };
             registration: components["schemas"]["PromotionRegistrationEvidence"];
             protected_source: components["schemas"]["PromotionSourceEvidence"];
+            /** Source Release Id */
+            source_release_id?: string | null;
+            /** Cohort Paths */
+            cohort_paths?: string[];
             /**
              * Lifecycle Status
              * @enum {string}

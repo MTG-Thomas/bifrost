@@ -24,10 +24,11 @@ from bifrost.promotion import (
     discover_python_snapshot,
     normalize_workspace_path,
     refresh_protected_main,
+    reviewed_changed_python_paths,
     sha256_bytes,
     snapshot_id,
 )
-from bifrost.workspace_release import workspace_closure_id
+from bifrost.workspace_release import workspace_closure_id, workspace_cohort_closure_id
 from bifrost.workspace_release_authorization import (
     risk_acknowledgement,
     validate_activation_challenge,
@@ -66,6 +67,7 @@ def _closure_id(
     *,
     selected_path: str,
     function_name: str,
+    cohort_paths: list[str] | None = None,
 ) -> str:
     """Use the runtime's canonical forward-closure identity."""
 
@@ -74,6 +76,8 @@ def _closure_id(
         "function": function_name,
     }
     files = {str(item["path"]): str(item["sha256"]) for item in bundle.files}
+    if cohort_paths:
+        return workspace_cohort_closure_id(entry, files, cohort_paths)
     return workspace_closure_id(entry, files)
 
 
@@ -133,6 +137,14 @@ def _parser() -> argparse.ArgumentParser:
     preview.add_argument(
         "--expected-base-release-id",
         help="Optional active-release CAS observed before preview",
+    )
+    preview.add_argument(
+        "--include-declared-changes",
+        action="store_true",
+        help=(
+            "Promote the exact executable path cohort declared by the reviewed "
+            "protected-main commit"
+        ),
     )
 
     prepare = subparsers.add_parser(
@@ -215,6 +227,7 @@ def _load_run_evidence(
     bundle: PromotionBundle,
     selected_path: str,
     function_name: str,
+    cohort_paths: list[str] | None = None,
 ) -> dict[str, Any] | None:
     if path is None:
         return None
@@ -238,6 +251,7 @@ def _load_run_evidence(
         bundle,
         selected_path=selected_path,
         function_name=function_name,
+        cohort_paths=cohort_paths,
     )
     if evidence.get("closure_id") != expected_closure_id:
         raise PromotionBundleError(
@@ -844,18 +858,29 @@ def _preview_payload(
 ) -> tuple[dict[str, Any], PromotionBundle, str, str]:
     root = pathlib.Path.cwd().resolve()
     selected_path = _normalize_selected(root, options.path)
-    refresh_protected_main(root)
-    bundle, provenance = build_reviewed_promotion_bundle(root, selected_path)
+    refreshed = refresh_protected_main(root)
+    cohort_paths = (
+        list(reviewed_changed_python_paths(root, commit_sha=refreshed.commit_sha))
+        if getattr(options, "include_declared_changes", False)
+        else []
+    )
+    bundle, provenance = build_reviewed_promotion_bundle(
+        root,
+        selected_path,
+        cohort_paths=tuple(cohort_paths),
+    )
     local_run = _load_run_evidence(
         options.run_evidence,
         bundle=bundle,
         selected_path=selected_path,
         function_name=options.workflow,
+        cohort_paths=cohort_paths,
     )
     entry_closure_id = _closure_id(
         bundle,
         selected_path=selected_path,
         function_name=options.workflow,
+        cohort_paths=cohort_paths,
     )
     payload: dict[str, Any] = {
         "schema_version": REVIEWED_PROMOTION_SCHEMA,
@@ -876,6 +901,8 @@ def _preview_payload(
         "local_run": local_run,
         "client": _client_contract(),
     }
+    if cohort_paths:
+        payload["cohort_paths"] = cohort_paths
     if options.supersedes_candidate_id:
         payload["supersedes_candidate_id"] = options.supersedes_candidate_id
     if options.expected_base_release_id:

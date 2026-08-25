@@ -250,7 +250,10 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # compatible CLI ships behind the unreleased 1.2.3 minimum-version floor.
     # Additive attachment, artifact, model-profile, logo, usage-cache, and
     # platform-job memory fields are included in the same fingerprint refresh.
-    "e58902739206603b0040ec8f6be9f5c307f007ee5f14d19a3e6838242631d7c2"
+    # Reviewed promotion gained an optional declared multi-root cohort and
+    # additive source-release evidence (2026-08-24). Single-root v11 clients
+    # retain their existing request and response behavior.
+    "21bee37d3cb63f1c877fc3ad919dc4053dc001308c3b4bb2161dd1e9412343a6"
 )
 
 
