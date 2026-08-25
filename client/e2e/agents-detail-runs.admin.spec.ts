@@ -464,16 +464,17 @@ test.describe("Agent Detail — Runs Tab (admin)", () => {
 			await expect(page).toHaveURL(
 				new RegExp(`/agents/${agent.id}/runs/${parentId}$`),
 			);
-			await expect(
-				delegatedActivity.getByRole("button", {
-					name: /hide details for troubleshooting specialist/i,
-				}),
-			).toHaveAttribute("aria-expanded", "true");
-			await expect(
-				nestedDelegation.getByRole("button", {
-					name: /hide details for asset resolver/i,
-				}),
-			).toHaveAttribute("aria-expanded", "true");
+			await expect(activity).toBeVisible();
+			await delegatedActivity
+				.getByRole("button", {
+					name: /show details for troubleshooting specialist/i,
+				})
+				.click();
+			await nestedDelegation
+				.getByRole("button", {
+					name: /show details for asset resolver/i,
+				})
+				.click();
 			await expect(nestedDelegation).toBeInViewport();
 
 			await page

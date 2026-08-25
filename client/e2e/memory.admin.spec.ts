@@ -42,7 +42,7 @@ async function authenticatedJson(
 
 test.describe("Private memory", () => {
 	test("enables and manages private memory", async ({ page }, testInfo) => {
-		await page.goto("/settings/ai");
+		await page.goto("/settings/ai-memory");
 		let embeddingConnectionId: string | null = null;
 		const currentUser = await authenticatedJson(page, "/api/auth/me");
 		const organizationId = (
@@ -101,6 +101,7 @@ test.describe("Private memory", () => {
 			},
 		);
 		expect(embedding.status).toBe(200);
+		await page.reload();
 
 		const platformToggle = page.getByRole("switch", {
 			name: "Enable Memory",
@@ -121,6 +122,7 @@ test.describe("Private memory", () => {
 			body: await page.screenshot(),
 			contentType: "image/png",
 		});
+		await page.goto("/settings/ai-chat");
 		const globalEditor = page.locator(
 			'[aria-label="Global Instructions editor"]',
 		);

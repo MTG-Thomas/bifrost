@@ -139,7 +139,10 @@ test.describe("Entity logos", () => {
 				);
 			});
 
-			await page.getByRole("link", { name: "Agents", exact: true }).click();
+			await page
+				.getByRole("navigation")
+				.getByRole("link", { name: "Agents", exact: true })
+				.click();
 			await listWithStats;
 
 			const card = page.getByRole("link", {
