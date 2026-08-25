@@ -7,7 +7,7 @@ that gap stays instrumented:
   Scanning solution files...  ->  found N ... file(s)
   Vendoring shared dependencies...  ->  (vendored M | no shared dependencies)
   Bundle: ...
-  Uploading workspace zip...  ->  Deploying install ...
+  Uploading workspace artifact...  ->  Deploying install ...
 
 BifrostClient is mocked so no network/DB is touched. Deploying with a local
 binding and the default (vendoring-on) descriptor drives the no-shared-deps
@@ -131,7 +131,7 @@ def test_deploy_prints_each_phase(tmp_path) -> None:
     assert "Vendoring shared dependencies..." in out
     assert "Bundle:" in out
     assert "Deploy candidate: sha256:" in out
-    assert "Uploading workspace zip..." in out
+    assert "Uploading workspace artifact..." in out
     assert "Deploying install" in out
 
 
@@ -309,6 +309,10 @@ def test_deploy_embeds_local_prebuild_without_mutating_workspace(tmp_path) -> No
         )
 
     assert result.exit_code == 0, result.output
+    assert (
+        "Uploading workspace artifact (source + locally built app dist)..."
+        in result.output
+    )
     deploy_call = next(
         kwargs for path, kwargs in captured["posts"] if path.endswith("/deploy")
     )
