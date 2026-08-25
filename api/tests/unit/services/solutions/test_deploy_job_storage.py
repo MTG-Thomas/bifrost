@@ -16,6 +16,7 @@ def _settings(provider: str):
         Any,
         SimpleNamespace(
             object_storage_provider=provider,
+            azure_blob_account_url="https://acct.blob.core.windows.net",
             azure_blob_container="azure-container",
             s3_bucket="s3-bucket",
         ),
