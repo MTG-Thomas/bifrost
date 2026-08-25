@@ -571,9 +571,10 @@ jobs:
           ./test.sh stack up
           if [ "$TEST_MODE" = "comprehensive" ]; then
             ./test.sh unit --cov=. --cov-report=xml:/tmp/bifrost/coverage.xml
-            coverage_file=$(find /tmp -maxdepth 2 -path '/tmp/bifrost-*/coverage.xml' -print -quit)
-            test -n "$coverage_file"
-            cp "$coverage_file" coverage.xml
+            shopt -s nullglob
+            coverage_files=(/tmp/bifrost-bifrost-test-*/coverage.xml)
+            test "${#coverage_files[@]}" -eq 1
+            cp "${coverage_files[0]}" coverage.xml
           else
             mapfile -t targets <<< "$TEST_TARGETS"
             if (( ${#targets[@]} == 0 )); then

@@ -276,7 +276,7 @@ def test_bundle_failure_is_persisted_and_does_not_publish(
         "failed",
     )
     assert notification["status"] == "failed"
-    assert "Bundle build failed" in notification.json()["error"]
+    assert "Bundle build failed" in notification["error"]
     app_response = e2e_client.get(
         f"/api/applications/{app['slug']}",
         headers=platform_admin.headers,
