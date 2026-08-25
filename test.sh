@@ -661,7 +661,7 @@ client_e2e() {
             playwright-runner node e2e/support/run-playwright.mjs "${passthrough[@]}"
     else
         docker compose -f "$COMPOSE_FILE" --profile client run --rm "${env_args[@]}" \
-            playwright-runner npx playwright test \
+            playwright-runner node e2e/support/run-playwright.mjs \
                 --project=platform-admin \
                 --project=org-user \
                 --project=unauthenticated \

@@ -153,6 +153,19 @@ def test_coverage_export_combines_service_data_outside_test_runner():
     assert 'cp "$LOG_DIR/$basename_target" "$target"' in coverage_function
 
 
+def test_client_e2e_always_starts_local_origin_proxies():
+    """Every Playwright path must provide the localhost secure contexts it declares."""
+    script = _find_repo_file("test.sh").read_text()
+    client_e2e_function = script.split("client_e2e() {", 1)[1].split(
+        "\n}\n\nclient_smoke()", 1
+    )[0]
+
+    assert client_e2e_function.count(
+        "playwright-runner node e2e/support/run-playwright.mjs"
+    ) == 2
+    assert "playwright-runner npx playwright test" not in client_e2e_function
+
+
 def test_dev_image_installs_pyright_from_hash_pinned_lock():
     """Local Docker type-checks should not depend on host pyright installs."""
     dockerfile = _find_repo_file("api/Dockerfile.dev").read_text()

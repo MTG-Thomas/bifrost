@@ -76,7 +76,9 @@ def test_main_verification_waits_for_immutable_ci_test_images() -> None:
         "test-unit": "bash api/scripts/ci/prepare-test-images.sh api client",
         "mcp-conformance": "bash api/scripts/ci/prepare-test-images.sh api client",
         "test-e2e": "bash api/scripts/ci/prepare-test-images.sh api client",
-        "test-client-e2e": "bash api/scripts/ci/prepare-test-images.sh api client playwright",
+        "test-client-e2e": (
+            "bash api/scripts/ci/prepare-test-images.sh api client client-e2e playwright"
+        ),
     }
     for job_name, expected_command in expected_commands.items():
         prepare = next(
