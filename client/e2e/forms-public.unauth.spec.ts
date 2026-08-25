@@ -462,8 +462,14 @@ test.describe.serial("Public form iframe", () => {
 		await page.evaluate(() =>
 			window.scrollTo(0, document.body.scrollHeight),
 		);
-		const bottom = await page.evaluate(() => window.scrollY);
 		const clickVisibleControl = async (control: Locator) => {
+			const baseline = await page.evaluate(async () => {
+				window.scrollTo(0, document.body.scrollHeight);
+				await new Promise<void>((resolve) =>
+					requestAnimationFrame(() => resolve()),
+				);
+				return window.scrollY;
+			});
 			const bounds = await control.boundingBox();
 			expect(bounds).not.toBeNull();
 			expect(bounds!.y).toBeGreaterThanOrEqual(0);
@@ -471,8 +477,9 @@ test.describe.serial("Public form iframe", () => {
 				page.viewportSize()!.height,
 			);
 			await control.click();
+			return baseline;
 		};
-		const expectParentToRemainFixed = async () => {
+		const expectParentToRemainFixed = async (baseline: number) => {
 			const positions = await page.evaluate(async () => {
 				const samples: number[] = [];
 				for (let frame = 0; frame < 5; frame += 1) {
@@ -483,23 +490,23 @@ test.describe.serial("Public form iframe", () => {
 				}
 				return samples;
 			});
-			expect(positions).toEqual(Array(5).fill(bottom));
+			expect(positions).toEqual(Array(5).fill(baseline));
 		};
 
-		await clickVisibleControl(
+		const companySizeBaseline = await clickVisibleControl(
 			frame.getByRole("combobox", { name: "Company size" }),
 		);
 		const companySizeOption = frame.getByRole("option", {
 			name: "1–10 people",
 		});
 		await expect(companySizeOption).toBeVisible();
-		await expectParentToRemainFixed();
+		await expectParentToRemainFixed(companySizeBaseline);
 		await page.keyboard.press("Escape");
 		await expect(
 			frame.getByRole("option", { name: "1–10 people" }),
 		).not.toBeVisible();
 
-		await clickVisibleControl(
+		const referralBaseline = await clickVisibleControl(
 			frame.getByRole("combobox", {
 				name: "How did you hear about us",
 			}),
@@ -507,7 +514,7 @@ test.describe.serial("Public form iframe", () => {
 		await expect(
 			frame.getByRole("option", { name: "Search engine" }),
 		).toBeVisible();
-		await expectParentToRemainFixed();
+		await expectParentToRemainFixed(referralBaseline);
 	});
 
 	test("shows only the signed session's execution result after an HMAC submission", async ({

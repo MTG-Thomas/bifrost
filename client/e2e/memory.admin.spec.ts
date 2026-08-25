@@ -122,7 +122,7 @@ test.describe("Private memory", () => {
 			body: await page.screenshot(),
 			contentType: "image/png",
 		});
-		await page.goto("/settings/ai-chat");
+		await page.goto("/settings/ai-instructions");
 		const globalEditor = page.locator(
 			'[aria-label="Global Instructions editor"]',
 		);
