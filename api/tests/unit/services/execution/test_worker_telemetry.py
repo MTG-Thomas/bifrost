@@ -1,3 +1,4 @@
+import importlib
 import sys
 from datetime import datetime, timezone
 from types import ModuleType, SimpleNamespace
@@ -43,6 +44,15 @@ class _FakeTracer:
         return span
 
 
+def test_importing_worker_does_not_install_virtual_import_hook():
+    with patch(
+        "src.services.execution.virtual_import.install_virtual_import_hook"
+    ) as install_hook:
+        importlib.reload(worker)
+
+    install_hook.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_run_execution_emits_worker_span(monkeypatch):
     fake_tracer = _FakeTracer()
@@ -85,6 +95,16 @@ async def test_run_execution_emits_worker_span(monkeypatch):
         patch("bifrost.credentials.is_token_expired", return_value=False),
         patch("src.core.module_cache_sync.set_solution_context"),
         patch("src.core.module_cache_sync.clear_solution_context"),
+        patch(
+            "src.services.execution.virtual_import.get_virtual_finder",
+            return_value=None,
+        ),
+        patch(
+            "src.services.execution.virtual_import.install_virtual_import_hook"
+        ) as install_hook,
+        patch(
+            "src.services.execution.virtual_import.remove_virtual_import_hook"
+        ) as remove_hook,
         patch("src.services.execution.engine.execute", new=execute),
     ):
         payload = await worker._run_execution("exec-1", context_data)
@@ -106,6 +126,8 @@ async def test_run_execution_emits_worker_span(monkeypatch):
     assert span.attributes["bifrost.queue.wait_ms"] >= 0
     assert span.attributes["bifrost.worker.peak_memory_bytes"] >= 0
     assert span.attributes["bifrost.worker.cpu_total_seconds"] >= 0
+    install_hook.assert_called_once_with()
+    remove_hook.assert_called_once_with()
 
 
 def test_run_in_worker_flushes_opentelemetry(monkeypatch):
@@ -187,7 +209,12 @@ def test_simple_worker_execute_sync_configures_opentelemetry(monkeypatch):
     monkeypatch.setattr(
         simple_worker,
         "_execute_async",
-        lambda execution_id, worker_id: ("execute-async", execution_id, worker_id),
+        lambda execution_id, worker_id, context: (
+            "execute-async",
+            execution_id,
+            worker_id,
+            context,
+        ),
     )
     monkeypatch.setattr(
         simple_worker.asyncio,
@@ -195,12 +222,17 @@ def test_simple_worker_execute_sync_configures_opentelemetry(monkeypatch):
         lambda coroutine: {"execution_id": "exec-otel", "success": True, "coroutine": coroutine},
     )
 
-    result = simple_worker._execute_sync("exec-otel", "worker-otel")
+    result = simple_worker._execute_sync("exec-otel", "worker-otel", {"source": "test"})
 
     assert result == {
         "execution_id": "exec-otel",
         "success": True,
-        "coroutine": ("execute-async", "exec-otel", "worker-otel"),
+        "coroutine": (
+            "execute-async",
+            "exec-otel",
+            "worker-otel",
+            {"source": "test"},
+        ),
     }
     assert calls == [
         ("configure", "bifrost-worker", {"span_processor": "simple"}),

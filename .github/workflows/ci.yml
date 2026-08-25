@@ -570,8 +570,10 @@ jobs:
           chmod +x test.sh
           ./test.sh stack up
           if [ "$TEST_MODE" = "comprehensive" ]; then
-            ./test.sh unit --cov=. --cov-report=xml:/coverage/coverage.xml
-            ./test.sh coverage coverage.xml
+            ./test.sh unit --cov=. --cov-report=xml:/tmp/bifrost/coverage.xml
+            coverage_file=$(find /tmp -maxdepth 2 -path '/tmp/bifrost-*/coverage.xml' -print -quit)
+            test -n "$coverage_file"
+            cp "$coverage_file" coverage.xml
           else
             mapfile -t targets <<< "$TEST_TARGETS"
             if (( ${#targets[@]} == 0 )); then
@@ -732,7 +734,7 @@ jobs:
           echo "Shard $SHARD_ID/$SHARD_TOTAL: ${#shard_files[@]} files"
           if [ "$TEST_MODE" = "comprehensive" ]; then
             ./test.sh "${shard_files[@]}" -v --durations=50 \
-              --cov=. --cov-report=xml:/coverage/coverage-e2e-${{ matrix.shard }}.xml
+              --cov=. --cov-report=xml:/tmp/bifrost/coverage-e2e-${{ matrix.shard }}.xml
             ./test.sh coverage coverage-e2e-${{ matrix.shard }}.xml
           else
             ./test.sh "${shard_files[@]}" -v --durations=50
@@ -792,7 +794,7 @@ jobs:
           API_IMAGE_CHANGED: ${{ steps.test-image-inputs.outputs.api_changed }}
           CLIENT_IMAGE_CHANGED: ${{ steps.test-image-inputs.outputs.client_changed }}
           PLAYWRIGHT_IMAGE_CHANGED: ${{ steps.test-image-inputs.outputs.playwright_changed }}
-        run: bash api/scripts/ci/prepare-test-images.sh api client playwright
+        run: bash api/scripts/ci/prepare-test-images.sh api client client-e2e playwright
 
       - name: Run Playwright tests
         if: needs.affected-test-plan.outputs.client_e2e_mode != 'skip'

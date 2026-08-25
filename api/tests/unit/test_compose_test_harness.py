@@ -141,6 +141,18 @@ def test_hardened_test_runner_writes_coverage_to_results_mount():
     assert all("/coverage" not in str(volume) for volume in runner["volumes"])
 
 
+def test_coverage_export_combines_service_data_outside_test_runner():
+    """Service coverage stays on its named volume and exports through LOG_DIR."""
+    script = _find_repo_file("test.sh").read_text()
+    coverage_function = script.split("cmd_coverage() {", 1)[1].split(
+        "\n}\n\ncmd_quality()", 1
+    )[0]
+
+    assert '-v "$LOG_DIR:/results" api' in coverage_function
+    assert "coverage combine --append --keep /coverage" in coverage_function
+    assert 'cp "$LOG_DIR/$basename_target" "$target"' in coverage_function
+
+
 def test_dev_image_installs_pyright_from_hash_pinned_lock():
     """Local Docker type-checks should not depend on host pyright installs."""
     dockerfile = _find_repo_file("api/Dockerfile.dev").read_text()

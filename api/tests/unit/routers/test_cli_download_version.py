@@ -31,6 +31,7 @@ def test_build_cli_artifact_stamps_and_filters_package(tmp_path: Path) -> None:
         assert '__version__ = "v1.2.3"' in init.read().decode()
 
     assert "bifrost/lucide_icon_names.json" in names
+    assert "_bifrost_workspace_effects.py" in names
     assert "bifrost/_write_buffer.py" not in names
     assert "bifrost/_logging.py" not in names
 

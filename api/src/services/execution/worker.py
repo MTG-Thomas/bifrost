@@ -10,9 +10,8 @@ This module runs in a separate process and:
 
 The worker imports minimal dependencies to keep memory footprint low.
 
-IMPORTANT: The virtual import hook is installed at module load time
-(before any workspace imports can occur) to enable loading Python
-modules from Redis cache instead of the filesystem.
+IMPORTANT: The virtual import hook is installed for each execution after its
+credentials and source context are active, but before workspace code loads.
 """
 
 from __future__ import annotations
@@ -29,13 +28,7 @@ from typing import Any
 
 from opentelemetry import trace
 
-# Install virtual import hook IMMEDIATELY at module load time.
-# This must happen before any workspace imports (e.g., from shared import ...)
-# The hook intercepts imports and loads modules from Redis cache.
-from src.services.execution.virtual_import import install_virtual_import_hook
 from src.services.execution.draft_limits import enforce_draft_output_limit
-
-install_virtual_import_hook()
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -262,6 +255,19 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
             ),
         )
 
+    # Install the hook only after this execution's credentials and source root
+    # are active. Importing this module also happens in the API process and in
+    # test collection, where a process-global finder would redirect unrelated
+    # optional imports without an execution-scoped resolver.
+    from src.services.execution.virtual_import import (
+        get_virtual_finder,
+        install_virtual_import_hook,
+        remove_virtual_import_hook,
+    )
+
+    owns_virtual_import_hook = get_virtual_finder() is None
+    install_virtual_import_hook()
+
     span_attributes = {
         "bifrost.execution.id": execution_id,
         "bifrost.workflow.name": str(context_data.get("name") or ""),
@@ -487,6 +493,8 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
         clear_solution_context()
         clear_workspace_release_context()
         clear_workspace_generation_context()
+        if owns_virtual_import_hook:
+            remove_virtual_import_hook()
 
 
 async def worker_main(execution_id: str):

@@ -43,6 +43,7 @@ class TestSchedulerDiagnostics:
         tasks = {task["task_id"]: task for task in body["tasks"]}
         expected = {
             "schedule_processor",
+            "logo_thumbnail_backfill",
             "deferred_execution_promoter",
             "execution_cleanup",
             "oauth_token_refresh",
@@ -53,6 +54,7 @@ class TestSchedulerDiagnostics:
             "solution_update_check",
             "solution_export_job_cleanup",
             "workspace_promotion_draft_cleanup",
+            "workspace_release_accountability",
             "mcp_operation_receipt_cleanup",
             "event_cleanup",
             "stuck_event_cleanup",

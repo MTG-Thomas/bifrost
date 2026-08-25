@@ -368,22 +368,25 @@ cmd_coverage() {
     local target="${1:-coverage.xml}"
     local basename_target
     basename_target="$(basename "$target")"
-    local source="/coverage/$(basename "$target")"
+    local source="/results/$basename_target"
 
     # E2E exercises API/worker/scheduler in sibling containers. Stop those
     # processes before materializing the report so coverage.py flushes their
     # parallel data files into the shared coverage volume.
     docker compose -f "$COMPOSE_FILE" stop api api-replica worker scheduler >/dev/null 2>&1 || true
 
-    docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner \
-        sh -lc "backup=/tmp/$(basename '$source').pre-combine
+    chmod 777 "$LOG_DIR" 2>/dev/null || true
+    docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
+        -v "$LOG_DIR:/results" api \
+        sh -lc "backup=/tmp/$basename_target.pre-combine
 if [ -f '$source' ]; then cp '$source' \"\$backup\"; fi
 coverage combine --append --keep /coverage >/dev/null 2>&1 || true
 case '$basename_target' in
   *.json) coverage json -i -o '$source' >/dev/null || { [ -f \"\$backup\" ] && cp \"\$backup\" '$source'; } ;;
   *.xml) coverage xml -i -o '$source' >/dev/null || { [ -f \"\$backup\" ] && cp \"\$backup\" '$source'; } ;;
 esac
-cat '$source'" > "$target"
+test -s '$source'"
+    cp "$LOG_DIR/$basename_target" "$target"
 }
 
 cmd_quality() {

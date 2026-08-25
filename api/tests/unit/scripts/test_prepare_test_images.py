@@ -79,7 +79,48 @@ def test_pull_failure_falls_back_to_fail_closed_local_build(tmp_path: Path) -> N
     ]
 
 
+def test_client_e2e_builds_reviewed_production_image(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "docker.log"
+    docker = bin_dir / "docker"
+    docker.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$DOCKER_LOG"
+""",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+
+    env = os.environ | {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "DOCKER_LOG": str(log),
+        "REGISTRY": "ghcr.io",
+        "GHCR_USERNAME": "ci-user",
+        "GHCR_TOKEN": "test-token",
+        "CI_TEST_IMAGE_TAG": "main",
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+    }
+    subprocess.run(
+        ["bash", str(SCRIPT), "client-e2e"],
+        cwd=API_ROOT,
+        env=env,
+        check=True,
+    )
+
+    assert log.read_text(encoding="utf-8").splitlines() == [
+        "login ghcr.io --username ci-user --password-stdin",
+        (
+            "build --file ./client/Dockerfile --tag "
+            "bifrost-test-client-e2e:latest --target production "
+            "--build-arg VITE_BIFROST_VERSION=test ./client"
+        ),
+        "logout ghcr.io",
+    ]
+
+
 def test_playwright_image_uses_the_compose_service_tag() -> None:
     script = SCRIPT.read_text(encoding="utf-8")
 
-    assert '"bifrost-test-client-e2e:latest"' in script
+    assert '"bifrost-test-playwright-runner:latest"' in script

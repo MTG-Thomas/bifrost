@@ -15,6 +15,7 @@ _EXCLUDED_FILES = {
     "_write_buffer.py",  # Platform-only, requires Redis
 }
 _RUNTIME_DATA_FILES = {"lucide_icon_names.json"}
+_ROOT_MODULES = {"_bifrost_workspace_effects.py"}
 
 
 def to_pep440(version: str) -> str:
@@ -101,6 +102,18 @@ def build_cli_artifact(source_dir: Path, output_dir: Path, version: str) -> Path
                         _tar_info("pyproject.toml", pyproject_data),
                         io.BytesIO(pyproject_data),
                     )
+
+                    for module_name in sorted(_ROOT_MODULES):
+                        module_path = source_dir.parent / module_name
+                        if not module_path.is_file():
+                            raise FileNotFoundError(
+                                f"CLI root module not found: {module_path}"
+                            )
+                        data = module_path.read_bytes()
+                        archive.addfile(
+                            _tar_info(module_name, data, module_path.stat().st_mode & 0o777),
+                            io.BytesIO(data),
+                        )
 
                     for file_path in sorted(source_dir.rglob("*")):
                         if not file_path.is_file():

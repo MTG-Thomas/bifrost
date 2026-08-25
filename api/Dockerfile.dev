@@ -110,6 +110,7 @@ RUN chmod -R a+rX /app/src/services/sdk_package
 # Source is bind-mounted at runtime in development, but the downloadable CLI
 # is deliberately frozen at image-build time just as it is in production.
 COPY api/bifrost/ /tmp/cli-build/bifrost/
+COPY api/_bifrost_workspace_effects.py /tmp/cli-build/
 COPY api/shared/cli_artifact.py /tmp/cli-build/shared/cli_artifact.py
 COPY api/scripts/build_cli_artifact.py /tmp/cli-build/build_cli_artifact.py
 RUN PYTHONPATH=/tmp/cli-build python /tmp/cli-build/build_cli_artifact.py \

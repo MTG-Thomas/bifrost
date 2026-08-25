@@ -47,6 +47,21 @@ prepare_image() {
   printf -- '- %s: built `%s` from reviewed source\n' "$name" "$local_image" >> "$summary"
 }
 
+build_local_image() {
+  local name="$1"
+  local local_image="$2"
+  local context="$3"
+  local dockerfile="$4"
+  shift 4
+
+  DOCKER_BUILDKIT=1 docker build \
+    --file "$dockerfile" \
+    --tag "$local_image" \
+    "$@" \
+    "$context"
+  printf -- '- %s: built `%s` from reviewed source\n' "$name" "$local_image" >> "$summary"
+}
+
 {
   echo "### CI test images"
   echo
@@ -72,12 +87,21 @@ for requested in "$@"; do
         "./client" \
         "./client/Dockerfile.dev"
       ;;
+    client-e2e)
+      build_local_image \
+        "production client" \
+        "bifrost-test-client-e2e:latest" \
+        "./client" \
+        "./client/Dockerfile" \
+        --target production \
+        --build-arg VITE_BIFROST_VERSION=test
+      ;;
     playwright)
       prepare_image \
         "Playwright" \
         "${PLAYWRIGHT_IMAGE_CHANGED:?PLAYWRIGHT_IMAGE_CHANGED is required}" \
         "${CI_PLAYWRIGHT_TEST_IMAGE:?CI_PLAYWRIGHT_TEST_IMAGE is required}" \
-        "bifrost-test-client-e2e:latest" \
+        "bifrost-test-playwright-runner:latest" \
         "./client" \
         "./client/Dockerfile.playwright"
       ;;
