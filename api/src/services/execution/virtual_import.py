@@ -30,7 +30,11 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from src.core.module_cache_sync import resolve_module_sync, workspace_generation_for_import
+from src.core.module_cache_sync import (
+    ModuleResolutionError,
+    resolve_module_sync,
+    workspace_generation_for_import,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -350,7 +354,18 @@ class VirtualModuleFinder(MetaPathFinder):
         if local_spec is not None and not _is_bifrost_source_spec(local_spec):
             return None
 
-        resolution = resolve_module_sync(fullname)
+        try:
+            resolution = resolve_module_sync(fullname)
+        except ModuleResolutionError:
+            # Installed dependencies commonly probe optional companions inside
+            # ``try: import ... except ImportError`` blocks. If the workspace
+            # resolver is temporarily unavailable, preserve that normal Python
+            # contract for an import originating outside workspace/platform
+            # code. Workspace imports still fail closed so a cache/API outage
+            # cannot silently masquerade as a missing workspace module.
+            if _import_origin_is_external():
+                return None
+            raise
         if resolution.kind in {"module", "package"} and resolution.content is not None:
             is_package = resolution.kind == "package"
             loader = VirtualModuleLoader(
@@ -403,6 +418,28 @@ def _is_bifrost_source_spec(spec: ModuleSpec) -> bool:
         resolved = Path(location).resolve()
         if any(resolved.is_relative_to(root) for root in _BIFROST_SOURCE_ROOTS):
             return True
+    return False
+
+
+def _import_origin_is_external() -> bool:
+    """Return whether the import statement came from installed/stdlib code."""
+    frame = sys._getframe(1)
+    while frame is not None:
+        filename = frame.f_code.co_filename
+        if filename == __file__ or filename.startswith("<frozen importlib"):
+            frame = frame.f_back
+            continue
+
+        if isinstance(frame.f_globals.get("__loader__"), VirtualModuleLoader):
+            return False
+        if filename.startswith("<"):
+            return False
+
+        resolved = Path(filename).resolve()
+        return not any(
+            resolved.is_relative_to(root) for root in _BIFROST_SOURCE_ROOTS
+        )
+
     return False
 
 # Global finder instance (for invalidation access)
