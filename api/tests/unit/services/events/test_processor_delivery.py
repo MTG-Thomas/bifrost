@@ -55,6 +55,7 @@ def _make_delivery(
         status=status,
         error_message=None,
         attempt_count=0,
+        attempt_started_at=None,
         completed_at=None,
     )
 
@@ -68,6 +69,28 @@ def _make_processor(event: SimpleNamespace | None, deliveries: list[SimpleNamesp
     processor._delivery_repo.get_by_event = AsyncMock(return_value=deliveries)
     processor._broadcast_event_update = AsyncMock()
     return processor, session
+
+
+@pytest.mark.asyncio
+async def test_retry_delivery_records_current_attempt_and_queue_failure():
+    event = _make_event()
+    delivery = _make_delivery(status=EventDeliveryStatus.FAILED, event=event)
+    delivery.error_message = "previous failure"
+    delivery.completed_at = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    processor, session = _make_processor(event=event, deliveries=[delivery])
+    processor.queue_event_deliveries = AsyncMock(side_effect=RuntimeError("queue down"))
+
+    message = await processor.retry_delivery(delivery)
+
+    assert message == "Failed to queue retry: queue down"
+    assert delivery.status is EventDeliveryStatus.FAILED
+    assert delivery.error_message == "queue down"
+    assert delivery.execution_id is None
+    assert delivery.attempt_started_at is not None
+    assert delivery.completed_at is not None
+    assert delivery.completed_at >= delivery.attempt_started_at
+    assert session.flush.await_count == 2
+    processor.queue_event_deliveries.assert_awaited_once_with(event.id)
 
 
 @pytest.mark.asyncio

@@ -569,12 +569,19 @@ class TestEventDeliveryEndpoints:
             status=EventDeliveryStatus.FAILED,
             error_message="previous failure",
             execution_id=uuid4(),
+            completed_at=datetime.now(timezone.utc),
+            attempt_started_at=None,
         )
         db = AsyncMock()
         db.execute = AsyncMock(return_value=_db_execute_result(delivery))
 
+        async def fail_retry(row):
+            row.status = EventDeliveryStatus.FAILED
+            row.error_message = "queue down"
+            return "Failed to queue retry: queue down"
+
         processor = MagicMock()
-        processor.queue_event_deliveries = AsyncMock(side_effect=RuntimeError("queue down"))
+        processor.retry_delivery = AsyncMock(side_effect=fail_retry)
         with patch("src.services.events.processor.EventProcessor", return_value=processor):
             response = await events.retry_delivery(delivery_id, _ctx(), _user(), db)
 
@@ -583,9 +590,7 @@ class TestEventDeliveryEndpoints:
         assert response.message == "Failed to queue retry: queue down"
         assert delivery.status == EventDeliveryStatus.FAILED
         assert delivery.error_message == "queue down"
-        assert delivery.execution_id is None
-        assert db.flush.await_count == 2
-        processor.queue_event_deliveries.assert_awaited_once_with(event_id)
+        processor.retry_delivery.assert_awaited_once_with(delivery)
 
 
 class TestEventSourceMutationEndpoints:
