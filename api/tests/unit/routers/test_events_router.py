@@ -569,6 +569,8 @@ class TestEventDeliveryEndpoints:
             status=EventDeliveryStatus.FAILED,
             error_message="previous failure",
             execution_id=uuid4(),
+            completed_at=datetime.now(timezone.utc),
+            attempt_started_at=None,
         )
         db = AsyncMock()
         db.execute = AsyncMock(return_value=_db_execute_result(delivery))
@@ -584,6 +586,8 @@ class TestEventDeliveryEndpoints:
         assert delivery.status == EventDeliveryStatus.FAILED
         assert delivery.error_message == "queue down"
         assert delivery.execution_id is None
+        assert delivery.completed_at is None
+        assert delivery.attempt_started_at is not None
         assert db.flush.await_count == 2
         processor.queue_event_deliveries.assert_awaited_once_with(event_id)
 

@@ -1450,6 +1450,8 @@ async def retry_delivery(
     delivery.status = EventDeliveryStatus.PENDING
     delivery.error_message = None
     delivery.execution_id = None
+    delivery.completed_at = None
+    delivery.attempt_started_at = datetime.now(timezone.utc)
     await db.flush()
 
     # Queue the execution
