@@ -71,6 +71,7 @@ class PendingExecution(TypedDict):
     is_provider_org: bool  # Trusted caller provider-org membership
     is_external: bool  # Trusted caller external-access restriction
     event: dict[str, Any] | None  # EventContext fields if event-triggered; None otherwise
+    artifact_workspace_id: str | None
     created_at: str  # ISO format
     cancelled: bool
 
@@ -125,6 +126,7 @@ class RedisClient:
         solution_deployment_id: str | None = None,
         runtime_evidence: dict[str, Any] | None = None,
         runtime_mode: str = "legacy",
+        artifact_workspace_id: str | None = None,
     ) -> None:
         """
         Store pending execution in Redis.
@@ -171,6 +173,7 @@ class RedisClient:
             "is_provider_org": is_provider_org,
             "is_external": is_external,
             "event": event,
+            "artifact_workspace_id": artifact_workspace_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "cancelled": False,
         }
@@ -512,7 +515,7 @@ class RedisClient:
     async def close(self) -> None:
         """Close Redis connection."""
         if self._redis:
-            await self._redis.close()
+            await self._redis.aclose()
             self._redis = None
 
     # =========================================================================

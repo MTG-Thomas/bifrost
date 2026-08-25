@@ -26,10 +26,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.core.pubsub import publish_agent_run_update
+from src.core.cache import get_shared_redis
 from src.jobs.rabbitmq import publish_message
 from src.models.orm.agent_runs import AgentRun
 from src.models.orm.agents import Agent
-from src.models.orm.ai_usage import AIUsage
+from src.services.ai_usage_service import record_ai_usage
 from src.services.execution.model_selection import get_summarization_client
 from src.services.llm import BaseLLMClient, LLMMessage, LLMResponse
 
@@ -348,12 +349,10 @@ async def summarize_run(
     ]
 
     # Phase 2: call LLM (no DB connection held)
-    # We intentionally don't cap max_tokens here — the LLM client falls back to
-    # the admin-configured budget (LLMConfig.max_tokens, default 4096). A local
-    # cap had been causing silent mid-object truncation for reasoning models
-    # that spend tokens on hidden thinking, and "summarizer ran out of budget"
-    # isn't ours to decide — the admin already sized their config for the model
-    # they picked.
+    # We intentionally don't cap max_tokens here. Providers that support an
+    # omitted limit use their model default; Anthropic receives the adapter's
+    # required ceiling. A local cap had been causing silent mid-object
+    # truncation for reasoning models that spend tokens on hidden thinking.
     response = None
     try:
         response = await _complete_with_retry(
@@ -398,7 +397,7 @@ async def summarize_run(
             raw_preview,
         )
         # Detect the "truncated mid-object" case so the error message is
-        # actionable ("raise max_tokens") rather than generic "invalid JSON".
+        # distinguishable from a generic "invalid JSON" response.
         looks_truncated = (
             raw_preview
             and raw_preview != "<no response>"
@@ -493,17 +492,18 @@ async def summarize_run(
 
         provider = getattr(llm_client, "provider_name", "unknown")
         model_name = getattr(response, "model", None) or resolved_model
-        db.add(
-            AIUsage(
-                agent_run_id=run.id,
-                organization_id=org_id,
-                provider=provider,
-                model=model_name,
-                input_tokens=getattr(response, "input_tokens", 0) or 0,
-                output_tokens=getattr(response, "output_tokens", 0) or 0,
-                cost=None,
-                timestamp=datetime.now(timezone.utc),
-            )
+        await record_ai_usage(
+            session=db,
+            redis_client=await get_shared_redis(),
+            agent_run_id=run.id,
+            organization_id=org_id,
+            provider=provider,
+            model=model_name,
+            input_tokens=response.input_tokens or 0,
+            output_tokens=response.output_tokens or 0,
+            cache_read_tokens=response.cache_read_tokens,
+            cache_write_tokens=response.cache_write_tokens,
+            provider_cost=response.provider_cost,
         )
         await db.commit()
         await _broadcast_run(run, db)

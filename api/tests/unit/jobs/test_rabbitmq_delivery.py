@@ -326,6 +326,17 @@ class FakeConnectionContext:
         return None
 
 
+class FakeChannelContext:
+    def __init__(self, channel: FakePublishChannel) -> None:
+        self._channel = channel
+
+    async def __aenter__(self) -> FakePublishChannel:
+        return self._channel
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+
 @pytest.mark.asyncio
 async def test_publish_once_does_not_redeclare_retry_queues() -> None:
     channel = FakePublishChannel()
@@ -333,8 +344,8 @@ async def test_publish_once_does_not_redeclare_retry_queues() -> None:
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setattr(
             rabbitmq,
-            "get_connection",
-            lambda: FakeConnectionContext(FakeConnection(channel)),
+            "get_channel",
+            lambda: FakeChannelContext(channel),
         )
 
         await _publish_once("unit-queue", {"id": "msg-1"}, 0)
@@ -352,8 +363,8 @@ async def test_publish_once_bounds_message_id_and_preserves_full_idempotency_key
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setattr(
             rabbitmq,
-            "get_connection",
-            lambda: FakeConnectionContext(FakeConnection(channel)),
+            "get_channel",
+            lambda: FakeChannelContext(channel),
         )
 
         await _publish_once("unit-queue", message, 0)

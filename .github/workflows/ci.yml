@@ -353,7 +353,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Check GitHub Action pins
-        run: python3 api/scripts/check_github_action_pins.py
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 api/scripts/check_github_action_pins.py --verify-versions
 
       - name: Check MTG CI boundaries
         run: python3 api/scripts/check_mtg_ci_boundaries.py
@@ -568,8 +570,11 @@ jobs:
           chmod +x test.sh
           ./test.sh stack up
           if [ "$TEST_MODE" = "comprehensive" ]; then
-            ./test.sh unit --cov=. --cov-report=xml:/coverage/coverage.xml
-            ./test.sh coverage coverage.xml
+            ./test.sh unit --cov=. --cov-report=xml:/tmp/bifrost/coverage.xml
+            shopt -s nullglob
+            coverage_files=(/tmp/bifrost-bifrost-test-*/coverage.xml)
+            test "${#coverage_files[@]}" -eq 1
+            cp "${coverage_files[0]}" coverage.xml
           else
             mapfile -t targets <<< "$TEST_TARGETS"
             if (( ${#targets[@]} == 0 )); then
@@ -636,6 +641,7 @@ jobs:
         if: needs.affected-test-plan.outputs.mcp_conformance_mode != 'skip'
         env:
           BIFROST_SKIP_BUILD: "1"
+          BIFROST_TEST_USE_CLEAN_BOOT: "1"
         run: |
           chmod +x test.sh
           ./test.sh stack up
@@ -729,7 +735,7 @@ jobs:
           echo "Shard $SHARD_ID/$SHARD_TOTAL: ${#shard_files[@]} files"
           if [ "$TEST_MODE" = "comprehensive" ]; then
             ./test.sh "${shard_files[@]}" -v --durations=50 \
-              --cov=. --cov-report=xml:/coverage/coverage-e2e-${{ matrix.shard }}.xml
+              --cov=. --cov-report=xml:/tmp/bifrost/coverage-e2e-${{ matrix.shard }}.xml
             ./test.sh coverage coverage-e2e-${{ matrix.shard }}.xml
           else
             ./test.sh "${shard_files[@]}" -v --durations=50
@@ -789,7 +795,7 @@ jobs:
           API_IMAGE_CHANGED: ${{ steps.test-image-inputs.outputs.api_changed }}
           CLIENT_IMAGE_CHANGED: ${{ steps.test-image-inputs.outputs.client_changed }}
           PLAYWRIGHT_IMAGE_CHANGED: ${{ steps.test-image-inputs.outputs.playwright_changed }}
-        run: bash api/scripts/ci/prepare-test-images.sh api client playwright
+        run: bash api/scripts/ci/prepare-test-images.sh api client client-e2e playwright
 
       - name: Run Playwright tests
         if: needs.affected-test-plan.outputs.client_e2e_mode != 'skip'

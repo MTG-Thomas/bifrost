@@ -100,7 +100,6 @@ ALLOW_LIST_INLINE_ORG: set[tuple[str, str, str]] = {
     # delete_document); this entry now covers only the BULK scope-update
     # conflict check.
     ('routers/knowledge_sources.py', 'KnowledgeStore.organization_id == target_org_id,', 'bulk scope-update conflict check; phase 6 migrates'),
-    ('routers/llm_config.py', 'SystemConfig.organization_id.is_(None),', 'SystemConfig admin lookup; pre-repo pattern (permanent)'),
     ('routers/mcp_connections.py', 'query = query.where(MCPConnection.organization_id == scope_org)', 'MCP connection org filter; phase 6 migrates'),
     ('routers/metrics.py', 'query = query.where(ExecutionMetricsDaily.organization_id == org_uuid)', 'ExecutionMetricsDaily identity-entity filter (permanent)'),
     ('routers/metrics.py', 'query = query.where(ExecutionMetricsDaily.organization_id.is_(None))', 'ExecutionMetricsDaily identity-entity filter (permanent)'),
@@ -258,6 +257,9 @@ IDENTITY_MODELS: set[str] = {
     # looked up by id with requester/admin authorization, never name-resolved
     # through the org-to-global execution cascade.
     "PlatformJob",
+    # Artifacts are opaque file identities authorized by creator/org and
+    # workspace membership. They are never resolved through the name cascade.
+    "Artifact",
     # File policies resolve with the SAME org→global cascade-and-override as
     # OrgScopedRepository (org-specific prefix wins; fall back to the global
     # (org=NULL) prefix), so a global `shared/<prefix>` policy cascades to every

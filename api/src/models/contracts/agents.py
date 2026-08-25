@@ -6,8 +6,10 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
+from src.models.contracts.agent_stats import AgentStatsResponse
+from src.models.contracts.artifacts import ArtifactRef, ModelCapabilities
 from src.models.contracts.refs import WorkflowRef
 from src.models.enums import AgentAccessLevel, AgentChannel, MessageRole
 
@@ -74,7 +76,7 @@ class AgentCreate(BaseModel):
             "agent's organization must own each listed connection."
         ),
     )
-    llm_model: str | None = Field(default=None, description="Override model (null=use global config)")
+    llm_profile_id: UUID | None = Field(default=None, description="Model profile UUID (null=use default profile assignment)")
     llm_max_tokens: int | None = Field(default=None, ge=1, le=200000, description="Override max tokens")
     max_iterations: int | None = Field(default=None, ge=1, le=200, description="Max LLM iterations for autonomous runs")
     max_token_budget: int | None = Field(default=None, ge=1000, le=1000000, description="Max token budget for autonomous runs")
@@ -105,7 +107,7 @@ class AgentUpdate(BaseModel):
         ),
     )
     clear_roles: bool = Field(default=False, description="If true, clear all role assignments (sets to role_based with no roles)")
-    llm_model: str | None = Field(default=None, description="Override model (null=use global config)")
+    llm_profile_id: UUID | None = Field(default=None, description="Model profile UUID (null=use default profile assignment)")
     llm_max_tokens: int | None = Field(default=None, ge=1, le=200000, description="Override max tokens")
     max_iterations: int | None = Field(default=None, ge=1, le=200, description="Max LLM iterations for autonomous runs")
     max_token_budget: int | None = Field(default=None, ge=1000, le=1000000, description="Max token budget for autonomous runs")
@@ -167,20 +169,25 @@ class AgentPublic(BaseModel):
         default_factory=list,
         description="MCP connection UUIDs this agent is granted access to.",
     )
-    llm_model: str | None = None
+    llm_profile_id: UUID | None = None
     llm_max_tokens: int | None = None
     max_iterations: int | None = None
     max_token_budget: int | None = None
     logo: str | None = Field(
         default=None,
-        description="Inline logo as a data URL, or null when no logo is set.",
+        description="Inline presentation logo as a data URL on single-agent responses.",
     )
+    logo_url: str | None = Field(
+        default=None,
+        description="Versioned presentation-logo URL, or null when no logo is set.",
+    )
+    logo_version: str | None = Field(default=None, description="Presentation-logo content hash.")
 
     @field_serializer("id")
     def serialize_id(self, v: UUID) -> str:
         return str(v)
 
-    @field_serializer("organization_id", "owner_user_id")
+    @field_serializer("organization_id", "owner_user_id", "llm_profile_id")
     def serialize_nullable_uuid(self, v: UUID | None) -> str | None:
         return str(v) if v else None
 
@@ -202,7 +209,7 @@ class AgentSummary(BaseModel):
     organization_id: UUID | None = None
     owner_user_id: UUID | None = None
     created_at: datetime
-    llm_model: str | None = None
+    llm_profile_id: UUID | None = None
     dependency_count: int = Field(default=0, description="Number of tool dependencies this agent uses")
     mcp_connection_count: int = Field(
         default=0,
@@ -210,7 +217,16 @@ class AgentSummary(BaseModel):
     )
     logo: str | None = Field(
         default=None,
-        description="Inline logo as a data URL, or null when no logo is set. Avoids an N+1 GET per card in list views.",
+        description="Inline presentation logo as a data URL when explicitly requested.",
+    )
+    logo_url: str | None = Field(
+        default=None,
+        description="Versioned presentation-logo URL, or null when no logo is set.",
+    )
+    logo_version: str | None = Field(default=None, description="Presentation-logo content hash.")
+    stats: AgentStatsResponse | None = Field(
+        default=None,
+        description="Per-agent run stats when explicitly requested by the list caller.",
     )
     is_solution_managed: bool = Field(default=False, description="True if managed by a deployed Solution (read-only on platform)")
     solution_id: UUID | None = Field(default=None, description="UUID of the owning Solution install (null if not solution-managed)")
@@ -235,7 +251,7 @@ class AgentSummary(BaseModel):
     def serialize_id(self, v: UUID) -> str:
         return str(v)
 
-    @field_serializer("organization_id", "owner_user_id", "solution_id")
+    @field_serializer("organization_id", "owner_user_id", "solution_id", "llm_profile_id")
     def serialize_nullable_uuid(self, v: UUID | None) -> str | None:
         return str(v) if v else None
 
@@ -311,6 +327,83 @@ class ConversationSummary(BaseModel):
 # ==================== MESSAGE MODELS ====================
 
 
+class AttachmentPublic(BaseModel):
+    """Metadata for a file attached to a chat message."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    filename: str
+    content_type: str
+    size_bytes: int
+    kind: Literal["attachment", "artifact"] = "attachment"
+
+    @field_serializer("id")
+    def serialize_id(self, value: UUID) -> str:
+        return str(value)
+
+
+class AttachmentUploadResponse(BaseModel):
+    """Files accepted for the next message in a conversation."""
+
+    attachments: list[AttachmentPublic]
+
+
+class ChatArtifactPublic(AttachmentPublic):
+    """A durable Chat file with enough context for the user's artifact library."""
+
+    conversation_id: UUID | None = None
+    message_id: UUID | None = None
+    conversation_title: str | None = None
+    created_at: datetime
+
+    @field_serializer("conversation_id", "message_id")
+    def serialize_parent_ids(self, value: UUID | None) -> str | None:
+        return str(value) if value is not None else None
+
+    @field_serializer("created_at")
+    def serialize_created_at(self, value: datetime) -> str:
+        return value.isoformat()
+
+
+class ChatArtifactUpdate(BaseModel):
+    """Editable metadata for a durable Chat file."""
+
+    filename: str = Field(min_length=1, max_length=500)
+
+    @field_validator("filename")
+    @classmethod
+    def validate_filename(cls, value: str) -> str:
+        cleaned = value.strip()
+        if cleaned in {"", ".", ".."} or "/" in cleaned or "\\" in cleaned:
+            raise ValueError("Enter a filename without folders.")
+        return cleaned
+
+
+class ChatModelProfilePublic(BaseModel):
+    """One administrator-governed reusable model profile exposed in Chat."""
+
+    id: UUID
+    name: str
+    label: str
+    capabilities: ModelCapabilities
+
+    @field_serializer("id")
+    def serialize_id(self, value: UUID) -> str:
+        return str(value)
+
+
+class ChatModelProfilesResponse(BaseModel):
+    """Enabled Chat model profiles and the default selection."""
+
+    profiles: list[ChatModelProfilePublic]
+    default_profile_id: UUID | None = None
+
+    @field_serializer("default_profile_id")
+    def serialize_default_profile_id(self, value: UUID | None) -> str | None:
+        return str(value) if value else None
+
+
 class MessagePublic(BaseModel):
     """Message output for API responses."""
     model_config = ConfigDict(from_attributes=True)
@@ -319,6 +412,7 @@ class MessagePublic(BaseModel):
     conversation_id: UUID
     role: MessageRole
     content: str | None = None
+    attachments: list[AttachmentPublic] = Field(default_factory=list)
     tool_calls: list[ToolCall] | None = None
     tool_call_id: str | None = None
     tool_name: str | None = None
@@ -348,8 +442,16 @@ class MessagePublic(BaseModel):
 
 class ChatRequest(BaseModel):
     """Request for sending a chat message."""
-    message: str = Field(..., min_length=1, max_length=100000)
+    message: str = Field(default="", max_length=100000)
     stream: bool = Field(default=True, description="Whether to stream the response")
+    attachment_ids: list[UUID] = Field(default_factory=list, max_length=5)
+    model_profile_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def require_content(self):
+        if not self.message.strip() and not self.attachment_ids:
+            raise ValueError("A message or attachment is required")
+        return self
 
 
 class ChatResponse(BaseModel):
@@ -357,6 +459,7 @@ class ChatResponse(BaseModel):
     message_id: UUID
     content: str
     tool_calls: list[ToolCall] | None = None
+    artifacts: list[ArtifactRef] = Field(default_factory=list)
     token_count_input: int | None = None
     token_count_output: int | None = None
     duration_ms: int | None = None
@@ -410,6 +513,9 @@ class ChatStreamChunk(BaseModel):
         "tool_call",
         "tool_progress",
         "tool_result",
+        "artifact_started",
+        "artifact_ready",
+        "artifact_failed",
         "agent_switch",
         "context_warning",
         "title_update",
@@ -424,6 +530,7 @@ class ChatStreamChunk(BaseModel):
     tool_call: ToolCall | None = None
     tool_progress: ToolProgress | None = None
     tool_result: ToolResult | None = None
+    artifact: ArtifactRef | None = None
     execution_id: str | None = Field(default=None, description="Execution ID for tool_call chunks")
 
     # Agent switch and context warning

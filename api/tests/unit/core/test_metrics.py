@@ -124,17 +124,6 @@ async def test_update_daily_metrics_swallows_metrics_failures(monkeypatch) -> No
 
 async def test_upsert_daily_metrics_recalculates_average_when_row_exists() -> None:
     db = AsyncMock()
-    db.execute.side_effect = [
-        None,
-        SimpleNamespace(
-            one_or_none=lambda: SimpleNamespace(
-                execution_count=4,
-                total_duration_ms=1000,
-            )
-        ),
-        None,
-    ]
-
     await metrics._upsert_daily_metrics(
         db,
         metrics.date.today(),
@@ -147,18 +136,13 @@ async def test_upsert_daily_metrics_recalculates_average_when_row_exists() -> No
         9.0,
     )
 
-    assert db.execute.await_count == 3
-    update_stmt = db.execute.await_args_list[2].args[0]
-    assert "avg_duration_ms" in str(update_stmt)
+    db.execute.assert_awaited_once()
+    upsert_stmt = db.execute.await_args.args[0]
+    assert "avg_duration_ms" in str(upsert_stmt)
 
 
 async def test_upsert_daily_metrics_skips_average_when_no_row() -> None:
     db = AsyncMock()
-    db.execute.side_effect = [
-        None,
-        SimpleNamespace(one_or_none=lambda: None),
-    ]
-
     await metrics._upsert_daily_metrics(
         db,
         metrics.date.today(),
@@ -171,7 +155,7 @@ async def test_upsert_daily_metrics_skips_average_when_no_row() -> None:
         9.0,
     )
 
-    assert db.execute.await_count == 2
+    db.execute.assert_awaited_once()
 
 
 async def test_update_workflow_roi_daily_skips_when_workflow_missing() -> None:

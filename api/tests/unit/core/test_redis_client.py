@@ -477,7 +477,7 @@ class TestRedisClient:
 
         await client.close()
 
-        mock_redis.close.assert_called_once()
+        mock_redis.aclose.assert_called_once()
         assert client._redis is None
 
     async def test_set_workflow_metadata_cache_serializes_decimal(self, mock_redis):

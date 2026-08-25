@@ -54,7 +54,7 @@ Options:
   --system-tools TEXT             system_tools (repeat for multiple).
   --mcp-connection-ids TEXT       mcp_connection_ids (repeat for multiple;
                                   comma-split also accepted).
-  --llm-model TEXT                llm_model
+  --llm-profile-id TEXT           llm_profile_id (UUID).
   --llm-max-tokens INTEGER        llm_max_tokens
   --max-iterations INTEGER        max_iterations
   --max-token-budget INTEGER      max_token_budget
@@ -144,7 +144,7 @@ Options:
   --clear-roles / --no-clear-roles
                                   clear_roles (tri-state; omit to leave
                                   unchanged).
-  --llm-model TEXT                llm_model
+  --llm-profile-id TEXT           llm_profile_id (UUID).
   --llm-max-tokens INTEGER        llm_max_tokens
   --max-iterations INTEGER        max_iterations
   --max-token-budget INTEGER      max_token_budget
@@ -1795,10 +1795,10 @@ Commands:
   add-workflow  Index a local path::function in the Solution manifest...
   bind          Bind this local Solution workspace to an existing install.
   capture       Adopt loose _repo/ entities into an install (migration).
-  create        Create and bind a new Solution workspace.
-  deploy        Deploy the current Solution workspace (full replace,...
+  create        Create a Solution workspace and remote install.
+  deploy        Non-interactive full-replace deploy of the current...
   export        Download a Solution's workspace zip (shareable or full...
-  init          Alias for `solution create`: scaffold, create remote...
+  init          Alias for `solution create`: scaffold and create a remote...
   install       Install a Solution from a workspace zip (drag-and-drop...
   migrate-app   Migrate a v1 inline app dir to a scaffolded standalone_v2...
   plan          Validate a Solution workspace without changing local or...
@@ -1833,6 +1833,7 @@ Usage: solution bind [OPTIONS] [PATH]
 
 Options:
   --solution TEXT  Install id or unique slug.  [required]
+  --url TEXT       Bifrost instance URL (default: current profile).
   --help           Show this message and exit.
 ```
 
@@ -1868,7 +1869,7 @@ Options:
 ```
 Usage: solution create [OPTIONS] [PATH]
 
-  Create and bind a new Solution workspace.
+  Create a Solution workspace and remote install.
 
 Options:
   --slug TEXT                     Solution slug (definition identity).
@@ -1878,6 +1879,8 @@ Options:
                                   deploy time.  [default: 0.1.0]
   --global-repo-access / --no-global-repo-access
                                   [default: no-global-repo-access]
+  --url TEXT                      Bifrost instance URL (default: current
+                                  profile).
   --global                        Target global scope (org=NULL). Alias for
                                   --org global.
   --org, --organization, --scope TEXT
@@ -1892,17 +1895,26 @@ Options:
 ```
 Usage: solution deploy [OPTIONS] [PATH]
 
-  Deploy the current Solution workspace (full replace, non-interactive).
+  Non-interactive full-replace deploy of the current Solution workspace. If no
+  install matches, --org or --global is required before one is created.
 
 Options:
-  --solution TEXT      Install id or unique slug.
-  --force              Apply even if the bundle version is older than the
-                       installed version (downgrade).
-  --preview            Build and print the exact deploy candidate without
-                       uploading it.
-  --candidate-id TEXT  Require the built bundle to match a previously reviewed
-                       sha256 candidate.
-  --help               Show this message and exit.
+  --solution TEXT                 Install id or unique slug.
+  --url TEXT                      Bifrost instance URL (default: current
+                                  profile).
+  --force                         Apply even if the bundle version is older
+                                  than the installed version (downgrade).
+  --preview                       Build and print the exact deploy candidate
+                                  without uploading it.
+  --candidate-id TEXT             Require the built bundle to match a
+                                  previously reviewed sha256 candidate.
+  --global                        Target global scope (org=NULL). Alias for
+                                  --org global.
+  --org, --organization, --scope TEXT
+                                  Org UUID/name, or 'none'/'global' for global
+                                  scope. Omit = your org. (--organization /
+                                  --scope are synonyms.)
+  --help                          Show this message and exit.
 ```
 
 ### `solution export`
@@ -1930,7 +1942,7 @@ Options:
 ```
 Usage: solution init [OPTIONS] [PATH]
 
-  Alias for `solution create`: scaffold, create remote install, and bind .env.
+  Alias for `solution create`: scaffold and create a remote install.
 
 Options:
   --slug TEXT                     Solution slug (definition identity).
@@ -1940,6 +1952,8 @@ Options:
                                   deploy time.  [default: 0.1.0]
   --global-repo-access / --no-global-repo-access
                                   [default: no-global-repo-access]
+  --url TEXT                      Bifrost instance URL (default: current
+                                  profile).
   --global                        Target global scope (org=NULL). Alias for
                                   --org global.
   --org, --organization, --scope TEXT
@@ -1987,9 +2001,8 @@ Usage: solution migrate-app [OPTIONS] SOURCE V2_SLUG
   prints a checklist of the judgment steps left to you.
 
 Options:
-  --title TEXT    App display title (default: the v2 slug).
-  --api-url TEXT  Instance URL the app resolves `bifrost` from.
-  --help          Show this message and exit.
+  --title TEXT  App display title (default: the v2 slug).
+  --help        Show this message and exit.
 ```
 
 ### `solution plan`
@@ -2031,11 +2044,9 @@ Usage: solution scaffold-app [OPTIONS] SLUG
   Scaffold a standalone_v2 React app (package.json, vite, main.tsx, App.tsx).
 
 Options:
-  --path TEXT     App dir inside the solution workspace (default: apps/<slug>
-                  under the solution root).
-  --api-url TEXT  Instance URL the app resolves `bifrost` from (default:
-                  $BIFROST_API_URL).
-  --help          Show this message and exit.
+  --path TEXT  App dir inside the solution workspace (default: apps/<slug>
+               under the solution root).
+  --help       Show this message and exit.
 ```
 
 ### `solution sdk`
@@ -2062,6 +2073,7 @@ Usage: solution sdk update [OPTIONS] [PATH]
 Options:
   --app TEXT  standalone_v2 app slug (required when the Solution has multiple
               apps).
+  --url TEXT  Bifrost instance URL (default: current profile).
   --help      Show this message and exit.
 ```
 
@@ -2075,6 +2087,7 @@ Usage: solution start [OPTIONS] [APP_SLUG]
 
 Options:
   --solution TEXT    Install id or unique slug.
+  --url TEXT         Bifrost instance URL (default: current profile).
   --port INTEGER     Stable local proxy origin port; reuse it across restarts.
                      [default: 3000]
   --host TEXT        Address for the local origin to bind.  [default:

@@ -29,6 +29,7 @@ from src.core.database import get_db_context
 from src.core.log_safety import log_safe
 from src.core.pubsub import manager
 from src.models import Conversation, Execution
+from src.models.contracts.agents import ChatRequest
 from src.models.contracts.policies import Expr, TablePolicies
 from src.models.contracts.policies import FileAction
 from src.models.orm import Agent
@@ -1022,7 +1023,9 @@ async def websocket_connect(
 
     # Track active chat tasks per conversation so they can be cancelled
     active_chat_tasks: dict[str, asyncio.Task] = {}
-    pending_messages: dict[str, tuple[str, str | None]] = {}  # conversation_id -> (message, local_id)
+    pending_messages: dict[
+        str, tuple[str, str | None, list[UUID], UUID | None]
+    ] = {}
 
     # Per-connection state for policy-driven table subscriptions.
     # Populated by `_authorize_table_subscribe`; consulted by the dispatcher.
@@ -1322,11 +1325,23 @@ async def websocket_connect(
                 conversation_id = data.get("conversation_id")
                 message_text = data.get("message", "")
                 local_id = data.get("local_id")  # Client-generated ID for dedup
-
-                if not conversation_id or not message_text:
+                try:
+                    request = ChatRequest.model_validate({
+                        "message": message_text,
+                        "attachment_ids": data.get("attachment_ids", []),
+                        "model_profile_id": data.get("model_profile_id"),
+                    })
+                except ValueError as exc:
                     await websocket.send_json({
                         "type": "error",
-                        "error": "Missing conversation_id or message"
+                        "error": str(exc),
+                    })
+                    continue
+
+                if not conversation_id:
+                    await websocket.send_json({
+                        "type": "error",
+                        "error": "Missing conversation_id"
                     })
                     continue
 
@@ -1344,11 +1359,22 @@ async def websocket_connect(
                 # interleaved messages that break the Anthropic API contract.
                 existing_task = active_chat_tasks.get(conversation_id)
                 if existing_task and not existing_task.done():
-                    pending_messages[conversation_id] = (message_text, local_id)
+                    pending_messages[conversation_id] = (
+                        request.message,
+                        local_id,
+                        request.attachment_ids,
+                        request.model_profile_id,
+                    )
                     continue
 
                 # No running task — process immediately
-                def _start_chat_task(cid: str, msg: str, lid: str | None) -> asyncio.Task:
+                def _start_chat_task(
+                    cid: str,
+                    msg: str,
+                    lid: str | None,
+                    attachment_ids: list[UUID],
+                    model_profile_id: UUID | None,
+                ) -> asyncio.Task:
                     t = asyncio.create_task(
                         _process_chat_message(
                             websocket=websocket,
@@ -1356,6 +1382,8 @@ async def websocket_connect(
                             conversation_id=cid,
                             message=msg,
                             local_id=lid,
+                            attachment_ids=attachment_ids,
+                            model_profile_id=model_profile_id,
                         )
                     )
                     active_chat_tasks[cid] = t
@@ -1364,13 +1392,21 @@ async def websocket_connect(
                         active_chat_tasks.pop(_cid, None)
                         queued = pending_messages.pop(_cid, None)
                         if queued:
-                            q_msg, q_lid = queued
-                            _start_chat_task(_cid, q_msg, q_lid)
+                            q_msg, q_lid, q_attachments, q_profile_id = queued
+                            _start_chat_task(
+                                _cid, q_msg, q_lid, q_attachments, q_profile_id
+                            )
 
                     t.add_done_callback(_on_task_done)
                     return t
 
-                _start_chat_task(conversation_id, message_text, local_id)
+                _start_chat_task(
+                    conversation_id,
+                    request.message,
+                    local_id,
+                    request.attachment_ids,
+                    request.model_profile_id,
+                )
 
             elif data.get("type") == "chat_stop":
                 conversation_id = data.get("conversation_id")
@@ -1497,6 +1533,8 @@ async def _process_chat_message(
     conversation_id: str,
     message: str,
     local_id: str | None = None,
+    attachment_ids: list[UUID] | None = None,
+    model_profile_id: UUID | None = None,
 ) -> None:
     """
     Process a chat message and stream the response.
@@ -1579,6 +1617,8 @@ async def _process_chat_message(
                 stream=True,
                 local_id=local_id,
                 user=user,
+                attachment_ids=attachment_ids or [],
+                model_profile_id=model_profile_id,
             ):
                 # Track partial content from deltas
                 if chunk.type == "delta" and chunk.content:
@@ -1591,7 +1631,10 @@ async def _process_chat_message(
                     assistant_message_id = None
 
                 # Send chunk to WebSocket with conversation_id for client routing
-                chunk_data = chunk.model_dump(exclude_none=True)
+                # WebSocket.send_json ultimately uses the stdlib JSON encoder.
+                # Pydantic's JSON mode converts nested UUIDs and datetimes (for
+                # example ArtifactRef.created_at) before they reach Starlette.
+                chunk_data = chunk.model_dump(mode="json", exclude_none=True)
                 chunk_data["conversation_id"] = conversation_id
                 await websocket.send_json(chunk_data)
         except asyncio.CancelledError:

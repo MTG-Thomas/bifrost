@@ -9,7 +9,23 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+from tests.unit.services.agent_runtime_fakes import LegacyMockModel
 from src.services.execution.autonomous_agent_executor import AutonomousAgentExecutor
+from src.services.llm.base import LLMConfig
+
+
+@pytest.fixture(autouse=True)
+def mock_runtime_config():
+    with patch(
+        "src.services.execution.autonomous_agent_executor.get_llm_config",
+        new_callable=AsyncMock,
+        return_value=LLMConfig(
+            provider="openai",
+            model="test-model",
+            api_key="test-key",
+        ),
+    ):
+        yield
 
 
 def _make_mock_session_factory():
@@ -47,7 +63,7 @@ def _make_mock_agent():
     agent.max_iterations = 5
     agent.max_token_budget = 10000
     agent.max_run_timeout = 60
-    agent.llm_model = "test-model"
+    agent.llm_profile_id = uuid4()
     agent.llm_max_tokens = 4096
     agent.tools = []
     agent.delegated_agents = []
@@ -102,9 +118,8 @@ class TestNoSessionDuringLLMCall:
             new_callable=AsyncMock,
             return_value=([], {}),
         ), patch(
-            "src.services.execution.autonomous_agent_executor.get_llm_client",
-            new_callable=AsyncMock,
-            return_value=mock_llm_client,
+            "src.services.execution.autonomous_agent_executor.create_agent_model",
+            return_value=LegacyMockModel(mock_llm_client),
         ), patch(
             "src.services.execution.autonomous_agent_executor.publish_agent_run_step",
             new_callable=AsyncMock,
@@ -144,9 +159,8 @@ class TestStepsBufferedToRedis:
             new_callable=AsyncMock,
             return_value=([], {}),
         ), patch(
-            "src.services.execution.autonomous_agent_executor.get_llm_client",
-            new_callable=AsyncMock,
-            return_value=mock_llm_client,
+            "src.services.execution.autonomous_agent_executor.create_agent_model",
+            return_value=LegacyMockModel(mock_llm_client),
         ), patch(
             "src.services.execution.autonomous_agent_executor.publish_agent_run_step",
             new_callable=AsyncMock,
@@ -190,9 +204,8 @@ class TestFlushToDb:
             new_callable=AsyncMock,
             return_value=([], {}),
         ), patch(
-            "src.services.execution.autonomous_agent_executor.get_llm_client",
-            new_callable=AsyncMock,
-            return_value=mock_llm_client,
+            "src.services.execution.autonomous_agent_executor.create_agent_model",
+            return_value=LegacyMockModel(mock_llm_client),
         ), patch(
             "src.services.execution.autonomous_agent_executor.publish_agent_run_step",
             new_callable=AsyncMock,
@@ -259,6 +272,9 @@ class TestDelegationUsesFactory:
             "run",
             new_callable=AsyncMock,
             return_value=child_run_result,
+        ), patch(
+            "src.services.execution.run_summarizer.enqueue_summarize",
+            new_callable=AsyncMock,
         ):
             executor = AutonomousAgentExecutor(factory, redis_client=mock_redis)
             executor._current_run_id = str(uuid4())

@@ -4,109 +4,16 @@ LLM Configuration Pydantic Models
 Request/response models for LLM admin endpoints.
 """
 
-from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field
-
-
-class LLMConfigResponse(BaseModel):
-    """LLM configuration response (API key is never returned)."""
-
-    provider: Literal["openai", "anthropic"]
-    model: str
-    endpoint: str | None = None
-    max_tokens: int = 16384
-    default_system_prompt: str | None = None
-    summarization_model: str | None = None
-    tuning_model: str | None = None
-    is_configured: bool = True
-    api_key_set: bool = False
-
-
-class LLMConfigRequest(BaseModel):
-    """Request to set LLM configuration."""
-
-    provider: Literal["openai", "anthropic"] = Field(
-        ...,
-        description="LLM provider type",
-    )
-    model: str = Field(
-        ...,
-        min_length=1,
-        description="Model identifier (e.g., 'gpt-4o', 'claude-sonnet-4-20250514')",
-    )
-    api_key: str | None = Field(
-        None,
-        description="API key for the provider. Omit to preserve existing key.",
-    )
-    endpoint: str | None = Field(
-        None,
-        description="Custom API endpoint URL (e.g., for Azure OpenAI, Ollama, or other compatible providers)",
-    )
-    max_tokens: int = Field(
-        16384,
-        ge=1,
-        le=128000,
-        description="Maximum tokens for completion",
-    )
-    default_system_prompt: str | None = Field(
-        None,
-        description="Default system prompt for agentless chat",
-    )
-    summarization_model: str | None = Field(
-        default=None,
-        description="Model override for post-run summarization. Falls back to primary model if unset.",
-    )
-    tuning_model: str | None = Field(
-        default=None,
-        description="Model override for tuning chat + dry-run. Falls back to primary model if unset.",
-    )
-
-
-class LLMTestRequest(BaseModel):
-    """Request to test LLM configuration before saving."""
-
-    provider: Literal["openai", "anthropic"] = Field(
-        ...,
-        description="LLM provider type",
-    )
-    model: str | None = Field(
-        None,
-        min_length=1,
-        description="Optional model identifier. Connection tests list provider models without probing a guessed default.",
-    )
-    api_key: str | None = Field(
-        None,
-        min_length=1,
-        description="API key to test. Omit to test current form settings with the saved key.",
-    )
-    endpoint: str | None = Field(
-        None,
-        description="Custom API endpoint URL",
-    )
-
 
 class LLMModelInfo(BaseModel):
     """Model information with both ID and display name."""
 
     id: str
     display_name: str
-
-
-class LLMTestResponse(BaseModel):
-    """Response from testing LLM connection."""
-
-    success: bool
-    message: str
-    models: list[LLMModelInfo] | None = None
-
-
-class LLMModelsResponse(BaseModel):
-    """Response listing available models."""
-
-    models: list[LLMModelInfo]
-    provider: str
-
+    output_modalities: list[str] | None = None
 
 # =============================================================================
 # Embedding Configuration
@@ -116,6 +23,7 @@ class LLMModelsResponse(BaseModel):
 class EmbeddingConfigResponse(BaseModel):
     """Embedding configuration response (API key is never returned)."""
 
+    connection_id: UUID | None = None
     model: str = "text-embedding-3-small"
     dimensions: int = 1536  # Last-known vector size; informational only.
     endpoint: str | None = None  # Resolved endpoint (dedicated, inherited, or null = OpenAI default).
@@ -127,17 +35,13 @@ class EmbeddingConfigResponse(BaseModel):
 class EmbeddingConfigRequest(BaseModel):
     """Request to set dedicated embedding configuration."""
 
-    api_key: str | None = Field(
-        None,
-        description="API key for embeddings. Omit to preserve existing key.",
+    connection_id: UUID = Field(
+        ...,
+        description="Provider connection to use for embeddings.",
     )
     model: str = Field(
         "text-embedding-3-small",
         description="Embedding model identifier",
-    )
-    endpoint: str | None = Field(
-        None,
-        description="Custom OpenAI-compatible endpoint URL. Null/empty means OpenAI default.",
     )
     confirm_reindex: bool = Field(
         default=False,

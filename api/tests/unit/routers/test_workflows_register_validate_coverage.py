@@ -148,6 +148,23 @@ def _workflow(**overrides):
     return SimpleNamespace(**data)
 
 
+def _dispatch_metadata(workflow):
+    return {
+        "name": workflow.name,
+        "function_name": "run",
+        "path": "workflows/run.py",
+        "timeout_seconds": 1800,
+        "time_saved": 0,
+        "value": 0.0,
+        "execution_mode": "sync",
+        "organization_id": workflow.organization_id,
+        "solution_id": None,
+        "type": workflow.type,
+        "cache_ttl_seconds": workflow.cache_ttl_seconds,
+        "can_access_global_repo": False,
+    }
+
+
 class _WorkflowRepo:
     def __init__(self, workflow=None, access_error: Exception | None = None):
         self.workflow = workflow
@@ -639,6 +656,10 @@ async def test_execute_workflow_propagates_new_submission_identity() -> None:
             "src.services.execution.service.run_workflow",
             AsyncMock(return_value=service_result),
         ) as run_workflow,
+        patch(
+            "src.services.execution.service.get_workflow_for_execution",
+            AsyncMock(return_value=_dispatch_metadata(workflow)),
+        ),
         patch.object(workflows, "publish_execution_update", AsyncMock()),
         patch.object(workflows, "publish_history_update", AsyncMock()),
     ):
@@ -703,6 +724,10 @@ async def test_execute_workflow_runs_data_provider_without_cache() -> None:
 
     with (
         patch("src.repositories.WorkflowRepository", return_value=repo),
+        patch(
+            "src.services.execution.service.get_workflow_for_execution",
+            AsyncMock(return_value=_dispatch_metadata(workflow)),
+        ),
         patch("src.services.execution.service.run_workflow", AsyncMock(return_value=service_result)) as run_workflow,
     ):
         result = await workflows.execute_workflow(
@@ -726,7 +751,7 @@ async def test_execute_workflow_runs_data_provider_without_cache() -> None:
 
 
 @pytest.mark.asyncio
-async def test_execute_workflow_runs_as_user_and_publishes_terminal_result() -> None:
+async def test_execute_workflow_runs_as_user_without_duplicate_terminal_publish() -> None:
     admin = _exec_user(is_superuser=True)
     run_as = SimpleNamespace(
         id=uuid4(),
@@ -749,6 +774,10 @@ async def test_execute_workflow_runs_as_user_and_publishes_terminal_result() -> 
 
     with (
         patch("src.repositories.WorkflowRepository", return_value=repo),
+        patch(
+            "src.services.execution.service.get_workflow_for_execution",
+            AsyncMock(return_value=_dispatch_metadata(workflow)),
+        ),
         patch("src.services.execution.service.run_workflow", AsyncMock(return_value=service_result)) as run_workflow,
         patch.object(workflows, "publish_execution_update", AsyncMock()) as publish_execution_update,
         patch.object(workflows, "publish_history_update", AsyncMock()) as publish_history_update,
@@ -774,8 +803,8 @@ async def test_execute_workflow_runs_as_user_and_publishes_terminal_result() -> 
     assert shared_ctx.is_platform_admin is False
     assert run_workflow.await_args.kwargs["input_data"] == {"ticket": "123"}
     assert run_workflow.await_args.kwargs["sync"] is True
-    publish_execution_update.assert_awaited_once()
-    publish_history_update.assert_awaited_once()
+    publish_execution_update.assert_not_awaited()
+    publish_history_update.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -884,6 +913,7 @@ async def test_execute_workflow_translates_execution_service_errors() -> None:
     service_mod = types.ModuleType("src.services.execution.service")
     service_mod.WorkflowNotFoundError = WorkflowNotFoundError
     service_mod.WorkflowLoadError = WorkflowLoadError
+    service_mod.get_workflow_for_execution = AsyncMock()
     service_mod.run_code = fail_not_found
     service_mod.run_workflow = AsyncMock()
 

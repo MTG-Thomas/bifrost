@@ -81,24 +81,27 @@ def test_fetch_module_from_api_handles_success_and_http_statuses(monkeypatch):
         "_get_engine_credentials",
         lambda: ("https://api.example", "token"),
     )
-    calls: list[tuple[str, dict, float]] = []
+    calls: list[tuple[str, dict]] = []
 
     class Httpx:
         def __init__(self, status_code: int, body: dict | None = None):
             self.status_code = status_code
             self.body = body or {}
 
-        def get(self, url, headers, timeout):
-            calls.append((url, headers, timeout))
+        def get(self, url, headers, **_kwargs):
+            calls.append((url, headers))
             return SimpleNamespace(
                 status_code=self.status_code,
                 json=lambda: self.body,
             )
 
-    monkeypatch.setitem(
-        __import__("sys").modules,
-        "httpx",
-        Httpx(200, {"content": "print(1)", "path": "modules/a.py", "hash": "h"}),
+    monkeypatch.setattr(
+        module_cache_sync,
+        "_get_http_client",
+        lambda: Httpx(
+            200,
+            {"content": "print(1)", "path": "modules/a.py", "hash": "h"},
+        ),
     )
 
     assert module_cache_sync._fetch_module_from_api("modules/a.py") == {
@@ -109,13 +112,12 @@ def test_fetch_module_from_api_handles_success_and_http_statuses(monkeypatch):
     assert calls[-1] == (
         "https://api.example/api/sdk/modules/modules/a.py",
         {"Authorization": "Bearer token"},
-        10.0,
     )
 
-    monkeypatch.setitem(__import__("sys").modules, "httpx", Httpx(404))
+    monkeypatch.setattr(module_cache_sync, "_get_http_client", lambda: Httpx(404))
     assert module_cache_sync._fetch_module_from_api("missing.py") is None
 
-    monkeypatch.setitem(__import__("sys").modules, "httpx", Httpx(500))
+    monkeypatch.setattr(module_cache_sync, "_get_http_client", lambda: Httpx(500))
     assert module_cache_sync._fetch_module_from_api("error.py") is None
 
 
@@ -128,7 +130,7 @@ def test_fetch_module_index_from_api_and_requirements(monkeypatch):
     )
 
     class Httpx:
-        def get(self, url, headers, timeout):
+        def get(self, url, headers, **_kwargs):
             if url.endswith("/api/sdk/modules-index"):
                 return SimpleNamespace(
                     status_code=200,
@@ -141,13 +143,16 @@ def test_fetch_module_index_from_api_and_requirements(monkeypatch):
                 )
             raise AssertionError(url)
 
-    monkeypatch.setitem(__import__("sys").modules, "httpx", Httpx())
+    monkeypatch.setattr(module_cache_sync, "_get_http_client", lambda: Httpx())
 
     assert module_cache_sync._fetch_module_index_from_api() == {
         "modules/a.py",
         "workflows/b.py",
     }
-    assert module_cache_sync._fetch_requirements_from_api() == "requests==2.32.0\n"
+    assert module_cache_sync._fetch_requirements_from_api() == (
+        True,
+        "requests==2.32.0\n",
+    )
 
 
 def test_fetch_api_helpers_return_empty_on_missing_credentials(monkeypatch):
@@ -156,7 +161,7 @@ def test_fetch_api_helpers_return_empty_on_missing_credentials(monkeypatch):
 
     assert module_cache_sync._fetch_module_from_api("modules/a.py") is None
     assert module_cache_sync._fetch_module_index_from_api() == set()
-    assert module_cache_sync._fetch_requirements_from_api() is None
+    assert module_cache_sync._fetch_requirements_from_api() == (False, None)
 
 
 def test_storage_path_to_object_key_handles_repo_and_solution_paths():

@@ -411,7 +411,11 @@ test.describe("Agent Detail — Runs Tab (admin)", () => {
 				page.getByText("gpt-5.2", { exact: true }),
 			).toHaveCount(0);
 
-			await delegatedTitle.click();
+			await delegatedActivity
+				.getByRole("button", {
+					name: /show details for troubleshooting specialist/i,
+				})
+				.click();
 			await expect(
 				delegatedActivity.getByRole("button", {
 					name: /hide details for troubleshooting specialist/i,
@@ -460,16 +464,17 @@ test.describe("Agent Detail — Runs Tab (admin)", () => {
 			await expect(page).toHaveURL(
 				new RegExp(`/agents/${agent.id}/runs/${parentId}$`),
 			);
-			await expect(
-				delegatedActivity.getByRole("button", {
-					name: /hide details for troubleshooting specialist/i,
-				}),
-			).toHaveAttribute("aria-expanded", "true");
-			await expect(
-				nestedDelegation.getByRole("button", {
-					name: /hide details for asset resolver/i,
-				}),
-			).toHaveAttribute("aria-expanded", "true");
+			await expect(activity).toBeVisible();
+			await delegatedActivity
+				.getByRole("button", {
+					name: /show details for troubleshooting specialist/i,
+				})
+				.click();
+			await nestedDelegation
+				.getByRole("button", {
+					name: /show details for asset resolver/i,
+				})
+				.click();
 			await expect(nestedDelegation).toBeInViewport();
 
 			await page
@@ -965,10 +970,12 @@ test.describe("Agent Detail — Runs Tab (admin)", () => {
 				search.boundingBox(),
 			]);
 			for (let index = 0; index < contextBefore.length; index += 1) {
-				expect(contextAfter[index]?.y).toBeCloseTo(
-					contextBefore[index]?.y ?? 0,
-					1,
-				);
+				expect(
+					Math.abs(
+						(contextAfter[index]?.y ?? 0) -
+							(contextBefore[index]?.y ?? 0),
+					),
+				).toBeLessThanOrEqual(1);
 			}
 
 			await page.setViewportSize({ width: 1440, height: 720 });

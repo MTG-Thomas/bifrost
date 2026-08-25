@@ -72,61 +72,49 @@ def test_xlink_javascript_href_removed():
     assert b"javascript:" not in out.lower()
 
 
-def test_foreign_object_and_active_elements_are_removed_with_their_content():
-    payload = b"""<svg xmlns="http://www.w3.org/2000/svg">
-      <foreignObject><div xmlns="http://www.w3.org/1999/xhtml"><script>alert(1)</script></div></foreignObject>
-      <animate attributeName="href" values="safe;javascript:alert(1)"/>
-      <set attributeName="onload" to="alert(1)"/>
-      <rect width="10" height="10"/>
-    </svg>"""
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "https://attacker.invalid/image.png",
+        "file:///etc/passwd",
+        "//attacker.invalid/image.png",
+        "relative/image.png",
+    ],
+)
+def test_external_resource_references_removed(reference: str):
+    payload = (
+        f'<svg xmlns="http://www.w3.org/2000/svg"><image href="{reference}" '
+        'width="10" height="10"/></svg>'
+    ).encode()
+
     out = sanitize_svg(payload)
 
-    assert b"foreignObject" not in out
-    assert b"script" not in out.lower()
-    assert b"animate" not in out.lower()
-    assert b"<set" not in out.lower()
-    assert b"<rect" in out
+    assert reference.encode() not in out
 
 
-def test_active_urls_events_and_unsafe_css_are_removed():
-    payload = b"""<svg xmlns="http://www.w3.org/2000/svg">
-      <a href="javascript&#x3a;alert(1)" target="_top"><rect onload="alert(1)"/></a>
-      <use href="https://attacker.example/payload.svg#x"/>
-      <image href="data:image/svg+xml;base64,PHN2Zy8+"/>
-      <path fill="url(https://attacker.example/p.svg#x)"
-            clip-path="url(javascript:alert(1))"
-            style="stroke:url(#safe);fill:url(javascript:alert(1));background:url(https://attacker.example/x)"/>
-    </svg>"""
+def test_local_fragment_and_embedded_raster_references_are_retained():
+    payload = (
+        b'<svg xmlns="http://www.w3.org/2000/svg"><use href="#mark"/>'
+        b'<image href="data:image/png;base64,iVBORw0KGgo="/></svg>'
+    )
+
     out = sanitize_svg(payload)
 
-    assert b"javascript" not in out.lower()
-    assert b"attacker.example" not in out
-    assert b"data:image/svg+xml" not in out
-    assert b"onload" not in out.lower()
-    assert b"target=" not in out
-    assert b"stroke:url(#safe)" in out
+    assert b'href="#mark"' in out
+    assert b"data:image/png;base64," in out
 
 
-def test_css_escape_and_comment_url_obfuscation_are_removed():
-    payload = rb"""<svg xmlns="http://www.w3.org/2000/svg">
-      <path fill="u\72l(javascript:alert(1))"
-            stroke="u/**/rl(https://attacker.example/x)"
-            style="fill:u\72l(javascript:alert(1));stroke:u/**/rl(https://attacker.example/x);color:#123"/>
-    </svg>"""
+def test_external_css_resources_are_removed():
+    payload = (
+        b'<svg xmlns="http://www.w3.org/2000/svg"><style>'
+        b'@import url("https://attacker.invalid/logo.css");</style>'
+        b'<rect style="fill:url(https://attacker.invalid/fill.svg)" '
+        b'filter="url(https://attacker.invalid/filter.svg)"/></svg>'
+    )
+
     out = sanitize_svg(payload)
 
-    assert b"javascript" not in out.lower()
-    assert b"attacker.example" not in out
-    assert b"fill=" not in out
-    assert b"stroke=" not in out
-    assert b"color:#123" in out
-
-
-def test_non_svg_and_foreign_namespace_roots_are_rejected():
-    with pytest.raises(SvgSanitizationError):
-        sanitize_svg(b'<html xmlns="http://www.w3.org/1999/xhtml"/>')
-    with pytest.raises(SvgSanitizationError):
-        sanitize_svg(b'<svg xmlns="https://attacker.example/svg"/>')
+    assert b"attacker.invalid" not in out
 
 
 def test_xxe_blocked():

@@ -420,6 +420,10 @@ def validate_csrf_token(cookie_token: str, header_token: str) -> bool:
 
 def mint_engine_token(
     *,
+    execution_id: str | None = None,
+    solution_id: str | None = None,
+    global_repo_access: bool = False,
+    timeout_seconds: int = 1800,
     organization_id: str | None = None,
     delegated_user_id: str | None = None,
     delegated_email: str = "",
@@ -429,13 +433,18 @@ def mint_engine_token(
     delegated_is_external: bool = False,
 ) -> tuple[str, str]:
     """
-    Mint a long-lived engine token (30 days) parent-side.
+    Mint a short-lived, execution-scoped engine token parent-side.
 
     Called by the consumer (which legitimately holds SECRET_KEY) before
     dispatching an execution.  The returned token and expiry ISO string are
-    placed in context_data and handed to the child via Redis; the child writes
-    them to the credentials file with save_credentials() — no SECRET_KEY
-    required in the child process.
+    placed in context_data and handed to the child over its private work pipe;
+    the child installs the token as process-scoped SDK credentials — no
+    SECRET_KEY or persistent credential write is required there.
+
+    The signed Solution claims are authoritative for internal module-fetch
+    endpoints. A child cannot broaden its source-code scope by changing query
+    parameters. The token lifetime covers the workflow timeout plus five
+    minutes for startup and completion flushing.
 
     Returns:
         (token, expires_at_iso): JWT string and ISO-8601 expiry timestamp.
@@ -446,6 +455,9 @@ def mint_engine_token(
         "name": "Bifrost Engine",
         "is_superuser": True,
         "engine": True,
+        "engine_execution_id": execution_id,
+        "engine_solution_id": solution_id,
+        "engine_global_repo_access": bool(global_repo_access),
     }
     if organization_id is not None:
         token_data["org_id"] = str(organization_id)
@@ -461,8 +473,9 @@ def mint_engine_token(
             }
         )
 
-    expires_at = datetime.now(timezone.utc) + timedelta(days=30)
-    token = create_access_token(token_data, expires_delta=timedelta(days=30))
+    lifetime = timedelta(seconds=max(timeout_seconds, 1) + 300)
+    expires_at = datetime.now(timezone.utc) + lifetime
+    token = create_access_token(token_data, expires_delta=lifetime)
 
     return token, expires_at.isoformat()
 

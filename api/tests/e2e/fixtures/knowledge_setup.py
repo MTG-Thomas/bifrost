@@ -35,6 +35,7 @@ def knowledge_cleanup(
     e2e_client,
     platform_admin,
     org1,
+    org2,
 ) -> Generator[None, None, None]:
     """
     Clean up any knowledge entries after test.
@@ -53,27 +54,28 @@ def knowledge_cleanup(
         "e2e-dedup",
     ]
 
-    for ns in namespaces_to_clean:
-        try:
-            e2e_client.delete(
-                f"/api/sdk/knowledge/namespace/{ns}",
-                headers=platform_admin.headers,
-            )
-        except Exception:
-            pass  # Ignore if no namespace exists
+    # Also issue an unscoped delete for the caller's own organization. The
+    # seeded platform admin belongs to the provider org in the complete suite,
+    # which is distinct from org1 and org2.
+    scopes_to_clean = [None, "global", org1["id"], org2["id"]]
+
+    def clean() -> None:
+        for ns in namespaces_to_clean:
+            for scope in scopes_to_clean:
+                params = {"scope": scope} if scope is not None else None
+                response = e2e_client.delete(
+                    f"/api/sdk/knowledge/namespace/{ns}",
+                    headers=platform_admin.headers,
+                    params=params,
+                )
+                response.raise_for_status()
+
+    clean()
 
     yield
 
     # Clean up after test
-    for ns in namespaces_to_clean:
-        try:
-            e2e_client.delete(
-                f"/api/sdk/knowledge/namespace/{ns}",
-                headers=platform_admin.headers,
-            )
-            logger.info(f"Cleaned up knowledge namespace: {ns}")
-        except Exception:
-            pass  # Ignore cleanup failures
+    clean()
 
 
 @pytest.fixture(scope="function")
@@ -94,10 +96,22 @@ def embedding_config_setup(
     if not embeddings_test_key:
         pytest.skip("EMBEDDINGS_API_TEST_KEY not configured")
 
+    connection_response = e2e_client.post(
+        "/api/admin/ai/connections",
+        json={
+            "name": "Embeddings E2E",
+            "provider": "openai",
+            "api_key": embeddings_test_key,
+        },
+        headers=platform_admin.headers,
+    )
+    assert connection_response.status_code == 201, (
+        f"Failed to configure embedding connection: {connection_response.text}"
+    )
+    connection = connection_response.json()
     config = {
-        "provider": "openai",
+        "connection_id": connection["id"],
         "model": "text-embedding-3-small",
-        "api_key": embeddings_test_key,
     }
 
     # Configure embedding provider
@@ -115,6 +129,10 @@ def embedding_config_setup(
     try:
         e2e_client.delete(
             "/api/admin/llm/embedding-config",
+            headers=platform_admin.headers,
+        )
+        e2e_client.delete(
+            f"/api/admin/ai/connections/{connection['id']}",
             headers=platform_admin.headers,
         )
         logger.info("Cleaned up embedding config")

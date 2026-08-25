@@ -400,8 +400,10 @@ def test_has_credentials_and_thread_local_instance(monkeypatch):
             pass
 
     monkeypatch.setattr(client_mod.httpx, "Client", lambda **kwargs: SyncHTTP())
-    monkeypatch.setattr(client_mod, "get_credentials", lambda **_kwargs: creds)
-    monkeypatch.setattr(client_mod, "is_token_expired", lambda: False)
+    monkeypatch.setattr(
+        client_mod, "get_credentials", lambda *_args, **_kwargs: creds
+    )
+    monkeypatch.setattr(client_mod, "is_token_expired", lambda **_kwargs: False)
 
     assert client_mod.has_credentials() is True
     first = client_mod.BifrostClient.get_instance()

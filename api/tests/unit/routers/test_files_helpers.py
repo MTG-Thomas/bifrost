@@ -805,6 +805,7 @@ async def test_write_file_cloud_records_metadata_and_publishes(monkeypatch):
     monkeypatch.setattr(files, "_lock_file_mutation", lambda *_args, **_kwargs: _async_value(None))
     monkeypatch.setattr("src.core.pubsub.publish_file_change", fake_publish_file_change)
 
+    db = _FakeDb()
     await files.write_file(
         files.FileWriteRequest(
             path="folder/report.txt",
@@ -815,7 +816,7 @@ async def test_write_file_cloud_records_metadata_and_publishes(monkeypatch):
         ),
         _ctx(),
         SimpleNamespace(user_id=USER_ID),
-        db=SimpleNamespace(),
+        db=db,
     )
 
     assert writes == [("folder/report.txt", b"hello", "reports", "user@example.test", str(ORG_A))]
@@ -826,6 +827,7 @@ async def test_write_file_cloud_records_metadata_and_publishes(monkeypatch):
     assert metadata_calls[0]["size_bytes"] == 5
     assert metadata_calls[0]["updated_by"] == "user@example.test"
     assert metadata_calls[0]["org_id"] == ORG_A
+    assert db.commits == 1
     assert publish_calls == [
         {
             "location": "reports",
@@ -870,6 +872,7 @@ async def test_checked_workspace_write_uses_guard_service(
     monkeypatch.setattr("src.core.pubsub.publish_file_change", lambda **_kwargs: _async_value(None))
     monkeypatch.setattr("src.services.workspace_file_impact.WorkspaceFileImpactService", FakeImpactService)
 
+    db = _FakeDb()
     await files.write_file(
         files.FileWriteRequest(
             path="workflows/report.py",
@@ -878,7 +881,7 @@ async def test_checked_workspace_write_uses_guard_service(
         ),
         _ctx(is_superuser=True),
         SimpleNamespace(user_id=USER_ID, is_superuser=True),
-        db=SimpleNamespace(),
+        db=db,
     )
 
     assert guard_calls == ["sha256:" + "a" * 64]
@@ -891,6 +894,7 @@ async def test_checked_workspace_write_uses_guard_service(
             "global",
         )
     ]
+    assert db.commits == 1
 
 
 @pytest.mark.asyncio
@@ -1087,9 +1091,13 @@ async def test_delete_file_cloud_removes_metadata_flushes_and_publishes(monkeypa
     class Db:
         def __init__(self):
             self.flushes = 0
+            self.commits = 0
 
         async def flush(self):
             self.flushes += 1
+
+        async def commit(self):
+            self.commits += 1
 
     async def fake_publish_file_change(**kwargs):
         publish_calls.append(kwargs)
@@ -1132,7 +1140,8 @@ async def test_delete_file_cloud_removes_metadata_flushes_and_publishes(monkeypa
             "solution_id": None,
         }
     ]
-    assert db.flushes == 1
+    assert db.flushes == 0
+    assert db.commits == 1
 
 
 @pytest.mark.asyncio

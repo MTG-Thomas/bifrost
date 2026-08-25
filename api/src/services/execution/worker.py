@@ -2,17 +2,16 @@
 Worker process entry point for isolated execution.
 
 This module runs in a separate process and:
-1. Reads execution context from Redis
+1. Receives execution context from its parent (legacy entry points use Redis)
 2. Runs the workflow/script
 3. Writes logs to Redis Stream (already handled by engine)
-4. Writes result to Redis (including resource metrics)
+4. Returns a result with resource metrics
 5. Exits cleanly (or gets killed on timeout)
 
 The worker imports minimal dependencies to keep memory footprint low.
 
-IMPORTANT: The virtual import hook is installed at module load time
-(before any workspace imports can occur) to enable loading Python
-modules from Redis cache instead of the filesystem.
+IMPORTANT: The virtual import hook is installed for each execution after its
+credentials and source context are active, but before workspace code loads.
 """
 
 from __future__ import annotations
@@ -29,16 +28,31 @@ from typing import Any
 
 from opentelemetry import trace
 
-# Install virtual import hook IMMEDIATELY at module load time.
-# This must happen before any workspace imports (e.g., from shared import ...)
-# The hook intercepts imports and loads modules from Redis cache.
-from src.services.execution.virtual_import import install_virtual_import_hook
 from src.services.execution.draft_limits import enforce_draft_output_limit
-
-install_virtual_import_hook()
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
+
+
+def _set_process_engine_credentials(context_data: dict[str, Any]) -> bool:
+    """Install the handed-down engine token for this one-shot process."""
+    engine_token = context_data.get("engine_token")
+    if not engine_token:
+        return False
+
+    import os
+
+    # The fallback is the private Compose service endpoint. TLS terminates at
+    # the ingress, and this traffic never leaves the container network.
+    api_url = os.getenv("BIFROST_API_URL", "http://api:8000")  # NOSONAR
+    # The SDK's process backend takes precedence over keyring or JSON
+    # persistence and supports refresh-on-401 by updating this tuple. Avoiding
+    # persistence also prevents headless keyring probes from importing optional
+    # DBus/desktop modules through the virtual importer on every execution.
+    os.environ["BIFROST_API_URL"] = api_url
+    os.environ["BIFROST_ACCESS_TOKEN"] = engine_token
+    os.environ["BIFROST_REFRESH_TOKEN"] = engine_token
+    return True
 
 
 @dataclass
@@ -183,27 +197,16 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
     from src.sdk.context import Caller, Organization
     from src.services.execution.engine import ExecutionRequest, execute
     from src.models.enums import ExecutionStatus
-    from bifrost.credentials import is_token_expired, save_credentials
+    from bifrost.credentials import is_token_expired
 
     # Engine credentials: prefer the pre-minted token handed down from the
     # consumer via context_data["engine_token"].  This keeps SECRET_KEY out of
     # the child process entirely.
     # Fall back to authenticate_engine() only for callers (e.g. direct engine
     # tests) that bypass the consumer and do not supply a pre-minted token.
-    engine_token = context_data.get("engine_token")
-    if engine_token:
-        import os
-        scheme = "".join(chr(c) for c in (104, 116, 116, 112))
-        default_api_url = f"{scheme}://api:8000"
-        api_url = os.getenv("BIFROST_API_URL", default_api_url)
-        expires_at = context_data.get("engine_token_expires_at", "")
-        save_credentials(
-            api_url=api_url,
-            access_token=engine_token,
-            refresh_token=engine_token,  # Not used but required by schema
-            expires_at=expires_at,
-        )
-    elif is_token_expired(buffer_seconds=3600):
+    if not _set_process_engine_credentials(context_data) and is_token_expired(
+        buffer_seconds=3600
+    ):
         from src.core.security import authenticate_engine
         authenticate_engine()
 
@@ -251,6 +254,19 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
                 context_data.get("workspace_release_source_hashes") or {}
             ),
         )
+
+    # Install the hook only after this execution's credentials and source root
+    # are active. Importing this module also happens in the API process and in
+    # test collection, where a process-global finder would redirect unrelated
+    # optional imports without an execution-scoped resolver.
+    from src.services.execution.virtual_import import (
+        get_virtual_finder,
+        install_virtual_import_hook,
+        remove_virtual_import_hook,
+    )
+
+    owns_virtual_import_hook = get_virtual_finder() is None
+    install_virtual_import_hook()
 
     span_attributes = {
         "bifrost.execution.id": execution_id,
@@ -477,6 +493,8 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
         clear_solution_context()
         clear_workspace_release_context()
         clear_workspace_generation_context()
+        if owns_virtual_import_hook:
+            remove_virtual_import_hook()
 
 
 async def worker_main(execution_id: str):

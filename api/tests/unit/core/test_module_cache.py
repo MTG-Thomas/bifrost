@@ -956,6 +956,50 @@ class TestKeyPatterns:
 
         assert MODULE_INDEX_KEY == "bifrost:module:index"
 
+
+@pytest.mark.asyncio
+async def test_set_module_invalidates_resolution_cache_for_exact_and_ancestors():
+    from src.core.module_cache import set_module
+
+    class FakeRedisConn:
+        async def get(self, _key):
+            return "generation-1"
+
+        async def set(self, *_args, **_kwargs):
+            return True
+
+        async def sadd(self, *_args):
+            return 1
+
+        async def scan_iter(self, pattern):
+            patterns.append(pattern)
+            for key in [f"cached:{pattern}"]:
+                yield key
+
+        async def delete(self, *keys):
+            deleted.extend(keys)
+            return len(keys)
+
+    class FakeRedis:
+        async def setex(self, *_args):
+            return True
+
+        async def _get_redis(self):
+            return FakeRedisConn()
+
+    patterns: list[str] = []
+    deleted: list[str] = []
+
+    with patch("src.core.module_cache.get_redis_client", return_value=FakeRedis()):
+        await set_module("modules/helpers/tool.py", "VALUE = 1", "hash")
+
+    assert patterns == [
+        "bifrost:module:resolution:*:modules",
+        "bifrost:module:resolution:*:modules.helpers",
+        "bifrost:module:resolution:*:modules.helpers.tool",
+    ]
+    assert deleted == [f"cached:{pattern}" for pattern in patterns]
+
     def test_key_patterns_consistent(self):
         """Verify async and sync modules use same key patterns."""
         from src.core.module_cache import MODULE_INDEX_KEY as ASYNC_INDEX

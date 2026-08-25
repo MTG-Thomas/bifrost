@@ -11,15 +11,12 @@ from src.models.orm.agent_runs import AgentRun
 from src.models.orm.agents import Agent, Conversation
 from src.models.orm.ai_usage import AIUsage
 
-
 MAX_STATS_WINDOW_DAYS = 90
 
 
 def _validated_window_days(window_days: int) -> int:
     if not 1 <= window_days <= MAX_STATS_WINDOW_DAYS:
-        raise ValueError(
-            f"window_days must be between 1 and {MAX_STATS_WINDOW_DAYS}"
-        )
+        raise ValueError(f"window_days must be between 1 and {MAX_STATS_WINDOW_DAYS}")
     return window_days
 
 
@@ -29,60 +26,144 @@ def _to_decimal(value: Decimal | int | None) -> Decimal:
     return value if isinstance(value, Decimal) else Decimal(value)
 
 
-async def _sum_run_cost(db: AsyncSession, runs: list[AgentRun]) -> Decimal:
-    if not runs:
-        return Decimal("0")
-
-    cost_q = select(func.coalesce(func.sum(AIUsage.cost), 0)).where(
-        AIUsage.agent_run_id.in_([r.id for r in runs])
-    )
-    return _to_decimal((await db.execute(cost_q)).scalar())
-
-
-def _build_runs_by_day(
-    runs: list[AgentRun],
-    *,
-    window_days: int,
-    now: datetime,
-) -> list[int]:
-    window_days = _validated_window_days(window_days)
-    buckets = [0] * window_days
-    for run in runs:
-        day_offset = (now - run.created_at).days
-        if 0 <= day_offset < window_days:
-            buckets[window_days - 1 - day_offset] += 1
-    return buckets
-
-
-async def _get_chat_rollup(
-    agent_id: UUID,
+async def get_agent_stats_batch(
+    agent_ids: list[UUID],
     db: AsyncSession,
-    cutoff: datetime,
-) -> tuple[int, Decimal, datetime | None]:
-    chat_count_q = select(func.count(Conversation.id)).where(
-        Conversation.agent_id == agent_id,
-        Conversation.updated_at >= cutoff,
-    )
-    chat_runs_count = (await db.execute(chat_count_q)).scalar() or 0
+    *,
+    window_days: int = 7,
+) -> dict[UUID, AgentStatsResponse]:
+    """Compute the list-card stats for many agents in four bounded queries."""
+    if not agent_ids:
+        return {}
 
-    chat_cost_q = (
-        select(func.coalesce(func.sum(AIUsage.cost), 0))
-        .join(Conversation, Conversation.id == AIUsage.conversation_id)
-        .where(
-            Conversation.agent_id == agent_id,
-            AIUsage.agent_run_id.is_(None),
-            AIUsage.timestamp >= cutoff,
+    window_days = _validated_window_days(window_days)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
+    now = datetime.now(timezone.utc)
+    unique_agent_ids = list(dict.fromkeys(agent_ids))
+
+    runs = (
+        (
+            await db.execute(
+                select(AgentRun).where(
+                    AgentRun.agent_id.in_(unique_agent_ids),
+                    AgentRun.created_at >= cutoff,
+                )
+            )
         )
+        .scalars()
+        .all()
     )
-    chat_cost = _to_decimal((await db.execute(chat_cost_q)).scalar())
 
-    last_chat_q = select(func.max(Conversation.updated_at)).where(
-        Conversation.agent_id == agent_id,
-        Conversation.updated_at >= cutoff,
-    )
-    last_chat_at = (await db.execute(last_chat_q)).scalar()
+    run_ids = [run.id for run in runs]
+    costs_by_agent: dict[UUID, Decimal] = {}
+    if run_ids:
+        cost_rows = (
+            await db.execute(
+                select(
+                    AgentRun.agent_id,
+                    func.coalesce(func.sum(AIUsage.cost), 0),
+                )
+                .join(AIUsage, AIUsage.agent_run_id == AgentRun.id)
+                .where(AgentRun.id.in_(run_ids))
+                .group_by(AgentRun.agent_id)
+            )
+        ).all()
+        costs_by_agent = {
+            agent_id: cost if isinstance(cost, Decimal) else Decimal(cost)
+            for agent_id, cost in cost_rows
+        }
 
-    return chat_runs_count, chat_cost, last_chat_at
+    chat_rows = (
+        await db.execute(
+            select(
+                Conversation.agent_id,
+                func.count(Conversation.id),
+                func.max(Conversation.updated_at),
+            )
+            .where(
+                Conversation.agent_id.in_(unique_agent_ids),
+                Conversation.updated_at >= cutoff,
+            )
+            .group_by(Conversation.agent_id)
+        )
+    ).all()
+    chat_by_agent = {
+        agent_id: (count, last_at) for agent_id, count, last_at in chat_rows
+    }
+
+    chat_cost_rows = (
+        await db.execute(
+            select(
+                Conversation.agent_id,
+                func.coalesce(func.sum(AIUsage.cost), 0),
+            )
+            .join(AIUsage, AIUsage.conversation_id == Conversation.id)
+            .where(
+                Conversation.agent_id.in_(unique_agent_ids),
+                AIUsage.timestamp >= cutoff,
+            )
+            .group_by(Conversation.agent_id)
+        )
+    ).all()
+    chat_costs_by_agent = {
+        agent_id: cost if isinstance(cost, Decimal) else Decimal(cost)
+        for agent_id, cost in chat_cost_rows
+    }
+
+    runs_by_agent: dict[UUID, list[AgentRun]] = {
+        agent_id: [] for agent_id in unique_agent_ids
+    }
+    for run in runs:
+        runs_by_agent[run.agent_id].append(run)
+
+    result: dict[UUID, AgentStatsResponse] = {}
+    for agent_id in unique_agent_ids:
+        agent_runs = runs_by_agent[agent_id]
+        run_count = len(agent_runs)
+        completed = sum(1 for run in agent_runs if run.status == "completed")
+        durations = [
+            run.duration_ms for run in agent_runs if run.duration_ms is not None
+        ]
+        last_run_at = max(
+            (run.created_at for run in agent_runs),
+            default=None,
+        )
+        buckets = [0] * window_days
+        for run in agent_runs:
+            day_offset = (now - run.created_at).days
+            if 0 <= day_offset < window_days:
+                buckets[window_days - 1 - day_offset] += 1
+
+        chat_count, last_chat_at = chat_by_agent.get(agent_id, (0, None))
+        if last_chat_at is not None:
+            last_run_at = (
+                last_chat_at
+                if last_run_at is None
+                else max(last_run_at, last_chat_at)
+            )
+
+        result[agent_id] = AgentStatsResponse(
+            agent_id=agent_id,
+            runs_7d=run_count + chat_count,
+            success_rate=(completed / run_count) if run_count else 0.0,
+            avg_duration_ms=(
+                int(sum(durations) / len(durations)) if durations else 0
+            ),
+            total_cost_7d=(
+                costs_by_agent.get(agent_id, Decimal("0"))
+                + chat_costs_by_agent.get(agent_id, Decimal("0"))
+            ),
+            last_run_at=last_run_at,
+            runs_by_day=buckets,
+            needs_review=sum(1 for run in agent_runs if run.verdict == "down"),
+            unreviewed=sum(
+                1
+                for run in agent_runs
+                if run.verdict is None and run.status == "completed"
+            ),
+        )
+
+    return result
 
 
 async def get_agent_stats(
@@ -110,58 +191,13 @@ async def get_agent_stats(
     ``AgentRun`` only — the deferred "tuning + chat conversations"
     follow-up will revisit those.
     """
-    window_days = _validated_window_days(window_days)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
-    runs_q = select(AgentRun).where(
-        AgentRun.agent_id == agent_id,
-        AgentRun.created_at >= cutoff,
-    )
-    runs = (await db.execute(runs_q)).scalars().all()
-
-    runs_count = len(runs)
-    completed = [r for r in runs if r.status == "completed"]
-    success_rate = (len(completed) / runs_count) if runs_count else 0.0
-    durations = [r.duration_ms for r in runs if r.duration_ms is not None]
-    avg_duration_ms = int(sum(durations) / len(durations)) if durations else 0
-
-    last_run_at = max((r.created_at for r in runs), default=None)
-
-    buckets = _build_runs_by_day(
-        runs,
-        window_days=window_days,
-        now=datetime.now(timezone.utc),
-    )
-
-    # Chat-channel rollup. Both queries hit ix_conversations_agent_id +
-    # ix_ai_usage_conversation; the cost query also benefits from
-    # ix_ai_usage_timestamp.
-    chat_runs_count, chat_cost, last_chat_at = await _get_chat_rollup(
-        agent_id,
-        db,
-        cutoff,
-    )
-
-    runs_count += chat_runs_count
-    total_cost_decimal = await _sum_run_cost(db, runs)
-    total_cost_decimal += chat_cost
-    if last_chat_at is not None:
-        last_run_at = (
-            last_chat_at if last_run_at is None else max(last_run_at, last_chat_at)
+    return (
+        await get_agent_stats_batch(
+            [agent_id],
+            db,
+            window_days=window_days,
         )
-
-    return AgentStatsResponse(
-        agent_id=agent_id,
-        runs_7d=runs_count,
-        success_rate=success_rate,
-        avg_duration_ms=avg_duration_ms,
-        total_cost_7d=total_cost_decimal,
-        last_run_at=last_run_at,
-        runs_by_day=buckets,
-        needs_review=sum(1 for r in runs if r.verdict == "down"),
-        unreviewed=sum(
-            1 for r in runs if r.verdict is None and r.status == "completed"
-        ),
-    )
+    )[agent_id]
 
 
 async def get_fleet_stats(

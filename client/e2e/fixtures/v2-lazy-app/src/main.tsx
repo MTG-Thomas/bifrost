@@ -1,9 +1,11 @@
 import { lazy, Suspense } from "react";
 import { createRoot } from "react-dom/client";
+import { BrowserRouter, Link, Route, Routes } from "react-router";
 
 import "./style.css";
 
 export const sharedLabel = "Lazy chunk rendered";
+const buildLabel = import.meta.env.VITE_ASSET_FIXTURE ?? "default";
 
 interface Bootstrap {
 	basename: string;
@@ -41,12 +43,33 @@ const LazyPage = lazy(() => import("./LazyPage"));
 
 function FixtureApp({ bootstrap }: { bootstrap: Bootstrap }) {
 	return (
-		<main>
-			<p data-testid="fixture-basename">{bootstrap.basename}</p>
-			<Suspense fallback={<p>Loading lazy chunk…</p>}>
-				<LazyPage />
-			</Suspense>
-		</main>
+		<BrowserRouter basename={bootstrap.basename}>
+			<Routes>
+				<Route
+					path="/"
+					element={
+						<main>
+							<p data-testid="fixture-build">{buildLabel}</p>
+							<p data-testid="fixture-basename">
+								{bootstrap.basename}
+							</p>
+							<Link to="/details" data-testid="v2-internal-route">
+								Open details
+							</Link>
+							<Suspense fallback={<p>Loading lazy chunk…</p>}>
+								<LazyPage />
+							</Suspense>
+						</main>
+					}
+				/>
+				<Route
+					path="/details"
+					element={
+						<main data-testid="v2-details">Details rendered</main>
+					}
+				/>
+			</Routes>
+		</BrowserRouter>
 	);
 }
 

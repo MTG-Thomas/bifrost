@@ -10,6 +10,24 @@ from src.models.contracts.base import (
     generate_entity_id,
 )
 
+from src.models.contracts.ai_models import (
+    AIConnectionTestResponse,
+    AIModelAssignmentKey,
+    AIModelAssignmentResponse,
+    AIModelAssignmentUpdate,
+    AIModelProfileCreate,
+    AIModelProfileMergeRequest,
+    AIModelProfileMergeResponse,
+    AIModelProfileResponse,
+    AIModelProfileUpdate,
+    AIModelsResponse,
+    AIProviderConnectionCreate,
+    AIProviderConnectionResponse,
+    AIProviderConnectionSummary,
+    AIProviderConnectionUpdate,
+    AIProviderKind,
+)
+
 # Organizations
 from src.models.contracts.organizations import (
     CreateOrganizationRequest,
@@ -509,15 +527,6 @@ from src.models.contracts.notifications import (
     NotificationStatus,
     NotificationUpdate,
     UploadLockInfo,
-)
-
-# LLM Configuration
-from src.models.contracts.llm import (
-    LLMConfigRequest,
-    LLMConfigResponse,
-    LLMModelsResponse,
-    LLMTestRequest,
-    LLMTestResponse,
 )
 
 # External MCP client (server template + per-org connection + tool catalog)
@@ -1028,12 +1037,6 @@ __all__ = [
     "MemoryUserSettingsUpdate",
     "RequiredInstructionsResponse",
     "RequiredInstructionsSettings",
-    # LLM Configuration
-    "LLMConfigRequest",
-    "LLMConfigResponse",
-    "LLMTestRequest",
-    "LLMTestResponse",
-    "LLMModelsResponse",
     # External MCP client
     "MCPServerCreate",
     "MCPServerUpdate",
@@ -1175,4 +1178,20 @@ __all__ = [
     "BulkExportRequest",
     "ImportResult",
     "ImportResultItem",
+    # AI Model Settings
+    "AIConnectionTestResponse",
+    "AIModelAssignmentKey",
+    "AIModelAssignmentResponse",
+    "AIModelAssignmentUpdate",
+    "AIModelProfileCreate",
+    "AIModelProfileMergeRequest",
+    "AIModelProfileMergeResponse",
+    "AIModelProfileResponse",
+    "AIModelProfileUpdate",
+    "AIModelsResponse",
+    "AIProviderConnectionCreate",
+    "AIProviderConnectionResponse",
+    "AIProviderConnectionSummary",
+    "AIProviderConnectionUpdate",
+    "AIProviderKind",
 ]

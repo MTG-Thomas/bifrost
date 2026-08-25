@@ -43,6 +43,7 @@ class TestSchedulerDiagnostics:
         tasks = {task["task_id"]: task for task in body["tasks"]}
         expected = {
             "schedule_processor",
+            "logo_thumbnail_backfill",
             "deferred_execution_promoter",
             "execution_cleanup",
             "oauth_token_refresh",
@@ -53,6 +54,7 @@ class TestSchedulerDiagnostics:
             "solution_update_check",
             "solution_export_job_cleanup",
             "workspace_promotion_draft_cleanup",
+            "workspace_release_accountability",
             "mcp_operation_receipt_cleanup",
             "event_cleanup",
             "stuck_event_cleanup",
@@ -60,6 +62,7 @@ class TestSchedulerDiagnostics:
             "worker_metrics_cleanup",
             "scheduler_diagnostics_cleanup",
             "summary_backfill_reconciliation",
+            "artifact_retention_cleanup",
         }
         assert set(tasks) == expected
         for task_id in (
@@ -70,6 +73,7 @@ class TestSchedulerDiagnostics:
         ):
             assert tasks[task_id]["execution_mode"] == "durable_job"
             assert tasks[task_id]["last_run"]["status"] == "enqueued"
+        assert tasks["artifact_retention_cleanup"]["execution_mode"] == "durable_job"
         deadline = time.monotonic() + 20
         history = {}
         while time.monotonic() < deadline:

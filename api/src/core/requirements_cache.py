@@ -81,7 +81,10 @@ def get_requirements_sync() -> str | None:
     Returns:
         Requirements content string, or None if not found
     """
-    from src.core.module_cache_sync import _get_sync_redis
+    from src.core.module_cache_sync import (
+        _fetch_requirements_from_api,
+        _get_sync_redis,
+    )
 
     try:
         client = _get_sync_redis()
@@ -93,8 +96,26 @@ def get_requirements_sync() -> str | None:
                 return content
             return None
 
-        # Redis miss — fall back to the configured object storage provider.
-        logger.info("[requirements] Redis cache empty, falling back to object storage")
+        logger.info("[requirements] Redis cache empty, trying API endpoint")
+        api_authoritative, api_content = _fetch_requirements_from_api()
+        if api_authoritative:
+            try:
+                normalized_content = api_content or ""
+                content_hash = hashlib.sha256(normalized_content.encode()).hexdigest()
+                cached_data = CachedRequirements(
+                    content=normalized_content,
+                    hash=content_hash,
+                )
+                client.setex(
+                    REQUIREMENTS_KEY,
+                    REQUIREMENTS_CACHE_TTL,
+                    json.dumps(cached_data),
+                )
+            except Exception as e:
+                logger.warning(f"[requirements] Failed to re-cache to Redis: {e}")
+            return api_content if api_content and api_content.strip() else None
+
+        logger.info("[requirements] API unavailable, falling back to object storage")
         content = _read_requirements_from_object_storage()
         if not content:
             return None

@@ -16,6 +16,7 @@ sys.modules.setdefault(
     ),
 )
 
+from src.jobs.consumers import workflow_execution  # noqa: E402
 from src.jobs.consumers.workflow_execution import WorkflowExecutionConsumer, workflow_prefetch_count  # noqa: E402
 from src.jobs.rabbitmq import (  # noqa: E402
     DomainFailureHandled,
@@ -300,8 +301,8 @@ async def test_process_message_records_cancelled_before_start_for_sync_execution
             "src.services.execution.queue_tracker.remove_from_queue",
             new_callable=AsyncMock,
         ) as remove_from_queue,
-        patch("src.repositories.executions.create_execution", new_callable=AsyncMock) as create_execution,
-        patch("src.repositories.executions.update_execution", new_callable=AsyncMock) as update_execution,
+        patch.object(workflow_execution, "create_execution", new_callable=AsyncMock) as create_execution,
+        patch.object(workflow_execution, "update_execution", new_callable=AsyncMock) as update_execution,
         patch(
             "src.jobs.consumers.workflow_execution.publish_execution_update",
             new_callable=AsyncMock,
@@ -354,8 +355,8 @@ async def test_process_message_retries_pool_admission_memory_pressure_without_de
             "src.services.execution.queue_tracker.remove_from_queue",
             new_callable=AsyncMock,
         ),
-        patch("src.repositories.executions.create_execution", new_callable=AsyncMock) as create_execution,
-        patch("src.repositories.executions.update_execution", new_callable=AsyncMock) as update_execution,
+        patch.object(workflow_execution, "create_execution", new_callable=AsyncMock) as create_execution,
+        patch.object(workflow_execution, "update_execution", new_callable=AsyncMock) as update_execution,
         patch(
             "src.jobs.consumers.workflow_execution.publish_execution_update",
             new_callable=AsyncMock,
@@ -444,7 +445,7 @@ async def test_workspace_release_routes_with_verified_immutable_duration_bound()
             "src.services.execution.queue_tracker.remove_from_queue",
             new_callable=AsyncMock,
         ),
-        patch("src.core.database.get_db_context", side_effect=db_context),
+        patch.object(workflow_execution, "get_db_context", side_effect=db_context),
         patch(
             "src.services.workspace_release_runtime.resolve_pinned_workspace_runtime",
             new=AsyncMock(return_value=pinned),
@@ -456,9 +457,8 @@ async def test_workspace_release_routes_with_verified_immutable_duration_bound()
             "src.services.workspace_release_runtime.workflow_data_from_workspace_evidence",
             return_value=workflow_data,
         ),
-        patch(
-            "src.repositories.executions.create_execution", new_callable=AsyncMock
-        ),
+        patch.object(workflow_execution, "create_execution", new_callable=AsyncMock),
+        patch.object(workflow_execution, "update_execution", new_callable=AsyncMock),
         patch(
             "src.jobs.consumers.workflow_execution.publish_execution_update",
             new_callable=AsyncMock,
@@ -534,8 +534,8 @@ async def test_process_message_acknowledges_recorded_setup_failure_as_domain_han
             "src.services.execution.queue_tracker.remove_from_queue",
             new_callable=AsyncMock,
         ),
-        patch("src.repositories.executions.create_execution", new_callable=AsyncMock),
-        patch("src.repositories.executions.update_execution", new_callable=AsyncMock) as update_execution,
+        patch.object(workflow_execution, "create_execution", new_callable=AsyncMock),
+        patch.object(workflow_execution, "update_execution", new_callable=AsyncMock) as update_execution,
         patch(
             "src.jobs.consumers.workflow_execution.publish_execution_update",
             new_callable=AsyncMock,
@@ -588,8 +588,9 @@ async def test_process_success_updates_storage_metrics_pubsub_and_sync_result() 
 
     with (
         patch("src.core.database.get_session_factory", return_value=_session_factory(session)),
-        patch(
-            "src.repositories.executions.update_execution",
+        patch.object(
+            workflow_execution,
+            "update_execution",
             new_callable=AsyncMock,
             return_value=ExecutionStatus.SUCCESS,
         ) as update_execution,
@@ -622,9 +623,9 @@ async def test_process_success_updates_storage_metrics_pubsub_and_sync_result() 
     assert update_execution.await_args.kwargs["result"] == {"ok": True}
     assert update_execution.await_args.kwargs["time_saved"] == 4
     assert update_execution.await_args.kwargs["value"] == 12.5
-    update_delivery.assert_awaited_once_with(execution_id, "Success", session=session)
+    update_delivery.assert_not_awaited()
     flush_changes.assert_awaited_once_with(execution_id, session=session)
-    flush_logs.assert_awaited_once_with(execution_id, session=session)
+    flush_logs.assert_not_awaited()
     update_daily_metrics.assert_awaited_once()
     assert update_daily_metrics.await_args.kwargs["peak_memory_bytes"] == 10
     update_workflow_roi_daily.assert_awaited_once_with(
@@ -635,7 +636,7 @@ async def test_process_success_updates_storage_metrics_pubsub_and_sync_result() 
         value=12.5,
         db=session,
     )
-    session.commit.assert_awaited_once()
+    assert session.commit.await_count == 2
     publish_execution_update.assert_awaited_once_with(
         execution_id,
         "Success",
@@ -683,8 +684,9 @@ async def test_process_failure_maps_cancelled_status_and_emits_failure_event() -
 
     with (
         patch("src.core.database.get_session_factory", return_value=_session_factory(session)),
-        patch(
-            "src.repositories.executions.update_execution",
+        patch.object(
+            workflow_execution,
+            "update_execution",
             new_callable=AsyncMock,
             return_value=ExecutionStatus.CANCELLED,
         ) as update_execution,
@@ -732,10 +734,14 @@ async def test_process_failure_maps_cancelled_status_and_emits_failure_event() -
         org_id="org-1",
         status="Cancelled",
         duration_ms=50,
+        peak_memory_bytes=None,
+        cpu_total_seconds=None,
+        time_saved=0,
+        value=0.0,
         workflow_id="wf-1",
         db=session,
     )
-    session.commit.assert_awaited_once()
+    assert session.commit.await_count == 2
     assert call_order[:2] == ["commit", "push_result"]
     assert call_order.index("push_result") < call_order.index("publish_execution")
     assert call_order.index("push_result") < call_order.index("publish_history")

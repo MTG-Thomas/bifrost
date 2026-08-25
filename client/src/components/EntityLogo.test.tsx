@@ -1,6 +1,7 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect } from "vitest";
 import { EntityLogo } from "./EntityLogo";
+import { bumpEntityLogo } from "./entityLogoVersions";
 
 describe("EntityLogo", () => {
 	it("renders an img tag pointing at the entity logo endpoint", () => {
@@ -63,6 +64,37 @@ describe("EntityLogo", () => {
 		expect(img.getAttribute("src")).toBe(dataUrl);
 	});
 
+	it("crossfades a fetched logo over its fallback", () => {
+		render(
+			<EntityLogo
+				entityType="app"
+				entityId="11111111-1111-1111-1111-111111111111"
+				logo="/images/app-logo.png"
+				fallback={<span data-testid="fallback">F</span>}
+				size={32}
+			/>,
+		);
+		const img = screen.getByTestId("entity-logo");
+		expect(img).toHaveClass("opacity-0");
+		expect(screen.getByTestId("fallback")).toBeInTheDocument();
+		fireEvent.load(img);
+		expect(img).toHaveClass("opacity-100");
+	});
+
+	it("falls back when a list-provided logo URL fails", () => {
+		render(
+			<EntityLogo
+				entityType="agent"
+				entityId="22222222-2222-2222-2222-222222222222"
+				logo="/api/agents/22222222-2222-2222-2222-222222222222/logo"
+				fallback={<span data-testid="fallback">F</span>}
+				size={32}
+			/>,
+		);
+		fireEvent.error(screen.getByTestId("entity-logo"));
+		expect(screen.getByTestId("fallback")).toBeInTheDocument();
+	});
+
 	it("renders fallback without making any request when logo is explicitly null", () => {
 		render(
 			<EntityLogo
@@ -75,6 +107,26 @@ describe("EntityLogo", () => {
 		);
 		expect(screen.getByTestId("fallback")).toBeInTheDocument();
 		expect(screen.queryByTestId("entity-logo")).toBeNull();
+	});
+
+	it("uses an upload version even when a cached list entry still reports no logo", () => {
+		const entityId = "33333333-3333-3333-3333-333333333333";
+		bumpEntityLogo("agent", entityId);
+		render(
+			<EntityLogo
+				entityType="agent"
+				entityId={entityId}
+				logo={null}
+				fallback={<span data-testid="fallback">F</span>}
+				size={32}
+			/>,
+		);
+		expect(screen.getByTestId("entity-logo")).toHaveAttribute(
+			"src",
+			expect.stringMatching(
+				/^\/api\/agents\/33333333-3333-3333-3333-333333333333\/logo\?v=\d+$/,
+			),
+		);
 	});
 
 	it("appends cacheKey to bust browser cache", () => {

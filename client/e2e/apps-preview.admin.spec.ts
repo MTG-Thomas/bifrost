@@ -25,11 +25,26 @@ const UNIQUE = `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
 const APP_SLUG = `e2e-preview-${UNIQUE}`;
 const APP_NAME = `E2E Preview ${UNIQUE}`;
 
-const LAYOUT_TSX = `import { Outlet } from "react-router-dom";
+const LAYOUT_TSX = `import { useRef } from "react";
+import { Outlet } from "react-router-dom";
 export default function Layout() {
-	return <Outlet />;
+	const instanceId = useRef(crypto.randomUUID());
+	return (
+		<div
+			className="route-style-sentinel"
+			data-testid="app-layout"
+			data-instance-id={instanceId.current}
+		>
+			<Outlet />
+		</div>
+	);
 }
 `;
+
+const STYLES_CSS = `.route-style-sentinel {
+	padding: 37px;
+	background-color: rgb(12 34 56);
+}`;
 
 const indexTsx = (heading: string) => `import { Link } from "bifrost";
 import { useLocation } from "react-router-dom";
@@ -110,6 +125,7 @@ test.describe("Apps Preview", () => {
 			[`apps/${APP_SLUG}/_layout.tsx`, LAYOUT_TSX],
 			[`apps/${APP_SLUG}/pages/index.tsx`, indexTsx("HELLO V1")],
 			[`apps/${APP_SLUG}/pages/other.tsx`, OTHER_TSX],
+			[`apps/${APP_SLUG}/styles.css`, STYLES_CSS],
 		] as const) {
 			const writeResp = await api.post("/api/files/write", {
 				data: writeBody(relPath, source),
@@ -125,78 +141,145 @@ test.describe("Apps Preview", () => {
 		if (appId) await api.delete(`/api/applications/${appId}`);
 	});
 
-	test("hot-reloads preview on push, navigates pages, and publishes to live", async ({
-		page,
-		api,
-	}) => {
-		const tracker = trackPageErrors(page);
+	test(
+		"hot-reloads preview on push, navigates pages, and publishes to live",
+		{ tag: "@smoke" },
+		async ({ page, api }) => {
+			const tracker = trackPageErrors(page);
 
-		// --- Step 1: preview shows V1 ---
-		await page.goto(`/apps/${APP_SLUG}/preview`);
-		await expect(page.getByTestId("demo-heading")).toHaveText("HELLO V1", {
-			timeout: 15_000,
-		});
-		await expect(page.getByTestId("location-path")).toHaveText("/");
+			// --- Step 1: preview shows V1 ---
+			await page.goto(`/apps/${APP_SLUG}/preview`);
+			await expect(page.getByTestId("demo-heading")).toHaveText(
+				"HELLO V1",
+				{
+					timeout: 15_000,
+				},
+			);
+			await expect(page.getByTestId("location-path")).toHaveText("/");
+			await expect(page.getByTestId("app-layout")).toHaveCSS(
+				"padding-top",
+				"37px",
+			);
 
-		// --- Step 2: push V2, preview updates WITHOUT reload ---
-		const writeResp = await api.post("/api/files/write", {
-			data: writeBody(
-				`apps/${APP_SLUG}/pages/index.tsx`,
-				indexTsx("HELLO V2"),
-			),
-		});
-		expect(writeResp.ok(), await writeResp.text()).toBe(true);
+			// --- Step 2: push V2, preview updates WITHOUT reload ---
+			const writeResp = await api.post("/api/files/write", {
+				data: writeBody(
+					`apps/${APP_SLUG}/pages/index.tsx`,
+					indexTsx("HELLO V2"),
+				),
+			});
+			expect(writeResp.ok(), await writeResp.text()).toBe(true);
 
-		await expect(page.getByTestId("demo-heading")).toHaveText("HELLO V2", {
-			timeout: 15_000,
-		});
-		await expect(page.getByTestId("location-path")).toHaveText("/");
+			await expect(page.getByTestId("demo-heading")).toHaveText(
+				"HELLO V2",
+				{
+					timeout: 15_000,
+				},
+			);
+			await expect(page.getByTestId("location-path")).toHaveText("/");
 
-		// --- Step 3: navigate to /other via in-app Link, then back ---
-		await page.getByTestId("to-other").click();
-		await expect(page).toHaveURL(
-			new RegExp(`/apps/${APP_SLUG}/preview/other/?$`),
-		);
-		await expect(page.getByTestId("other-heading")).toHaveText(
-			"OTHER PAGE",
-		);
-		await expect(page.getByTestId("location-path")).toHaveText("/other");
+			// --- Step 3: navigate without remounting the app or detaching its CSS ---
+			const layoutInstanceId = await page
+				.getByTestId("app-layout")
+				.getAttribute("data-instance-id");
+			await page.evaluate(() => {
+				const stylesheet = document.querySelector<HTMLLinkElement>(
+					'link[data-bifrost-bundle="true"]',
+				);
+				if (!stylesheet)
+					throw new Error("V1 bundle stylesheet was not mounted");
+				const continuity = { stylesheet, removed: false };
+				new MutationObserver(() => {
+					if (!stylesheet.isConnected) continuity.removed = true;
+				}).observe(document.head, { childList: true });
+				(
+					window as typeof window & {
+						__v1CssContinuity?: typeof continuity;
+					}
+				).__v1CssContinuity = continuity;
+			});
 
-		await page.getByTestId("to-home").click();
-		await expect(page).toHaveURL(
-			new RegExp(`/apps/${APP_SLUG}/preview/?$`),
-		);
-		await expect(page.getByTestId("demo-heading")).toHaveText("HELLO V2");
-		await expect(page.getByTestId("location-path")).toHaveText("/");
+			await page.getByTestId("to-other").click();
+			await expect(page).toHaveURL(
+				new RegExp(`/apps/${APP_SLUG}/preview/other/?$`),
+			);
+			await expect(page.getByTestId("other-heading")).toHaveText(
+				"OTHER PAGE",
+			);
+			await expect(page.getByTestId("location-path")).toHaveText(
+				"/other",
+			);
+			await expect(page.getByTestId("app-layout")).toHaveAttribute(
+				"data-instance-id",
+				layoutInstanceId!,
+			);
+			await expect(page.getByTestId("app-layout")).toHaveCSS(
+				"padding-top",
+				"37px",
+			);
+			expect(
+				await page.evaluate(() => {
+					const continuity = (
+						window as typeof window & {
+							__v1CssContinuity?: {
+								stylesheet: HTMLLinkElement;
+								removed: boolean;
+							};
+						}
+					).__v1CssContinuity;
+					return {
+						removed: continuity?.removed,
+						sameStylesheet:
+							document.querySelector(
+								'link[data-bifrost-bundle="true"]',
+							) === continuity?.stylesheet,
+					};
+				}),
+			).toEqual({ removed: false, sameStylesheet: true });
 
-		// No console errors / pageerrors during the hot-reload + navigation
-		// flow. This also catches "provider context missing" regressions, which
-		// surface as console.error from React but don't throw.
-		expect(tracker.errors, tracker.errors.join("\n")).toEqual([]);
+			await page.getByTestId("to-home").click();
+			await expect(page).toHaveURL(
+				new RegExp(`/apps/${APP_SLUG}/preview/?$`),
+			);
+			await expect(page.getByTestId("demo-heading")).toHaveText(
+				"HELLO V2",
+			);
+			await expect(page.getByTestId("location-path")).toHaveText("/");
 
-		// --- Step 4: publish, live path shows V2 ---
-		await publishAppAndWait(api, appId);
+			// No console errors / pageerrors during the hot-reload + navigation
+			// flow. This also catches "provider context missing" regressions, which
+			// surface as console.error from React but don't throw.
+			expect(tracker.errors, tracker.errors.join("\n")).toEqual([]);
 
-		// Reset the tracker before the next navigation so prior-step noise
-		// doesn't cross-contaminate the live-path assertion.
-		tracker.errors.length = 0;
+			// --- Step 4: publish, live path shows V2 ---
+			await publishAppAndWait(api, appId);
 
-		await page.goto(`/apps/${APP_SLUG}`);
-		await expect(page.getByTestId("demo-heading")).toHaveText("HELLO V2", {
-			timeout: 15_000,
-		});
-		await expect(page.getByTestId("location-path")).toHaveText("/");
+			// Reset the tracker before the next navigation so prior-step noise
+			// doesn't cross-contaminate the live-path assertion.
+			tracker.errors.length = 0;
 
-		// Also verify navigation works in live mode.
-		await page.getByTestId("to-other").click();
-		await expect(page).toHaveURL(
-			new RegExp(`/apps/${APP_SLUG}/other/?$`),
-		);
-		await expect(page.getByTestId("other-heading")).toHaveText(
-			"OTHER PAGE",
-		);
-		await expect(page.getByTestId("location-path")).toHaveText("/other");
+			await page.goto(`/apps/${APP_SLUG}`);
+			await expect(page.getByTestId("demo-heading")).toHaveText(
+				"HELLO V2",
+				{
+					timeout: 15_000,
+				},
+			);
+			await expect(page.getByTestId("location-path")).toHaveText("/");
 
-		expect(tracker.errors, tracker.errors.join("\n")).toEqual([]);
-	});
+			// Also verify navigation works in live mode.
+			await page.getByTestId("to-other").click();
+			await expect(page).toHaveURL(
+				new RegExp(`/apps/${APP_SLUG}/other/?$`),
+			);
+			await expect(page.getByTestId("other-heading")).toHaveText(
+				"OTHER PAGE",
+			);
+			await expect(page.getByTestId("location-path")).toHaveText(
+				"/other",
+			);
+
+			expect(tracker.errors, tracker.errors.join("\n")).toEqual([]);
+		},
+	);
 });

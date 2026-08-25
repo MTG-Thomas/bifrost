@@ -292,7 +292,7 @@ async def test_route_execution_records_success_and_sends_execution_id(monkeypatc
     pool._started = True
     pool._template = SimpleNamespace(is_alive=lambda: True)
     handle = _handle(execution_id=None)
-    sent: list[str] = []
+    sent: list[tuple[str, dict[str, object]]] = []
     handle.work_queue = SimpleNamespace(put_nowait=sent.append)
 
     monkeypatch.setattr(
@@ -303,6 +303,7 @@ async def test_route_execution_records_success_and_sends_execution_id(monkeypatc
     monkeypatch.setattr(process_pool, "has_sufficient_memory_cgroup", lambda threshold: True)
     pool._write_context_to_redis = AsyncMock()
     pool._fork_process = lambda: handle
+    pool._register_result_reader = Mock()
 
     await pool.route_execution("exec-route", {"timeout_seconds": 12})
 
@@ -310,7 +311,7 @@ async def test_route_execution_records_success_and_sends_execution_id(monkeypatc
         "exec-route",
         {"timeout_seconds": 12},
     )
-    assert sent == ["exec-route"]
+    assert sent == [("exec-route", {"timeout_seconds": 12})]
     assert handle.current_execution is not None
     assert handle.current_execution.execution_id == "exec-route"
     assert handle.current_execution.timeout_seconds == 12
@@ -382,6 +383,7 @@ async def test_route_fork_is_atomic_with_generation_recycle(monkeypatch):
 
     pool._write_context_to_redis = write_context  # type: ignore[method-assign]
     pool._fork_process = fork_process  # type: ignore[method-assign]
+    pool._register_result_reader = Mock()
     monkeypatch.setattr(
         process_pool,
         "get_settings",
@@ -434,6 +436,7 @@ async def test_normal_drain_waits_for_newly_forked_execution(monkeypatch):
         return handle
 
     pool._fork_process = fork_process  # type: ignore[method-assign]
+    pool._register_result_reader = Mock()
     monkeypatch.setattr(
         process_pool,
         "get_settings",
@@ -491,6 +494,7 @@ async def test_route_heals_dead_template_left_by_failed_restart(monkeypatch):
 
     pool._start_template = AsyncMock(side_effect=start_replacement)
     pool._fork_process = fork_process  # type: ignore[method-assign]
+    pool._register_result_reader = Mock()
     monkeypatch.setattr(
         process_pool,
         "get_settings",

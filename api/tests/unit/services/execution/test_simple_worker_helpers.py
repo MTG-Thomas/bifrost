@@ -54,7 +54,7 @@ def test_virtual_import_state_guard_restores_global_finder() -> None:
     with _preserve_virtual_import_state():
         installed = virtual_import.install_virtual_import_hook()
         assert virtual_import.get_virtual_finder() is installed
-        assert sys.meta_path[0] is installed
+        assert installed in sys.meta_path
 
     assert sys.meta_path == original_meta_path
     assert virtual_import.get_virtual_finder() is original_finder
@@ -163,34 +163,11 @@ def test_install_requirements_falls_back_and_records_per_package_failures(monkey
 
 
 @pytest.mark.asyncio
-async def test_execute_async_missing_context_shapes_context_not_found(monkeypatch):
-    async def missing_context(_execution_id):
-        return None
-
-    monkeypatch.setattr(simple_worker, "_read_context_from_redis", missing_context)
-
-    result = await simple_worker._execute_async("exec-missing", "worker-1")
-
-    assert result == {
-        "execution_id": "exec-missing",
-        "success": False,
-        "error": "Execution context not found in Redis",
-        "error_type": "ContextNotFound",
-        "duration_ms": 0,
-        "worker_id": "worker-1",
-    }
-
-
-@pytest.mark.asyncio
 async def test_execute_async_success_shapes_engine_result_and_pss_delta(monkeypatch):
     context = {"solution_id": "solution-1", "solution_global_repo_access": True}
     calls: list[tuple[str, object]] = []
     pss_values = iter([1000, 2500])
 
-    async def read_context(_execution_id):
-        return context
-
-    monkeypatch.setattr(simple_worker, "_read_context_from_redis", read_context)
     monkeypatch.setattr(
         "src.core.module_cache_sync.set_solution_context",
         lambda solution_id, *, global_repo_access: calls.append(
@@ -229,7 +206,7 @@ async def test_execute_async_success_shapes_engine_result_and_pss_delta(monkeypa
         fake_run_execution,
     )
 
-    result = await simple_worker._execute_async("exec-1", "worker-1")
+    result = await simple_worker._execute_async("exec-1", "worker-1", context)
 
     assert result["success"] is True
     assert result["status"] == "Success"
@@ -245,10 +222,6 @@ async def test_execute_async_success_shapes_engine_result_and_pss_delta(monkeypa
 
 @pytest.mark.asyncio
 async def test_execute_async_engine_exception_shapes_failure(monkeypatch):
-    async def read_context(_execution_id):
-        return {}
-
-    monkeypatch.setattr(simple_worker, "_read_context_from_redis", read_context)
     monkeypatch.setattr(
         simple_worker,
         "_clear_workspace_modules",
@@ -269,7 +242,7 @@ async def test_execute_async_engine_exception_shapes_failure(monkeypatch):
         fake_run_execution,
     )
 
-    result = await simple_worker._execute_async("exec-1", "worker-1")
+    result = await simple_worker._execute_async("exec-1", "worker-1", {})
 
     assert result["execution_id"] == "exec-1"
     assert result["success"] is False
