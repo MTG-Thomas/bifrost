@@ -11,6 +11,9 @@ The implementation uses a targeted resolver to identify workspace-owned imports:
 
 import importlib
 import sys
+import sysconfig
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
@@ -629,7 +632,9 @@ class TestIntegration:
             ]:
                 sys.modules.pop(loaded, None)
 
-    def test_installed_dependency_optional_import_preserves_importerror(self, tmp_path):
+    def test_installed_dependency_optional_import_preserves_importerror(
+        self, tmp_path, monkeypatch
+    ):
         """A resolver outage must not break a dependency's optional import probe."""
         package_name = "virtual_optional_dependency"
         optional_name = "virtual_optional_dependency_companion"
@@ -640,7 +645,7 @@ class TestIntegration:
             f"try:\n    import {optional_name}\nexcept ImportError:\n"
             "    OPTIONAL_AVAILABLE = False\n"
         )
-        sys.path.insert(0, str(installed_dir))
+        monkeypatch.syspath_prepend(str(installed_dir))
         install_virtual_import_hook()
 
         try:
@@ -653,8 +658,39 @@ class TestIntegration:
             assert module.OPTIONAL_AVAILABLE is False
             resolver.assert_called_once_with(optional_name)
         finally:
-            sys.path.remove(str(installed_dir))
             sys.modules.pop(package_name, None)
+            sys.modules.pop(optional_name, None)
+
+    def test_stdlib_optional_import_preserves_importerror(self):
+        """A resolver outage must not break a stdlib optional import probe."""
+        optional_name = "virtual_stdlib_optional_companion"
+        module_name = "virtual_stdlib_optional_probe"
+        filename = str(Path(sysconfig.get_path("stdlib")) / f"{module_name}.py")
+        namespace = {
+            "__name__": module_name,
+            "__file__": filename,
+            "__loader__": SourceFileLoader(module_name, filename),
+        }
+        install_virtual_import_hook()
+
+        try:
+            with patch(
+                "src.services.execution.virtual_import.resolve_module_sync",
+                side_effect=ModuleResolutionError("resolver unavailable"),
+            ) as resolver:
+                exec(
+                    compile(
+                        f"try:\n    import {optional_name}\nexcept ImportError:\n"
+                        "    OPTIONAL_AVAILABLE = False\n",
+                        filename,
+                        "exec",
+                    ),
+                    namespace,
+                )
+
+            assert namespace["OPTIONAL_AVAILABLE"] is False
+            resolver.assert_called_once_with(optional_name)
+        finally:
             sys.modules.pop(optional_name, None)
 
     def test_workspace_import_still_fails_when_resolver_is_unavailable(self):
