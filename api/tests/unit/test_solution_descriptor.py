@@ -11,6 +11,7 @@ import pathlib
 
 import pytest
 
+from bifrost.solution_binding import read_solution_binding
 from bifrost.solution_descriptor import (
     DESCRIPTOR_FILENAME,
     SolutionDescriptor,
@@ -208,7 +209,12 @@ def test_init_scope_flag_targets_global_install_without_descriptor_scope(
     assert payloads[0]["organization_id"] is None
     text = (ws / DESCRIPTOR_FILENAME).read_text()
     assert "scope:" not in text
-    assert not (ws / ".env").exists()
+    binding = read_solution_binding(ws)
+    assert binding is not None
+    assert binding.solution_id == "inst-1"
+    assert binding.slug == "mna"
+    assert binding.organization_id is None
+    assert binding.scope == "global"
 
 
 def test_init_writes_explicit_version(
