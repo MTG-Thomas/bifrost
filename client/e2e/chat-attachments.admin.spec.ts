@@ -77,11 +77,15 @@ test.describe("Chat attachments and model profiles", () => {
 
 		let resolveChat!: (payload: Record<string, unknown>) => void;
 		let finishChat!: () => void;
+		let advanceChat!: () => void;
 		const chatPayload = new Promise<Record<string, unknown>>((resolve) => {
 			resolveChat = resolve;
 		});
+		const chatMayAdvance = new Promise<void>((resolve) => {
+			advanceChat = resolve;
+		});
 		await page.routeWebSocket(/\/ws\/connect/, (socket) => {
-			socket.onMessage((raw) => {
+			socket.onMessage(async (raw) => {
 				const payload = JSON.parse(String(raw)) as Record<
 					string,
 					unknown
@@ -89,6 +93,7 @@ test.describe("Chat attachments and model profiles", () => {
 				if (payload.type === "chat") {
 					resolveChat(payload);
 					const conversationId = String(payload.conversation_id);
+					await chatMayAdvance;
 					setTimeout(() => {
 						socket.send(
 							JSON.stringify({
@@ -230,6 +235,7 @@ test.describe("Chat attachments and model profiles", () => {
 			path: "playwright-results/screenshots/chat-thinking.png",
 			fullPage: true,
 		});
+		advanceChat();
 		await expect(page.getByText("Generating Markdown…")).toBeVisible();
 		await expect(
 			page.getByRole("button", { name: /Generating Markdown/i }),
