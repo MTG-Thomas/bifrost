@@ -476,7 +476,10 @@ test.describe.serial("Public form iframe", () => {
 			expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(
 				page.viewportSize()!.height,
 			);
-			await control.click();
+			await page.mouse.click(
+				bounds!.x + bounds!.width / 2,
+				bounds!.y + bounds!.height / 2,
+			);
 			return baseline;
 		};
 		const expectParentToRemainFixed = async (baseline: number) => {
