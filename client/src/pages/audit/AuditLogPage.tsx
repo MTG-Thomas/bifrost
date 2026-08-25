@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { useAuditLog } from "@/hooks/useAuditLog";
@@ -39,7 +39,25 @@ const ACTION_GROUPS = [
 	{ value: "user.", label: "Users" },
 	{ value: "role.", label: "Roles" },
 	{ value: "organization.", label: "Organizations" },
+	{ value: "policy.deny", label: "Policy denials" },
 ];
+
+function auditContext(entry: AuditLogEntry): string {
+	const details = entry.details;
+	if (!details) return "-";
+
+	const path = typeof details.path === "string" ? details.path : null;
+	const location =
+		typeof details.location === "string" ? details.location : null;
+	if (path) return location ? `${location} / ${path}` : path;
+
+	const tableName =
+		typeof details.table_name === "string" ? details.table_name : null;
+	const tableId =
+		typeof details.table_id === "string" ? details.table_id : null;
+	if (tableName) return tableId ? `${tableName} / ${tableId}` : tableName;
+	return tableId ?? "-";
+}
 
 const OUTCOMES = [
 	{ value: "All", label: "All outcomes" },
@@ -59,33 +77,52 @@ export function AuditLogPage() {
 	const [continuationTokens, setContinuationTokens] = useState<string[]>([]);
 	const [currentPage, setCurrentPage] = useState(0);
 
+	const resetPagination = () => {
+		setContinuationTokens([]);
+		setCurrentPage(0);
+	};
+
+	const updateFilter = (setter: (value: string) => void, value: string) => {
+		setter(value);
+		resetPagination();
+	};
+
 	const queryParams = useMemo(() => {
 		const params: GetAuditLogParams = { limit: 50 };
 		if (actionGroup !== "All") params.action = actionGroup;
 		if (outcome !== "All") params.outcome = outcome;
+		if (searchText) params.search = searchText;
 		if (startDate) params.start_date = startDate;
 		if (endDate) params.end_date = endDate;
 		if (continuationTokens[currentPage])
 			params.continuation_token = continuationTokens[currentPage];
 		return params;
-	}, [actionGroup, outcome, startDate, endDate, currentPage, continuationTokens]);
+	}, [
+		actionGroup,
+		outcome,
+		searchText,
+		startDate,
+		endDate,
+		currentPage,
+		continuationTokens,
+	]);
 
 	const { data, isLoading, error, refetch } = useAuditLog(queryParams);
 
-	const filteredEntries = useMemo(() => {
-		if (!data?.entries) return [];
-		if (!searchText) return data.entries;
-		const q = searchText.toLowerCase();
-		return data.entries.filter((entry: AuditLogEntry) => {
-			return (
-				entry.action.toLowerCase().includes(q) ||
-				(entry.actor.user_email?.toLowerCase().includes(q) ?? false) ||
-				(entry.actor.user_name?.toLowerCase().includes(q) ?? false) ||
-				(entry.resource_type?.toLowerCase().includes(q) ?? false) ||
-				(entry.ip_address?.toLowerCase().includes(q) ?? false)
-			);
-		});
-	}, [data, searchText]);
+	const entries = data?.entries ?? [];
+	const hasActiveFilters =
+		actionGroup !== "All" ||
+		outcome !== "All" ||
+		Boolean(searchText || startDate || endDate);
+
+	const clearFilters = () => {
+		setActionGroup("All");
+		setOutcome("All");
+		setSearchText("");
+		setStartDate("");
+		setEndDate("");
+		resetPagination();
+	};
 
 	const handleNextPage = () => {
 		if (data?.continuation_token) {
@@ -106,8 +143,8 @@ export function AuditLogPage() {
 				<Alert variant="destructive">
 					<AlertCircle className="h-4 w-4" />
 					<AlertDescription>
-						You do not have permission to view the audit log. Platform
-						administrator access is required.
+						You do not have permission to view the audit log.
+						Platform administrator access is required.
 					</AlertDescription>
 				</Alert>
 				<Button onClick={() => navigate("/")} className="mt-4">
@@ -120,72 +157,123 @@ export function AuditLogPage() {
 	return (
 		<div className="h-[calc(100vh-8rem)] flex flex-col space-y-6">
 			{/* Header */}
-			<div>
-				<h1 className="text-4xl font-extrabold tracking-tight">Audit Log</h1>
-				<p className="mt-2 text-muted-foreground">
-					Review authentication, user, role, and organization events
-				</p>
-			</div>
-
-			{/* Filters */}
-			<div className="flex items-center gap-4 flex-wrap">
-				<Select value={actionGroup} onValueChange={setActionGroup}>
-					<SelectTrigger className="w-[200px]">
-						<SelectValue placeholder="Action" />
-					</SelectTrigger>
-					<SelectContent>
-						{ACTION_GROUPS.map((g) => (
-							<SelectItem key={g.value} value={g.value}>
-								{g.label}
-							</SelectItem>
-						))}
-					</SelectContent>
-				</Select>
-
-				<Select value={outcome} onValueChange={setOutcome}>
-					<SelectTrigger className="w-[160px]">
-						<SelectValue placeholder="Outcome" />
-					</SelectTrigger>
-					<SelectContent>
-						{OUTCOMES.map((o) => (
-							<SelectItem key={o.value} value={o.value}>
-								{o.label}
-							</SelectItem>
-						))}
-					</SelectContent>
-				</Select>
-
-				<Input
-					placeholder="Search action, actor, IP…"
-					value={searchText}
-					onChange={(e) => setSearchText(e.target.value)}
-					className="flex-1 max-w-md"
-				/>
-
-				<Input
-					type="date"
-					value={startDate}
-					onChange={(e) => setStartDate(e.target.value)}
-					className="w-[160px]"
-				/>
-				<Input
-					type="date"
-					value={endDate}
-					onChange={(e) => setEndDate(e.target.value)}
-					className="w-[160px]"
-				/>
-
+			<div className="flex items-start justify-between gap-4">
+				<div>
+					<h1 className="text-4xl font-extrabold tracking-tight">
+						Audit Log
+					</h1>
+					<p className="mt-2 text-muted-foreground">
+						Trace security decisions and administrative activity
+						across the platform
+					</p>
+				</div>
 				<Button
 					variant="outline"
 					size="icon"
 					onClick={() => refetch()}
 					disabled={isLoading}
-					title="Refresh"
+					aria-label="Refresh audit log"
+					className="shrink-0"
 				>
 					<RefreshCw
 						className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`}
 					/>
 				</Button>
+			</div>
+
+			{/* Filters */}
+			<div className="space-y-3">
+				<Input
+					type="search"
+					aria-label="Search audit events"
+					placeholder="Search path, table, action, or IP…"
+					value={searchText}
+					onChange={(e) =>
+						updateFilter(setSearchText, e.target.value)
+					}
+					className="w-full"
+				/>
+
+				<div className="grid gap-3 sm:grid-cols-2 lg:flex lg:items-center">
+					<Select
+						value={actionGroup}
+						onValueChange={(value) =>
+							updateFilter(setActionGroup, value)
+						}
+					>
+						<SelectTrigger
+							className="w-full lg:w-[200px]"
+							aria-label="Action filter"
+						>
+							<SelectValue placeholder="Action" />
+						</SelectTrigger>
+						<SelectContent>
+							{ACTION_GROUPS.map((g) => (
+								<SelectItem key={g.value} value={g.value}>
+									{g.label}
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+
+					<Select
+						value={outcome}
+						onValueChange={(value) =>
+							updateFilter(setOutcome, value)
+						}
+					>
+						<SelectTrigger
+							className="w-full lg:w-[160px]"
+							aria-label="Outcome filter"
+						>
+							<SelectValue placeholder="Outcome" />
+						</SelectTrigger>
+						<SelectContent>
+							{OUTCOMES.map((o) => (
+								<SelectItem key={o.value} value={o.value}>
+									{o.label}
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+
+					<div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-2 gap-y-2 sm:col-span-2 lg:ml-auto lg:flex">
+						<span className="text-sm text-muted-foreground">
+							From
+						</span>
+						<Input
+							type="date"
+							aria-label="Start date"
+							value={startDate}
+							onChange={(e) =>
+								updateFilter(setStartDate, e.target.value)
+							}
+							className="min-w-0 lg:w-[150px]"
+						/>
+						<span className="text-sm text-muted-foreground">
+							To
+						</span>
+						<Input
+							type="date"
+							aria-label="End date"
+							value={endDate}
+							onChange={(e) =>
+								updateFilter(setEndDate, e.target.value)
+							}
+							className="min-w-0 lg:w-[150px]"
+						/>
+					</div>
+
+					{hasActiveFilters && (
+						<Button
+							variant="ghost"
+							onClick={clearFilters}
+							className="justify-self-start lg:shrink-0"
+						>
+							Clear filters
+						</Button>
+					)}
+				</div>
 			</div>
 
 			{/* Content */}
@@ -200,11 +288,11 @@ export function AuditLogPage() {
 					</Alert>
 				)}
 
-				{isLoading && !filteredEntries.length ? (
+				{isLoading && !entries.length ? (
 					<div className="flex items-center justify-center py-12">
 						<Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
 					</div>
-				) : filteredEntries.length > 0 ? (
+				) : entries.length > 0 ? (
 					<DataTable>
 						<DataTableHeader>
 							<DataTableRow>
@@ -213,17 +301,22 @@ export function AuditLogPage() {
 								<DataTableHead>Outcome</DataTableHead>
 								<DataTableHead>Actor</DataTableHead>
 								<DataTableHead>Resource</DataTableHead>
+								<DataTableHead>Context</DataTableHead>
 								<DataTableHead>IP</DataTableHead>
 							</DataTableRow>
 						</DataTableHeader>
 						<DataTableBody>
-							{filteredEntries.map((entry: AuditLogEntry) => (
+							{entries.map((entry: AuditLogEntry) => (
 								<DataTableRow key={entry.id}>
 									<DataTableCell className="font-mono text-xs whitespace-nowrap">
-										{new Date(entry.timestamp).toLocaleString()}
+										{new Date(
+											entry.timestamp,
+										).toLocaleString()}
 									</DataTableCell>
 									<DataTableCell>
-										<Badge variant="secondary">{entry.action}</Badge>
+										<Badge variant="secondary">
+											{entry.action}
+										</Badge>
 									</DataTableCell>
 									<DataTableCell>
 										<Badge
@@ -249,6 +342,12 @@ export function AuditLogPage() {
 											? `${entry.resource_type}${entry.resource_id ? ` / ${entry.resource_id.slice(0, 8)}` : ""}`
 											: "-"}
 									</DataTableCell>
+									<DataTableCell
+										className="max-w-80 truncate text-sm text-muted-foreground"
+										title={auditContext(entry)}
+									>
+										{auditContext(entry)}
+									</DataTableCell>
 									<DataTableCell className="text-xs font-mono text-muted-foreground">
 										{entry.ip_address || "-"}
 									</DataTableCell>
@@ -257,11 +356,18 @@ export function AuditLogPage() {
 						</DataTableBody>
 						<DataTableFooter>
 							<DataTableRow>
-								<DataTableCell colSpan={3} className="text-sm text-muted-foreground">
-									{filteredEntries.length} event
-									{filteredEntries.length !== 1 ? "s" : ""} on this page
+								<DataTableCell
+									colSpan={4}
+									className="text-sm text-muted-foreground"
+								>
+									{entries.length} event
+									{entries.length !== 1 ? "s" : ""} on this
+									page
 								</DataTableCell>
-								<DataTableCell colSpan={3} className="text-right">
+								<DataTableCell
+									colSpan={3}
+									className="text-right"
+								>
 									<div className="flex gap-2 justify-end">
 										<Button
 											variant="outline"
@@ -289,7 +395,9 @@ export function AuditLogPage() {
 				) : (
 					<Card>
 						<CardContent className="flex flex-col items-center justify-center py-12 text-center">
-							<h3 className="text-lg font-semibold">No events found</h3>
+							<h3 className="text-lg font-semibold">
+								No events found
+							</h3>
 							<p className="mt-2 text-sm text-muted-foreground">
 								Try adjusting your filters or date range
 							</p>
