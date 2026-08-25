@@ -292,7 +292,7 @@ test.describe.serial("Public form iframe", () => {
 			.click();
 		await adminPage
 			.getByLabel("Allowed Website Origins")
-			.fill("http://allowed-origin");
+			.fill(ALLOWED_ORIGIN);
 		await adminPage.getByRole("switch", { name: "Not Published" }).click();
 		await expect(
 			adminPage.getByRole("heading", {
@@ -363,12 +363,12 @@ test.describe.serial("Public form iframe", () => {
 		// classifies both hosts in the same local address space. Block only that
 		// parent's SPA scripts, then replace its HTML with the customer iframe.
 		// The embedded client uses the separate `client` host and remains intact.
-		await page.route("http://allowed-origin/**", (route) =>
+		await page.route(`${ALLOWED_ORIGIN}/**`, (route) =>
 			route.request().resourceType() === "script"
 				? route.abort()
 				: route.continue(),
 		);
-		await page.goto("http://allowed-origin/");
+		await page.goto(`${ALLOWED_ORIGIN}/`);
 		await page.setContent(
 			`<iframe title="Public form" style="width:100%;height:800px" src="${BIFROST_URL}/embed/forms/public/${publicKey}"></iframe>`,
 		);

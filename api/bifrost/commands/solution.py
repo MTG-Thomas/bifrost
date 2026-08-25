@@ -161,13 +161,21 @@ def _create_solution_workspace(
         try:
             install = create.json()
             binding = binding_from_install(install, descriptor_slug=descriptor.slug)
-        except ValueError as exc:
+        except (ValueError, SolutionBindingError) as exc:
             raise click.ClickException(
                 "Created Solution install, but failed to read its identity from the "
                 f"response: {exc}."
             ) from exc
+        try:
+            write_solution_binding(workspace, binding)
+        except (OSError, SolutionBindingError) as exc:
+            raise click.ClickException(
+                f"Created Solution install {binding.solution_id}, but failed to bind "
+                f"workspace in .env: {exc}"
+            ) from exc
         click.echo(f"Wrote {descriptor_path}")
         click.echo(f"Created Solution install {binding.solution_id}.")
+        click.echo("Bound workspace in .env.")
 
     try:
         asyncio.run(_run())
@@ -271,7 +279,7 @@ def bind_cmd(path: str, solution_ref: str, api_url: str | None) -> None:
     descriptor = load_descriptor(workspace)
 
     async def _run() -> None:
-        client = BifrostClient.get_instance(require_auth=True)
+        client = _client_for_solution_workspace(workspace, api_url)
         resp = await client.get(_SOLUTIONS_API_PATH)
         if resp.status_code != 200:
             raise click.ClickException(

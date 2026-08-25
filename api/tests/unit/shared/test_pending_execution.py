@@ -71,6 +71,7 @@ async def test_pending_execution_is_returned_as_contract_valid_pending_state():
     assert execution.execution_id == str(EXECUTION_ID)
     assert execution.workflow_name == "DMARC report ingestion"
     assert execution.status == ExecutionStatus.PENDING
+    assert execution.created_at.isoformat() == "2026-08-14T12:00:00+00:00"
     assert execution.started_at is None
     assert execution.input_data == {"domain": "example.com"}
     assert execution.executed_by == str(USER_ID)

@@ -4,6 +4,7 @@ import yaml
 from click.testing import CliRunner
 
 from bifrost.commands.solution import handle_deploy, handle_solution, solution_group
+from bifrost.solution_binding import read_solution_binding
 
 
 class _SolutionListResponse:
@@ -23,7 +24,7 @@ async def _get_bound_solution(_self, path, **_kwargs):
     return _SolutionListResponse()
 
 
-def test_solution_init_creates_remote_install_without_binding(tmp_path, monkeypatch):
+def test_solution_init_creates_remote_install_and_binding(tmp_path, monkeypatch):
     import bifrost.client as client_mod
 
     monkeypatch.chdir(tmp_path)
@@ -63,7 +64,10 @@ def test_solution_init_creates_remote_install_without_binding(tmp_path, monkeypa
 
     assert result.exit_code == 0, result.output
     assert (tmp_path / "bifrost.solution.yaml").is_file()
-    assert not (tmp_path / ".env").exists()
+    binding = read_solution_binding(tmp_path)
+    assert binding is not None
+    assert binding.solution_id == "11111111-1111-1111-1111-111111111111"
+    assert binding.scope == "org"
     assert created_payloads[0]["slug"] == "dispatch"
     assert (
         created_payloads[0]["organization_id"]
@@ -71,7 +75,7 @@ def test_solution_init_creates_remote_install_without_binding(tmp_path, monkeypa
     )
 
 
-def test_solution_create_creates_remote_install_without_binding(tmp_path, monkeypatch):
+def test_solution_create_creates_remote_install_and_binding(tmp_path, monkeypatch):
     import bifrost.client as client_mod
 
     monkeypatch.chdir(tmp_path)
@@ -110,7 +114,9 @@ def test_solution_create_creates_remote_install_without_binding(tmp_path, monkey
 
     assert result.exit_code == 0, result.output
     assert (tmp_path / "bifrost.solution.yaml").is_file()
-    assert not (tmp_path / ".env").exists()
+    binding = read_solution_binding(tmp_path)
+    assert binding is not None
+    assert binding.solution_id == "11111111-1111-1111-1111-111111111111"
     assert created_payloads[0]["slug"] == "dispatch"
 
 
@@ -152,7 +158,9 @@ def test_solution_create_global_scope(tmp_path, monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert created_payloads[0]["organization_id"] is None
-    assert not (tmp_path / ".env").exists()
+    binding = read_solution_binding(tmp_path)
+    assert binding is not None
+    assert binding.scope == "global"
 
 
 def test_solution_create_remote_failure_removes_new_descriptor(tmp_path, monkeypatch):
@@ -233,7 +241,9 @@ def test_solution_create_url_option_selects_instance(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert selected_urls == ["https://selected.example"]
     assert (tmp_path / "bifrost.solution.yaml").is_file()
-    assert not (tmp_path / ".env").exists()
+    binding = read_solution_binding(tmp_path)
+    assert binding is not None
+    assert binding.slug == "dispatch"
 
 
 def test_solution_create_malformed_success_keeps_descriptor(tmp_path, monkeypatch):

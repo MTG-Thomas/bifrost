@@ -43,6 +43,7 @@ async function authenticatedJson(
 test.describe("Private memory", () => {
 	test("enables and manages private memory", async ({ page }, testInfo) => {
 		await page.goto("/settings/ai");
+		let embeddingConnectionId: string | null = null;
 		const currentUser = await authenticatedJson(page, "/api/auth/me");
 		const organizationId = (
 			currentUser.body as { organization_id: string }
@@ -73,15 +74,29 @@ test.describe("Private memory", () => {
 			`/api/admin/required-instructions/organizations/${organizationId}`,
 			{ method: "PUT", body: { instructions: "" } },
 		);
+		const connection = await authenticatedJson(
+			page,
+			"/api/admin/ai/connections",
+			{
+				method: "POST",
+				body: {
+					name: `Memory E2E ${Date.now()}`,
+					provider: "openai",
+					api_key: "fixture-key",
+					endpoint: "http://scheduler-fixtures:8080/v1",
+				},
+			},
+		);
+		expect(connection.status).toBe(201);
+		embeddingConnectionId = (connection.body as { id: string }).id;
 		const embedding = await authenticatedJson(
 			page,
 			"/api/admin/llm/embedding-config",
 			{
 				method: "POST",
 				body: {
+					connection_id: embeddingConnectionId,
 					model: "fixture-embedding",
-					api_key: "fixture-key",
-					endpoint: "http://scheduler-fixtures:8080/v1",
 				},
 			},
 		);
@@ -264,6 +279,13 @@ test.describe("Private memory", () => {
 			await authenticatedJson(page, "/api/admin/llm/embedding-config", {
 				method: "DELETE",
 			});
+			if (embeddingConnectionId) {
+				await authenticatedJson(
+					page,
+					`/api/admin/ai/connections/${embeddingConnectionId}`,
+					{ method: "DELETE" },
+				);
+			}
 			await authenticatedJson(page, "/api/admin/required-instructions", {
 				method: "PUT",
 				body: { instructions: "" },

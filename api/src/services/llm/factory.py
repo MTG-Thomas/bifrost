@@ -105,6 +105,9 @@ def create_llm_client(
     Returns:
         Configured LLM client
     """
+    if provider not in {"openai", "anthropic", "google"}:
+        raise ValueError(f"Unknown LLM provider: {provider}")
+
     if model is None:
         model = {
             "openai": DEFAULT_OPENAI_MODEL,

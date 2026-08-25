@@ -411,7 +411,11 @@ test.describe("Agent Detail — Runs Tab (admin)", () => {
 				page.getByText("gpt-5.2", { exact: true }),
 			).toHaveCount(0);
 
-			await delegatedTitle.click();
+			await delegatedActivity
+				.getByRole("button", {
+					name: /show details for troubleshooting specialist/i,
+				})
+				.click();
 			await expect(
 				delegatedActivity.getByRole("button", {
 					name: /hide details for troubleshooting specialist/i,

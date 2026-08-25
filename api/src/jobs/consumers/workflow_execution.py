@@ -507,17 +507,6 @@ class WorkflowExecutionConsumer(BaseConsumer):
             duration_ms=duration_ms,
         )
 
-        # Match the success path: once the failure is durable, wake sync
-        # callers before terminal-event fan-out and cleanup add latency.
-        if is_sync:
-            await self._redis_client.push_result(
-                execution_id=execution_id,
-                status=status.value,
-                error=error,
-                error_type=error_type,
-                duration_ms=duration_ms,
-            )
-
         # Pub/sub — no DB connection held
         await publish_execution_update(
             execution_id,
@@ -637,6 +626,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
 
         # Determine if this is a code or workflow execution
         is_script = bool(code_base64)
+        workflow_name = script_name or "inline_script"
 
         try:
             logger.info(
@@ -693,7 +683,6 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 return
 
             # Get workflow metadata from database if this is a workflow execution
-            workflow_name = script_name or "inline_script"
             timeout_seconds = 1800  # Default 30 minutes
             roi_time_saved = 0
             roi_value = 0.0

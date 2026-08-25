@@ -40,7 +40,10 @@ export function EntityLogo({
 	const endpointSource = effectiveKey
 		? `${base}?v=${encodeURIComponent(effectiveKey)}`
 		: base;
-	const src = logo === null ? null : (logo ?? endpointSource);
+	const src =
+		logo === null && globalVersion === undefined
+			? null
+			: (logo ?? endpointSource);
 	const hasUsableSource = src !== null && erroredSource !== src;
 	const imageLoaded = src !== null && loadedSource === src;
 

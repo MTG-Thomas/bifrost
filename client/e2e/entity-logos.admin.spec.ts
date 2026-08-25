@@ -139,7 +139,7 @@ test.describe("Entity logos", () => {
 				);
 			});
 
-			await page.goto("/agents");
+			await page.getByRole("link", { name: "Agents", exact: true }).click();
 			await listWithStats;
 
 			const card = page.getByRole("link", {

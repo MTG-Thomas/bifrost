@@ -1,165 +1,95 @@
 from __future__ import annotations
 
-import base64
-from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
-from cryptography.fernet import Fernet
 
 from src.services.llm import factory
 from src.services.llm.base import LLMConfig
 
 
-class _Scalars:
-    def __init__(self, config):
-        self._config = config
-
-    def first(self):
-        return self._config
-
-
-class _Result:
-    def __init__(self, config):
-        self._config = config
-
-    def scalars(self):
-        return _Scalars(self._config)
-
-
-class _Session:
-    def __init__(self, config):
-        self.config = config
-        self.statements = []
-
-    async def execute(self, stmt):
-        self.statements.append(stmt)
-        return _Result(self.config)
-
-
-def _encrypt(secret_key: str, value: str) -> str:
-    key_bytes = secret_key.encode()[:32].ljust(32, b"0")
-    return Fernet(base64.urlsafe_b64encode(key_bytes)).encrypt(value.encode()).decode()
-
-
 @pytest.mark.asyncio
-async def test_get_llm_config_rejects_missing_provider_config(monkeypatch):
-    monkeypatch.setattr(factory, "get_settings", lambda: SimpleNamespace(secret_key="secret"))
-
-    with pytest.raises(ValueError, match="LLM provider not configured"):
-        await factory.get_llm_config(_Session(None))
-
-    with pytest.raises(ValueError, match="LLM provider not configured"):
-        await factory.get_llm_config(_Session(SimpleNamespace(value_json={})))
-
-
-@pytest.mark.asyncio
-async def test_get_llm_config_maps_custom_provider_and_decrypts_key(monkeypatch):
-    secret = "super-secret"
-    monkeypatch.setattr(factory, "get_settings", lambda: SimpleNamespace(secret_key=secret))
-    session = _Session(
-        SimpleNamespace(
-            value_json={
-                "provider": "custom",
-                "model": "custom-model",
-                "encrypted_api_key": _encrypt(secret, "api-key"),
-                "endpoint": "https://llm.example.test",
-                "max_tokens": 99,
-            }
-        )
-    )
-
-    config = await factory.get_llm_config(session)
-
-    assert config == LLMConfig(
-        provider="openai",
-        model="custom-model",
-        api_key="api-key",
-        endpoint="https://llm.example.test",
-        max_tokens=99,
-    )
-    assert session.statements
-
-
-@pytest.mark.asyncio
-async def test_get_llm_config_defaults_invalid_provider_and_requires_api_key(
-    monkeypatch,
-    caplog,
-):
-    monkeypatch.setattr(factory, "get_settings", lambda: SimpleNamespace(secret_key="secret"))
-    session = _Session(SimpleNamespace(value_json={"provider": "bogus"}))
-
-    with pytest.raises(ValueError, match="No API key configured"):
-        await factory.get_llm_config(session)
-
-    assert "Invalid provider 'bogus', defaulting to openai" in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_get_llm_config_reports_corrupted_encrypted_api_key(monkeypatch):
-    monkeypatch.setattr(factory, "get_settings", lambda: SimpleNamespace(secret_key="secret"))
-    session = _Session(
-        SimpleNamespace(
-            value_json={
-                "provider": "anthropic",
-                "encrypted_api_key": "not-fernet",
-            }
-        )
-    )
-
-    with pytest.raises(ValueError, match="Failed to decrypt LLM API key"):
-        await factory.get_llm_config(session)
-
-
-@pytest.mark.asyncio
-async def test_get_llm_client_selects_provider_specific_client(monkeypatch):
-    class OpenAIClient:
-        def __init__(self, config):
-            self.config = config
-
-    class AnthropicClient:
-        def __init__(self, config):
-            self.config = config
-
-    monkeypatch.setattr(
-        "src.services.llm.openai_client.OpenAIClient",
-        OpenAIClient,
-    )
-    monkeypatch.setattr(
-        "src.services.llm.anthropic_client.AnthropicClient",
-        AnthropicClient,
-    )
-
-    async def openai_config(session):
-        return LLMConfig(
-            provider="openai",
-            model="gpt-test",
-            api_key="key",
-        )
-
+async def test_get_llm_config_resolves_requested_profile(monkeypatch) -> None:
+    profile_id = uuid4()
+    config = LLMConfig(provider="openai", model="gpt-test", api_key="key")
+    resolve = AsyncMock(return_value=config)
     monkeypatch.setattr(
         factory,
-        "get_llm_config",
-        openai_config,
+        "AIModelService",
+        lambda session: type("Service", (), {"resolve_config": resolve})(),
+    )
+    session = object()
+
+    result = await factory.get_llm_config(
+        session,  # type: ignore[arg-type]
+        profile_id=profile_id,
+        profile_name="ignored-when-service-validates",
+        assignment_key="summarizer",
     )
 
-    openai_client = await factory.get_llm_client(object())
-    assert isinstance(openai_client, OpenAIClient)
+    assert result is config
+    resolve.assert_awaited_once_with(
+        profile_id=profile_id,
+        profile_name="ignored-when-service-validates",
+        assignment_key="summarizer",
+    )
 
-    async def anthropic_config(session):
-        return LLMConfig(
-            provider="anthropic",
-            model="claude-test",
-            api_key="key",
-        )
 
+@pytest.mark.asyncio
+async def test_get_llm_config_preserves_validation_errors(monkeypatch) -> None:
+    resolve = AsyncMock(side_effect=ValueError("profile not configured"))
     monkeypatch.setattr(
         factory,
-        "get_llm_config",
-        anthropic_config,
+        "AIModelService",
+        lambda _session: type("Service", (), {"resolve_config": resolve})(),
     )
 
-    anthropic_client = await factory.get_llm_client(object())
-    assert isinstance(anthropic_client, AnthropicClient)
+    with pytest.raises(ValueError, match="profile not configured"):
+        await factory.get_llm_config(object())  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_llm_config_hides_internal_resolution_errors(monkeypatch) -> None:
+    resolve = AsyncMock(side_effect=RuntimeError("database details"))
+    monkeypatch.setattr(
+        factory,
+        "AIModelService",
+        lambda _session: type("Service", (), {"resolve_config": resolve})(),
+    )
+
+    with pytest.raises(ValueError, match="Failed to resolve LLM configuration"):
+        await factory.get_llm_config(object())  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_llm_client_uses_provider_neutral_client(monkeypatch) -> None:
+    config = LLMConfig(provider="anthropic", model="claude-test", api_key="key")
+    monkeypatch.setattr(factory, "get_llm_config", AsyncMock(return_value=config))
+
+    class Client:
+        def __init__(self, resolved: LLMConfig) -> None:
+            self.config = resolved
+
+    monkeypatch.setattr("src.services.llm.pydantic_client.PydanticAIClient", Client)
+
+    client = await factory.get_llm_client(object())  # type: ignore[arg-type]
+
+    assert isinstance(client, Client)
+    assert client.config is config
+
+
+def test_create_llm_client_uses_default_model(monkeypatch) -> None:
+    class Client:
+        def __init__(self, config: LLMConfig) -> None:
+            self.config = config
+
+    monkeypatch.setattr("src.services.llm.pydantic_client.PydanticAIClient", Client)
+
+    client = factory.create_llm_client("google", api_key="key")
+
+    assert isinstance(client, Client)
+    assert client.config.model == factory.DEFAULT_GOOGLE_MODEL
 
 
 def test_create_llm_client_rejects_unknown_provider() -> None:

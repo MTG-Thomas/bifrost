@@ -373,6 +373,9 @@ class TestGetUsageTotals:
         assert result == {
             "input_tokens": 0,
             "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "provider_cost": None,
             "total_cost": None,
             "call_count": 0,
         }

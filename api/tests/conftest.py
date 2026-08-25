@@ -209,6 +209,18 @@ async def isolate_redis_module_cache(request) -> AsyncGenerator[None, None]:
 
 
 @pytest_asyncio.fixture(autouse=True)
+async def close_loop_bound_redis_clients() -> AsyncGenerator[None, None]:
+    """Close application Redis singletons before pytest closes each test loop."""
+    yield
+
+    from src.core.cache.redis_client import close_shared_redis
+    from src.core.redis_client import close_redis_client
+
+    await close_redis_client()
+    await close_shared_redis()
+
+
+@pytest_asyncio.fixture(autouse=True)
 async def isolate_file_policies(request) -> AsyncGenerator[None, None]:
     """Wipe file policies + metadata before every async test that touches them.
 

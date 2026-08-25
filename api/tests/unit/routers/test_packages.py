@@ -56,4 +56,4 @@ async def test_install_persists_requirements_before_broadcasting_recycle() -> No
         )
 
     assert events == ["saved", "published"]
-    assert response.status == "success"
+    assert response.status == "queued"

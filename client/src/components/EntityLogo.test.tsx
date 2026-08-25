@@ -1,6 +1,7 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect } from "vitest";
 import { EntityLogo } from "./EntityLogo";
+import { bumpEntityLogo } from "./entityLogoVersions";
 
 describe("EntityLogo", () => {
 	it("renders an img tag pointing at the entity logo endpoint", () => {
@@ -106,6 +107,26 @@ describe("EntityLogo", () => {
 		);
 		expect(screen.getByTestId("fallback")).toBeInTheDocument();
 		expect(screen.queryByTestId("entity-logo")).toBeNull();
+	});
+
+	it("uses an upload version even when a cached list entry still reports no logo", () => {
+		const entityId = "33333333-3333-3333-3333-333333333333";
+		bumpEntityLogo("agent", entityId);
+		render(
+			<EntityLogo
+				entityType="agent"
+				entityId={entityId}
+				logo={null}
+				fallback={<span data-testid="fallback">F</span>}
+				size={32}
+			/>,
+		);
+		expect(screen.getByTestId("entity-logo")).toHaveAttribute(
+			"src",
+			expect.stringMatching(
+				/^\/api\/agents\/33333333-3333-3333-3333-333333333333\/logo\?v=\d+$/,
+			),
+		);
 	});
 
 	it("appends cacheKey to bust browser cache", () => {

@@ -73,6 +73,7 @@ async def get_pending_execution_fallback(
             input_data=pending.get("parameters") or {},
             result=None,
             logs=[],
+            created_at=pending.get("created_at"),
             started_at=None,
             completed_at=None,
         ),

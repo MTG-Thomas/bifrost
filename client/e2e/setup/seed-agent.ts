@@ -30,14 +30,22 @@ export interface SeededRun {
  */
 export async function seedAgentViaPage(
 	page: Page,
-	options: { namePrefix: string; channels?: string[] } = {
+	options: {
+		namePrefix: string;
+		channels?: string[];
+		accessLevel?: "authenticated" | "private";
+	} = {
 		namePrefix: "E2E Spec",
 	},
 ): Promise<SeededAgent> {
-	const { namePrefix, channels = ["chat"] } = options;
+	const {
+		namePrefix,
+		channels = ["chat"],
+		accessLevel = "authenticated",
+	} = options;
 	await page.goto("/agents");
 	return await page.evaluate(
-		async ({ namePrefix, channels }) => {
+		async ({ namePrefix, channels, accessLevel }) => {
 			const csrf = document.cookie.match(
 				/(?:^|;\s*)csrf_token=([^;]+)/,
 			)?.[1];
@@ -72,7 +80,7 @@ export async function seedAgentViaPage(
 					description: `Seeded by ${namePrefix} spec.`,
 					system_prompt: "You are a helpful assistant.",
 					channels,
-					access_level: "authenticated",
+					access_level: accessLevel,
 				}),
 			});
 			if (!createRes.ok) {
@@ -82,6 +90,6 @@ export async function seedAgentViaPage(
 			}
 			return (await createRes.json()) as { id: string; name: string };
 		},
-		{ namePrefix, channels },
+		{ namePrefix, channels, accessLevel },
 	);
 }

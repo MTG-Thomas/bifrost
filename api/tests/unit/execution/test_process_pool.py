@@ -318,6 +318,8 @@ class TestProcessPoolManagerRouting:
     async def test_restart_cannot_begin_between_context_write_and_dispatch(self):
         """A template restart must stay exclusive through child dispatch."""
         pool = ProcessPoolManager(max_workers=1)
+        pool._started = True
+        pool._template = MagicMock(is_alive=MagicMock(return_value=True))
         process = MagicMock()
         process.is_alive.return_value = True
         handle = ProcessHandle(
