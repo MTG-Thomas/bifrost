@@ -197,6 +197,9 @@ async def _enqueue_solution_deploy_job(
         raise SolutionCandidateMismatch(
             expected_candidate_id, f"sha256:{digest}"
         )
+    # Every durable deploy job carries the exact staged-byte identity. Callers
+    # may supply it as a compare-and-swap guard; repo installs derive it here.
+    options = {**options, "candidate_id": f"sha256:{digest}"}
 
     projection = SolutionDeployJob(
         id=job_id,
@@ -1448,6 +1451,7 @@ async def _run_deploy_job(
     *,
     force: bool,
     candidate_id: str = "",
+    accountability_organization_id: UUID | None = None,
 ) -> None:
     """Execute the deploy under a fresh session (background task).
 
@@ -1508,6 +1512,28 @@ async def _run_deploy_job(
                 # code (P1-c). Still inside the lock so finalize can't race another deploy.
                 await _set_phase("storing source artifact and runtime files")
                 await result.finalize_s3()
+                from src.services.solution_deploy_obligations import (
+                    reconcile_solution_deploy_obligation,
+                )
+                from src.services.solutions.source_artifact import (
+                    SolutionSourceArtifactStorage,
+                )
+
+                stored_artifact = await SolutionSourceArtifactStorage(solution_id).read()
+                if stored_artifact is None:
+                    raise SolutionFinalizeIncomplete(str(solution_id))
+                accountability = {"state": "not_tracked"}
+                if accountability_organization_id is not None:
+                    accountability = await reconcile_solution_deploy_obligation(
+                        db,
+                        solution_id=solution_id,
+                        solution_slug=solution.slug,
+                        accountability_organization_id=accountability_organization_id,
+                        deploy_job_id=job_id,
+                        candidate_id=candidate_id,
+                        artifact=stored_artifact,
+                    )
+                await db.commit()
                 deploy_result = {
                     "solution_id": str(solution_id),
                     "candidate_id": candidate_id,
@@ -1525,6 +1551,7 @@ async def _run_deploy_job(
                     "claims_deleted": result.claims_deleted,
                     "integrations_shell_created": result.integrations_shell_created,
                     "roles_created": list(result.roles_created),
+                    "source_release_accountability": accountability,
                 }
     try:
         await asyncio.wait_for(
@@ -1576,6 +1603,8 @@ async def _run_install_job(
     replace_secrets: bool,
     replace_data: bool,
     reactivate: bool,
+    candidate_id: str = "",
+    accountability_organization_id: UUID | None = None,
 ) -> None:
     """Execute a zip install under a fresh session (background task).
 
@@ -1642,7 +1671,34 @@ async def _run_install_job(
                 replace_data=replace_data,
                 reactivate=reactivate,
             )
-            install_result = {"solution_id": str(solution.id), "slug": solution.slug}
+            accountability = {"state": "not_tracked"}
+            if accountability_organization_id is not None:
+                from src.services.solution_deploy_obligations import (
+                    reconcile_solution_deploy_obligation,
+                )
+                from src.services.solutions.source_artifact import (
+                    SolutionSourceArtifactStorage,
+                )
+
+                stored_artifact = await SolutionSourceArtifactStorage(solution.id).read()
+                if stored_artifact is None:
+                    raise SolutionFinalizeIncomplete(str(solution.id))
+                accountability = await reconcile_solution_deploy_obligation(
+                    db,
+                    solution_id=solution.id,
+                    solution_slug=solution.slug,
+                    accountability_organization_id=accountability_organization_id,
+                    deploy_job_id=job_id,
+                    candidate_id=candidate_id,
+                    artifact=stored_artifact,
+                )
+                await db.commit()
+            install_result = {
+                "solution_id": str(solution.id),
+                "slug": solution.slug,
+                "candidate_id": candidate_id,
+                "source_release_accountability": accountability,
+            }
     try:
         await asyncio.wait_for(
             _execute(),
@@ -1787,7 +1843,13 @@ async def deploy_solution(
             kind="deploy",
             install_id=solution_id,
             organization_id=solution.organization_id,
-            options={"force": force, "candidate_id": actual_candidate_id},
+            options={
+                "force": force,
+                "candidate_id": actual_candidate_id,
+                "accountability_organization_id": (
+                    str(ctx.org_id) if ctx.org_id is not None else None
+                ),
+            },
             requested_by_user_id=user.user_id,
             requested_by_email=user.email,
             requested_by_name=user.name or user.email or "Unknown",
@@ -2272,7 +2334,12 @@ async def install_from_repo(
             kind="install_from_repo",
             install_id=solution.id,
             organization_id=solution.organization_id,
-            options={"force": True},
+            options={
+                "force": True,
+                "accountability_organization_id": (
+                    str(ctx.org_id) if ctx.org_id is not None else None
+                ),
+            },
             requested_by_user_id=user.user_id,
             requested_by_email=user.email,
             requested_by_name=user.name or user.email or "Unknown",
@@ -2414,6 +2481,9 @@ async def install_solution(
                 "replace_secrets": replace_secrets,
                 "replace_data": replace_data,
                 "reactivate": reactivate,
+                "accountability_organization_id": (
+                    str(ctx.org_id) if ctx.org_id is not None else None
+                ),
             },
             requested_by_user_id=user.user_id,
             requested_by_email=user.email,

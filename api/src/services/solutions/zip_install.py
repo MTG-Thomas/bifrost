@@ -485,6 +485,7 @@ async def install_zip(
             replace_secrets=replace_secrets,
             replace_data=replace_data,
             reactivate=reactivate,
+            source_artifact=data,
         )
 
 
@@ -502,6 +503,7 @@ async def install_zip_path(
     reactivate: bool = False,
 ) -> Solution:
     """Install a Solution zip from disk without buffering the upload."""
+    source_artifact = zip_path.read_bytes()
     with tempfile.TemporaryDirectory(prefix="bifrost-zip-install-") as tmp:
         _safe_extract_path(zip_path, tmp)
         return await _install_workspace(
@@ -515,6 +517,7 @@ async def install_zip_path(
             replace_secrets=replace_secrets,
             replace_data=replace_data,
             reactivate=reactivate,
+            source_artifact=source_artifact,
         )
 
 
@@ -578,6 +581,7 @@ async def _install_workspace(
     replace_secrets: bool,
     replace_data: bool,
     reactivate: bool,
+    source_artifact: bytes,
 ) -> Solution:
     from src.services.solutions.write_lock import solution_write_lock
 
@@ -655,7 +659,9 @@ async def _install_workspace(
             )
 
         deployer = SolutionDeployer(db)
-        result = await deployer.deploy(bundle, force=force)
+        result = await deployer.deploy(
+            bundle, force=force, source_artifact=source_artifact
+        )
         await db.commit()
         # S3 only after the DB is durable; still inside the lock so finalize
         # can't race another writer.
@@ -742,6 +748,7 @@ async def deploy_zip_to_solution(
             solution,
             Path(tmp),
             force=force,
+            source_artifact=data,
         )
 
 
@@ -753,6 +760,7 @@ async def deploy_zip_to_solution_path(
     force: bool = False,
 ) -> DeployResult:
     """Deploy an existing install from a workspace zip on disk."""
+    source_artifact = zip_path.read_bytes()
     with tempfile.TemporaryDirectory(prefix="bifrost-zip-deploy-") as tmp:
         _safe_extract_path(zip_path, tmp)
         return await _deploy_workspace_to_solution(
@@ -760,6 +768,7 @@ async def deploy_zip_to_solution_path(
             solution,
             Path(tmp),
             force=force,
+            source_artifact=source_artifact,
         )
 
 
@@ -769,6 +778,7 @@ async def _deploy_workspace_to_solution(
     workspace: Path,
     *,
     force: bool,
+    source_artifact: bytes,
 ) -> DeployResult:
     preview = _parse_workspace(workspace)
     if not preview.slug or not preview.name:
@@ -786,7 +796,11 @@ async def _deploy_workspace_to_solution(
         )
         raise UnmetDependency(f"Solution has unmet dependencies: {items}")
 
-    return await SolutionDeployer(db).deploy(bundle, force=force)
+    return await SolutionDeployer(db).deploy(
+        bundle,
+        force=force,
+        source_artifact=source_artifact,
+    )
 
 
 async def _assert_no_unforced_collisions(

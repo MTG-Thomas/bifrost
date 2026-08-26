@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -75,9 +76,7 @@ async def test_deploy_job_rejects_candidate_changed_during_staging(
         "src.routers.solutions.SolutionDeployJobStorage.write_path",
         AsyncMock(return_value=("b" * 64, len(b"candidate"))),
     )
-    monkeypatch.setattr(
-        "src.routers.solutions.SolutionDeployJobStorage.delete", delete
-    )
+    monkeypatch.setattr("src.routers.solutions.SolutionDeployJobStorage.delete", delete)
 
     with pytest.raises(ValueError, match="candidate hash changed"):
         await _enqueue_solution_deploy_job(
@@ -123,3 +122,101 @@ async def test_run_deploy_job_does_not_start_after_job_is_terminal(
 
     deploy.assert_not_awaited()
     assert not zip_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_deploy_accountability_runs_after_storage_finalize(tmp_path, monkeypatch):
+    events: list[str] = []
+    job = SolutionDeployJob(id=uuid4(), install_id=uuid4(), status="queued")
+    solution = Solution(
+        id=job.install_id,
+        slug="reviewed-solution",
+        name="Reviewed Solution",
+        organization_id=uuid4(),
+    )
+
+    class FakeDB:
+        async def get(self, model, row_id):  # noqa: ANN001, ANN201
+            if model is SolutionDeployJob and row_id == job.id:
+                return job
+            if model is Solution and row_id == solution.id:
+                return solution
+            return None
+
+        async def commit(self):
+            events.append("commit")
+
+    database = FakeDB()
+
+    @asynccontextmanager
+    async def fake_db_context():
+        yield database
+
+    @asynccontextmanager
+    async def fake_write_lock(_solution_id):
+        yield
+
+    async def finalize_s3():
+        events.append("finalize")
+
+    deploy_result = SimpleNamespace(
+        finalize_s3=finalize_s3,
+        workflows_upserted=1,
+        workflows_deleted=0,
+        tables_upserted=0,
+        tables_deleted=0,
+        apps_upserted=0,
+        apps_deleted=0,
+        forms_upserted=0,
+        forms_deleted=0,
+        agents_upserted=0,
+        agents_deleted=0,
+        claims_upserted=0,
+        claims_deleted=0,
+        integrations_shell_created=0,
+        roles_created=[],
+    )
+
+    async def read_artifact():
+        events.append("artifact_read")
+        return b"reviewed artifact"
+
+    async def reconcile(*_args, **_kwargs):
+        events.append("reconcile")
+        return {"state": "released", "obligation_id": "obligation-1"}
+
+    from src.core import database as database_module
+    from src.services import solution_deploy_obligations
+    from src.services.solutions import source_artifact, write_lock, zip_install
+
+    monkeypatch.setattr(database_module, "get_db_context", fake_db_context)
+    monkeypatch.setattr(write_lock, "solution_write_lock", fake_write_lock)
+    monkeypatch.setattr(
+        zip_install,
+        "deploy_zip_to_solution_path",
+        AsyncMock(return_value=deploy_result),
+    )
+    monkeypatch.setattr(
+        source_artifact,
+        "SolutionSourceArtifactStorage",
+        lambda _solution_id: SimpleNamespace(read=read_artifact),
+    )
+    monkeypatch.setattr(
+        solution_deploy_obligations,
+        "reconcile_solution_deploy_obligation",
+        reconcile,
+    )
+    zip_path = tmp_path / "deploy.zip"
+    zip_path.write_bytes(b"reviewed artifact")
+
+    await _run_deploy_job(
+        job.id,
+        solution.id,
+        zip_path,
+        force=False,
+        candidate_id="sha256:" + "a" * 64,
+    )
+
+    assert events[:4] == ["commit", "finalize", "artifact_read", "reconcile"]
+    assert job.status == "succeeded"
+    assert job.result["source_release_accountability"]["state"] == "released"

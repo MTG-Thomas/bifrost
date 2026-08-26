@@ -58,6 +58,11 @@ async def run_solution_deploy(
                     zip_path,
                     force=bool(payload.options.get("force", False)),
                     candidate_id=str(payload.options.get("candidate_id") or ""),
+                    accountability_organization_id=(
+                        UUID(str(payload.options["accountability_organization_id"]))
+                        if payload.options.get("accountability_organization_id")
+                        else None
+                    ),
                 )
             else:
                 raw_org_id = payload.options.get("organization_id")
@@ -72,6 +77,12 @@ async def run_solution_deploy(
                     replace_secrets=bool(payload.options.get("replace_secrets", False)),
                     replace_data=bool(payload.options.get("replace_data", False)),
                     reactivate=bool(payload.options.get("reactivate", False)),
+                    candidate_id=str(payload.options.get("candidate_id") or ""),
+                    accountability_organization_id=(
+                        UUID(str(payload.options["accountability_organization_id"]))
+                        if payload.options.get("accountability_organization_id")
+                        else None
+                    ),
                 )
         failure: PlatformJobFailure | None = None
         result: dict[str, Any] = {}

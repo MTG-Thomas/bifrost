@@ -303,6 +303,7 @@ class SolutionDeployer:
         bundle: SolutionBundle,
         force: bool = False,
         file_mode: str = "replace",
+        source_artifact: bytes | None = None,
     ) -> DeployResult:
         """Full-replace this install from ``bundle`` — DB phase + app COMPILE.
 
@@ -332,7 +333,7 @@ class SolutionDeployer:
         # remapping, then store it only after the DB commit in finalize_s3.
         from src.services.solutions.export import build_workspace_zip
 
-        source_artifact = build_workspace_zip(bundle)
+        source_artifact = source_artifact or build_workspace_zip(bundle)
 
         # ── Module-closure backstop — before ANY writes ──────────────────────
         # Primary gate is in zip_install (returns a clean 422). This backstop
