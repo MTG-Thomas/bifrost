@@ -35,6 +35,27 @@ Choose the decorator by consumer:
 
 An agent's `tool_ids` must reference `@tool` registrations, not plain workflows.
 
+## Decorator attributes
+
+`@workflow` accepts identity, discovery metadata, and Workspace promotion
+policy declarations:
+
+| Attribute | Default | Use |
+|---|---|---|
+| `name` | Function name | Workflow name and source-level execution identity |
+| `description` | First docstring line | Human-readable workflow description |
+| `category` | `"General"` | Organization and filtering hint |
+| `tags` | `[]` | Filtering and search hints |
+| `is_tool` | `False` | Register as an AI tool; prefer `@tool` for new tools |
+| `effects` | `None` | Explicit effects used by Workspace promotion policy |
+| `enforced_bounds` | `None` | Limits enforced by the workflow implementation |
+| `requested_bounds` | `None` | Limits requested from the execution environment |
+
+Other keyword arguments are accepted only for backwards-compatible parsing;
+the runtime logs a warning and ignores them. Configure timeouts, execution
+mode, schedules, endpoints, access, ROI, retries, cache TTL, and tool-specific
+descriptions on the persisted workflow through the Bifrost UI or API.
+
 ## Test-driven iteration
 
 Search existing modules before implementing the behavior. Reuse or extend the
