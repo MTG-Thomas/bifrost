@@ -179,6 +179,39 @@ async def test_permanent_error_publishes_poison_then_acks_original() -> None:
 
 
 @pytest.mark.asyncio
+async def test_poison_is_finalized_before_original_is_acked() -> None:
+    consumer = UnitConsumer("permanent")
+    message = FakeMessage(json.dumps({"ok": True}))
+    decisions: list[str] = []
+    consumer._publish_poison = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda *_args, **_kwargs: decisions.append("published")
+    )
+    consumer._finalize_poison_delivery = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda *_args, **_kwargs: decisions.append("finalized")
+    )
+    message.ack.side_effect = lambda: decisions.append("acked")
+
+    await consumer._process_message_with_ack(message)
+
+    assert decisions == ["published", "finalized", "acked"]
+
+
+@pytest.mark.asyncio
+async def test_poison_finalization_failure_requeues_original() -> None:
+    consumer = UnitConsumer("permanent")
+    consumer._finalize_poison_delivery = AsyncMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("durable state unavailable")
+    )
+    message = FakeMessage(json.dumps({"ok": True}))
+
+    await consumer._process_message_with_ack(message)
+
+    assert consumer.poison_payloads == [({"ok": True}, "bad state")]
+    message.ack.assert_not_awaited()
+    message.nack.assert_awaited_once_with(requeue=True)
+
+
+@pytest.mark.asyncio
 async def test_unexpected_error_publishes_poison_then_acks_original() -> None:
     consumer = UnitConsumer("unexpected")
     message = FakeMessage(json.dumps({"ok": True}))
