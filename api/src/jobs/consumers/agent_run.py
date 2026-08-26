@@ -138,7 +138,7 @@ class AgentRunConsumer(BaseConsumer):
                     missing_run = await db.get(AgentRun, UUID(run_id))
                     if missing_run is not None:
                         missing_run.status = "failed"
-                        missing_run.error = f"Agent {agent_id} not found"
+                        missing_run.error = "Agent no longer exists"
                         missing_run.completed_at = datetime.now(timezone.utc)
                         await db.commit()
                 if sync:

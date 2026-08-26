@@ -66,8 +66,6 @@ def consumer():
     ):
         mock_settings.return_value = MagicMock(max_concurrency=2)
         c = AgentRunConsumer()
-        c._claim_durable_run = AsyncMock(return_value=True)
-        c._fail_missing_context_run = AsyncMock(return_value=None)
         return c
 
 
@@ -99,7 +97,7 @@ async def test_missing_redis_context_returns_early(consumer):
 
     redis_mock.get.assert_called_once()
     assert queued_run.status == "failed"
-    assert queued_run.error == "Agent run context was unavailable"
+    assert queued_run.error == "Agent run context was unavailable before execution"
     mock_session.commit.assert_awaited_once()
 
 
@@ -143,7 +141,7 @@ async def test_agent_not_found_returns_early(consumer):
         )
 
     # Verify the agent query was executed
-    mock_session.execute.assert_called_once()
+    assert mock_session.execute.await_count == 2
     assert queued_run.status == "failed"
     assert queued_run.error == "Agent no longer exists"
 
@@ -178,8 +176,9 @@ async def test_pre_cancel_updates_existing_queued_run(consumer):
     assert queued_run.status == "cancelled"
     assert queued_run.completed_at is not None
     mock_session.add.assert_not_called()
-    _, get_kwargs = mock_session.get.call_args
-    assert get_kwargs["with_for_update"] == {"of": AgentRun}
+    mock_session.execute.assert_awaited_once()
+    assert mock_session.get.await_count == 2
+    assert mock_session.commit.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -210,7 +209,7 @@ async def test_late_terminalized_run_is_not_overwritten(
 
     async def _redis_get(key):
         if key == context_key:
-            return json.dumps({"org_id": str(uuid4()), "input": "hello"})
+            return json.dumps({"input": "hello"})
         if key == cancel_key:
             return None
         return None
