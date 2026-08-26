@@ -61,6 +61,20 @@ def test_mtg_pr_images_build_in_parallel_and_main_promotes_exact_digests() -> No
     assert "com.midtowntg.bifrost.source-tree" in build_step["with"]["labels"]
     assert "com.midtowntg.bifrost.candidate=true" in build_step["with"]["labels"]
 
+    version_step = next(
+        step
+        for step in main_publish["steps"]
+        if step["name"] == "Compute candidate-compatible version"
+    )
+    assert (
+        'publication_parent="$(git rev-parse "${GITHUB_SHA}^1")"'
+        in version_step["run"]
+    )
+    assert (
+        './scripts/compute-dev-version.sh --next-after "$publication_parent"'
+        in version_step["run"]
+    )
+
     promotion_steps = [
         step
         for step in main_publish["steps"]
