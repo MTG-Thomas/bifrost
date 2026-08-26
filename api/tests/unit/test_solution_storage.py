@@ -14,8 +14,6 @@ from typing import Any, cast
 
 import pytest
 
-from src.services.file_storage.azure_blob_client import AzureBlobStorageClient
-from src.services.file_storage.s3_client import S3StorageClient
 from src.services.solutions.storage import SolutionStorage
 
 
@@ -66,14 +64,18 @@ def test_solution_prefix_constant() -> None:
 def test_storage_uses_configured_azure_blob_provider() -> None:
     storage = SolutionStorage(uuid.uuid4(), settings=_settings("azure_blob"))
 
-    assert isinstance(storage._storage, AzureBlobStorageClient)
+    assert type(storage._storage).__module__ == (
+        "src.services.file_storage.azure_blob_client"
+    )
+    assert type(storage._storage).__qualname__ == "AzureBlobStorageClient"
     assert storage._bucket == "azure-container"
 
 
 def test_storage_uses_configured_s3_provider() -> None:
     storage = SolutionStorage(uuid.uuid4(), settings=_settings("s3"))
 
-    assert isinstance(storage._storage, S3StorageClient)
+    assert type(storage._storage).__module__ == "src.services.file_storage.s3_client"
+    assert type(storage._storage).__qualname__ == "S3StorageClient"
     assert storage._bucket == "s3-bucket"
 
 
