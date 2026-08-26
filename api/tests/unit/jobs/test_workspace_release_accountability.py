@@ -153,3 +153,12 @@ async def test_existing_attention_alert_refreshes_current_counts(monkeypatch) ->
     assert "3 reviewed loose source release(s)" in update.description
     assert "1 Solution deploy(s)" in update.description
     assert "2 Live history projection(s)" in update.description
+    assert update.metadata == {
+        "action": "workspace_release_accountability",
+        "source_release_count": 3,
+        "history_release_count": 2,
+        "solution_deploy_count": 1,
+        "solution_deploy_obligation_ids": [],
+        "source_release_ids": [],
+        "workspace_release_ids": [],
+    }

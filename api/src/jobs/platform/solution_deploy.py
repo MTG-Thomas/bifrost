@@ -47,6 +47,15 @@ async def run_solution_deploy(
                 zip_path,
                 expected_sha256=payload.input_sha256,
             )
+            raw_accountability_org_id = payload.options.get(
+                "accountability_organization_id"
+            )
+            accountability_organization_id = (
+                UUID(str(raw_accountability_org_id))
+                if raw_accountability_org_id
+                else None
+            )
+            candidate_id = str(payload.options.get("candidate_id") or "")
             if payload.kind in {"deploy", "install_from_repo"}:
                 if payload.install_id is None:
                     raise PlatformJobFailure(
@@ -57,12 +66,8 @@ async def run_solution_deploy(
                     payload.install_id,
                     zip_path,
                     force=bool(payload.options.get("force", False)),
-                    candidate_id=str(payload.options.get("candidate_id") or ""),
-                    accountability_organization_id=(
-                        UUID(str(payload.options["accountability_organization_id"]))
-                        if payload.options.get("accountability_organization_id")
-                        else None
-                    ),
+                    candidate_id=candidate_id,
+                    accountability_organization_id=accountability_organization_id,
                 )
             else:
                 raw_org_id = payload.options.get("organization_id")
@@ -77,12 +82,8 @@ async def run_solution_deploy(
                     replace_secrets=bool(payload.options.get("replace_secrets", False)),
                     replace_data=bool(payload.options.get("replace_data", False)),
                     reactivate=bool(payload.options.get("reactivate", False)),
-                    candidate_id=str(payload.options.get("candidate_id") or ""),
-                    accountability_organization_id=(
-                        UUID(str(payload.options["accountability_organization_id"]))
-                        if payload.options.get("accountability_organization_id")
-                        else None
-                    ),
+                    candidate_id=candidate_id,
+                    accountability_organization_id=accountability_organization_id,
                 )
         failure: PlatformJobFailure | None = None
         result: dict[str, Any] = {}

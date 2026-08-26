@@ -122,7 +122,7 @@ class _InsertDeclareDatabase:
     async def commit(self):
         pass
 
-    async def refresh(self, _record):
+    async def refresh(self, _record, attribute_names=None):
         pass
 
 

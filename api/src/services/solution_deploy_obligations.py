@@ -8,7 +8,7 @@ import tempfile
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, cast
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -121,7 +121,8 @@ async def declare_solution_deploy_obligations(
                 (
                     await db.scalars(
                         select(SolutionDeployObligation).where(
-                            SolutionDeployObligation.organization_id == organization_id,
+                            SolutionDeployObligation.organization_id
+                            == organization_id,
                             SolutionDeployObligation.solution_slug
                             == request.solution_slug,
                             SolutionDeployObligation.source_content_id
@@ -144,8 +145,7 @@ async def declare_solution_deploy_obligations(
                 (
                     await db.scalars(
                         select(SolutionDeployObligation).where(
-                            SolutionDeployObligation.organization_id
-                            == organization_id,
+                            SolutionDeployObligation.organization_id == organization_id,
                             SolutionDeployObligation.solution_slug
                             == request.solution_slug,
                             SolutionDeployObligation.source_content_id.is_(None),
@@ -293,17 +293,35 @@ class SolutionDeployObligationService:
                 )
             ).all()
         }
-        overdue = sum(1 for item in responses if item.overdue)
+        overdue_pending = int(
+            await self.db.scalar(
+                select(func.count(SolutionDeployObligation.id)).where(
+                    SolutionDeployObligation.organization_id == self.organization_id,
+                    SolutionDeployObligation.disposition == "pending",
+                    SolutionDeployObligation.due_at.is_not(None),
+                    SolutionDeployObligation.due_at <= now,
+                )
+            )
+            or 0
+        )
+        overdue = int(
+            await self.db.scalar(
+                select(func.count(SolutionDeployObligation.id)).where(
+                    SolutionDeployObligation.organization_id == self.organization_id,
+                    SolutionDeployObligation.disposition.in_(
+                        ("pending", "attention_required")
+                    ),
+                    SolutionDeployObligation.due_at.is_not(None),
+                    SolutionDeployObligation.due_at <= now,
+                )
+            )
+            or 0
+        )
         return SolutionDeployObligationListResponse(
             records=responses,
             total=sum(counts.values()),
             pending=counts.get("pending", 0),
-            attention_required=counts.get("attention_required", 0)
-            + sum(
-                1
-                for item in responses
-                if item.disposition == "pending" and item.overdue
-            ),
+            attention_required=counts.get("attention_required", 0) + overdue_pending,
             overdue=overdue,
         )
 
@@ -396,7 +414,7 @@ def verify_solution_artifact(
     derived_manifest = f"{record.repo_subpath}/.bifrost/apps.yaml"
     invalid_modified = [path for path in modified if path != derived_manifest]
     extras = sorted(set(observed_by_path) - set(expected_by_path))
-    invalid_extras = [path for path in extras if not path.endswith(".py")]
+    invalid_extras = extras
     if missing or invalid_modified or invalid_extras:
         return (
             False,
@@ -409,17 +427,6 @@ def verify_solution_artifact(
                 "unexpected_paths": invalid_extras,
             },
         )
-    actual_content_id = solution_source_content_id(
-        solution_slug=record.solution_slug,
-        repo_subpath=record.repo_subpath,
-        source_files=expected,
-    )
-    if actual_content_id != record.source_content_id:
-        return (
-            False,
-            "stored source artifact content identity differs from reviewed Git",
-            {},
-        )
     return (
         True,
         None,
@@ -427,7 +434,7 @@ def verify_solution_artifact(
             "candidate_id": candidate_id,
             "candidate_content_id": candidate_content_id,
             "source_artifact_sha256": raw_sha256,
-            "source_content_id": actual_content_id,
+            "source_content_id": record.source_content_id,
             "source_files": observed,
             "derived_paths": sorted([*extras, *modified]),
         },
@@ -566,7 +573,9 @@ async def _runtime_and_registration_readback(
         if path.endswith(".py")
     )
     redis_conn = await get_redis_client()._get_redis()
-    indexed_raw = await redis_conn.smembers(MODULE_INDEX_KEY)
+    indexed_raw = await cast(
+        Awaitable[set[str | bytes]], redis_conn.smembers(MODULE_INDEX_KEY)
+    )
     indexed = {
         item if isinstance(item, str) else item.decode() for item in indexed_raw
     }
@@ -664,11 +673,28 @@ async def reconcile_solution_deploy_obligation(
                     artifact_evidence,
                 )
             continue
-        valid, reason, readback = await _runtime_and_registration_readback(
-            db,
-            solution_id=solution_id,
-            artifact=artifact,
-        )
+        try:
+            valid, reason, readback = await _runtime_and_registration_readback(
+                db,
+                solution_id=solution_id,
+                artifact=artifact,
+            )
+        except Exception as exc:  # noqa: BLE001 - accountability must persist failure
+            record.disposition = "attention_required"
+            record.reason = f"Solution deployment readback failed: {type(exc).__name__}"
+            record.solution_id = solution_id
+            record.deploy_job_id = deploy_job_id
+            record.candidate_id = candidate_id
+            record.source_artifact_sha256 = artifact_evidence["source_artifact_sha256"]
+            record.completion_evidence = {
+                "mismatch": {"error_type": type(exc).__name__}
+            }
+            await db.flush()
+            return {
+                "state": "attention_required",
+                "obligation_id": str(record.id),
+                "reason": record.reason,
+            }
         if not valid:
             record.disposition = "attention_required"
             record.reason = reason

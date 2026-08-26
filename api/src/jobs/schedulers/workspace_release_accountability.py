@@ -56,6 +56,15 @@ async def check_workspace_release_accountability() -> dict[str, object]:
         await db.commit()
 
     total = source_count + history_count + solution_count
+    metadata = {
+        "action": "workspace_release_accountability",
+        "source_release_count": source_count,
+        "history_release_count": history_count,
+        "solution_deploy_count": solution_count,
+        "solution_deploy_obligation_ids": solution_ids,
+        "source_release_ids": transitioned["source_release_ids"],
+        "workspace_release_ids": transitioned["workspace_release_ids"],
+    }
     notifications = get_notification_service()
     existing = await notifications.find_admin_notification_by_title(
         title=NOTIFICATION_TITLE,
@@ -72,15 +81,7 @@ async def check_workspace_release_accountability() -> dict[str, object]:
                     f"{solution_count} Solution deploy(s), and "
                     f"{history_count} Live history projection(s) require attention"
                 ),
-                metadata={
-                    "action": "workspace_release_accountability",
-                    "source_release_count": source_count,
-                    "history_release_count": history_count,
-                    "solution_deploy_count": solution_count,
-                    "solution_deploy_obligation_ids": solution_ids,
-                    "source_release_ids": transitioned["source_release_ids"],
-                    "workspace_release_ids": transitioned["workspace_release_ids"],
-                },
+                metadata=metadata,
             ),
             for_admins=True,
             initial_status=NotificationStatus.AWAITING_ACTION,
@@ -95,6 +96,7 @@ async def check_workspace_release_accountability() -> dict[str, object]:
                     f"{solution_count} Solution deploy(s), and "
                     f"{history_count} Live history projection(s) require attention"
                 ),
+                metadata=metadata,
             ),
         )
     elif not total and existing is not None:

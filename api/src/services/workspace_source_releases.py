@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bifrost.promotion import normalize_workspace_path
 from bifrost.workspace_release import canonical_digest
 from src.models.contracts.workspace_promotions import (
-    SolutionDeployObligationDeclare,
     WorkspaceSourceReleaseDeclareRequest,
     WorkspaceSourceReleaseListResponse,
     WorkspaceSourceReleaseResponse,
@@ -47,7 +46,7 @@ def _assert_compatible_replay(
         solution_deploy_obligation_declaration(item).model_dump(
             mode="json", exclude_none=True
         )
-        for item in getattr(record, "solution_deploy_obligations", [])
+        for item in record.solution_deploy_obligations
     ]
     requested_solution_obligations = [
         item.model_dump(mode="json", exclude_none=True)
@@ -101,7 +100,6 @@ def source_release_response(
     record: WorkspaceSourceRelease,
     *,
     now: datetime | None = None,
-    solution_deploy_obligations: list[SolutionDeployObligationDeclare] | None = None,
 ) -> WorkspaceSourceReleaseResponse:
     now = now or _utc_now()
     overdue = bool(
@@ -139,15 +137,8 @@ def source_release_response(
         created_at=record.created_at,
         updated_at=record.updated_at,
         solution_deploy_obligations=[
-            solution_deploy_obligation_declaration(item).model_dump(
-                mode="json", exclude_none=True
-            )
-            for item in getattr(record, "solution_deploy_obligations", [])
-        ]
-        if solution_deploy_obligations is None
-        else [
-            item.model_dump(mode="json", exclude_none=True)
-            for item in solution_deploy_obligations
+            solution_deploy_obligation_declaration(item)
+            for item in record.solution_deploy_obligations
         ],
     )
 
@@ -190,12 +181,7 @@ class WorkspaceSourceReleaseService:
         )
         if existing is not None:
             _assert_compatible_replay(existing, request, paths)
-            return source_release_response(
-                existing,
-                solution_deploy_obligations=list(
-                    request.solution_deploy_obligations or []
-                ),
-            )
+            return source_release_response(existing)
 
         now = _utc_now()
         disposition = request.disposition
@@ -260,20 +246,9 @@ class WorkspaceSourceReleaseService:
             if existing is None:
                 raise
             _assert_compatible_replay(existing, request, paths)
-            return source_release_response(
-                existing,
-                solution_deploy_obligations=list(
-                    request.solution_deploy_obligations or []
-                ),
-            )
-        await self.db.refresh(record)
-        return source_release_response(
-            record,
-            now=now,
-            solution_deploy_obligations=list(
-                request.solution_deploy_obligations or []
-            ),
-        )
+            return source_release_response(existing)
+        await self.db.refresh(record, attribute_names=["solution_deploy_obligations"])
+        return source_release_response(record, now=now)
 
     async def set_manual_disposition(
         self,

@@ -4,7 +4,14 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 
 class PromotionEntry(BaseModel):
@@ -423,6 +430,12 @@ class SolutionDeployObligationDeclare(BaseModel):
     disposition: Literal["solution_deploy_required", "attention_required"]
     reason: str | None = Field(default=None, min_length=1, max_length=2000)
 
+    @model_serializer(mode="wrap")
+    def serialize_without_nulls(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        return {key: value for key, value in handler(self).items() if value is not None}
+
     @model_validator(mode="after")
     def validate_solution_evidence(self):
         expected_prefix = f"{self.repo_subpath}/"
@@ -443,6 +456,13 @@ class SolutionDeployObligationDeclare(BaseModel):
         file_paths = [item.path for item in self.source_files]
         if file_paths != sorted(set(file_paths)):
             raise ValueError("Solution source files must be sorted and unique by path")
+        invalid_hashes = [
+            path
+            for path, digest in self.changed_paths.items()
+            if digest is not None and not _is_sha256(digest)
+        ]
+        if invalid_hashes:
+            raise ValueError("Solution changed path digests must be lowercase SHA-256")
         file_hashes = {item.path: item.sha256 for item in self.source_files}
         inconsistent_changes = [
             path
@@ -459,13 +479,6 @@ class SolutionDeployObligationDeclare(BaseModel):
                 raise ValueError(
                     "deploy-required Solution obligation cannot carry an attention reason"
                 )
-        invalid_hashes = [
-            path
-            for path, digest in self.changed_paths.items()
-            if digest is not None and not _is_sha256(digest)
-        ]
-        if invalid_hashes:
-            raise ValueError("Solution changed path digests must be lowercase SHA-256")
         return self
 
 
@@ -557,7 +570,9 @@ class WorkspaceSourceReleaseResponse(BaseModel):
     resolved_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
-    solution_deploy_obligations: list[dict[str, Any]] = Field(default_factory=list)
+    solution_deploy_obligations: list[SolutionDeployObligationDeclare] = Field(
+        default_factory=list
+    )
 
 
 SolutionDeployDisposition = Literal[

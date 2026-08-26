@@ -210,6 +210,7 @@ class TestNotificationService:
             status=NotificationStatus.RUNNING,
             description="Cloning repository...",
             percent=50.0,
+            metadata={"current": "clone"},
         )
 
         with patch("src.services.notification_service.pubsub_manager", mock_pubsub):
@@ -222,6 +223,7 @@ class TestNotificationService:
         assert result.status == NotificationStatus.RUNNING
         assert result.description == "Cloning repository..."
         assert result.percent == 50.0
+        assert result.metadata == {"current": "clone"}
 
         # Verify WebSocket broadcast
         mock_pubsub.broadcast.assert_called_once()

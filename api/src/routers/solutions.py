@@ -1512,18 +1512,18 @@ async def _run_deploy_job(
                 # code (P1-c). Still inside the lock so finalize can't race another deploy.
                 await _set_phase("storing source artifact and runtime files")
                 await result.finalize_s3()
-                from src.services.solution_deploy_obligations import (
-                    reconcile_solution_deploy_obligation,
-                )
-                from src.services.solutions.source_artifact import (
-                    SolutionSourceArtifactStorage,
-                )
-
-                stored_artifact = await SolutionSourceArtifactStorage(solution_id).read()
-                if stored_artifact is None:
-                    raise SolutionFinalizeIncomplete(str(solution_id))
                 accountability = {"state": "not_tracked"}
                 if accountability_organization_id is not None:
+                    from src.services.solution_deploy_obligations import (
+                        reconcile_solution_deploy_obligation,
+                    )
+                    from src.services.solutions.source_artifact import (
+                        SolutionSourceArtifactStorage,
+                    )
+
+                    stored_artifact = await SolutionSourceArtifactStorage(solution_id).read()
+                    if stored_artifact is None:
+                        raise SolutionFinalizeIncomplete(str(solution_id))
                     accountability = await reconcile_solution_deploy_obligation(
                         db,
                         solution_id=solution_id,
