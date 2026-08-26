@@ -404,6 +404,150 @@ async def test_get_execution_hides_another_users_redis_only_receipt():
 
 
 @pytest.mark.asyncio
+async def test_get_execution_returns_owned_queued_agent_run():
+    context = _context()
+    service = MCPAgentGatewayService(context)
+    execution_id = uuid4()
+    workflow_result = MagicMock()
+    workflow_result.scalar_one_or_none.return_value = None
+    agent_run_result = MagicMock()
+    agent_run = MagicMock()
+    agent_run.id = execution_id
+    agent_run.agent_id = uuid4()
+    agent_run.agent.name = "Queued Agent"
+    agent_run.caller_user_id = str(context.user_id)
+    agent_run.status = "queued"
+    agent_run.output = None
+    agent_run.created_at = None
+    agent_run.started_at = None
+    agent_run.completed_at = None
+    agent_run.duration_ms = None
+    agent_run.error = None
+    agent_run_result.scalar_one_or_none.return_value = agent_run
+    db = AsyncMock()
+    db.execute.side_effect = [workflow_result, agent_run_result]
+    db_context = MagicMock()
+    db_context.__aenter__ = AsyncMock(return_value=db)
+    db_context.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("src.core.database.get_db_context", return_value=db_context):
+        result = await service.get_execution(str(execution_id))
+
+    assert result["execution_id"] == str(execution_id)
+    assert result["execution_type"] == "agent_run"
+    assert result["status"] == "Pending"
+    assert result["result_available"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_execution_returns_completed_owned_agent_run():
+    context = _context()
+    service = MCPAgentGatewayService(context)
+    execution_id = uuid4()
+    workflow_result = MagicMock()
+    workflow_result.scalar_one_or_none.return_value = None
+    agent_run_result = MagicMock()
+    agent_run = MagicMock()
+    agent_run.id = execution_id
+    agent_run.agent_id = uuid4()
+    agent_run.agent.name = "Process Agent"
+    agent_run.caller_user_id = str(context.user_id)
+    agent_run.status = "completed"
+    agent_run.output = {"text": "Done"}
+    agent_run.created_at = None
+    agent_run.started_at = None
+    agent_run.completed_at = None
+    agent_run.duration_ms = 125
+    agent_run.error = None
+    agent_run_result.scalar_one_or_none.return_value = agent_run
+    db = AsyncMock()
+    db.execute.side_effect = [workflow_result, agent_run_result]
+    db_context = MagicMock()
+    db_context.__aenter__ = AsyncMock(return_value=db)
+    db_context.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("src.core.database.get_db_context", return_value=db_context):
+        result = await service.get_execution(str(execution_id))
+
+    assert result["execution_type"] == "agent_run"
+    assert result["agent_id"] == str(agent_run.agent_id)
+    assert result["agent_name"] == "Process Agent"
+    assert result["status"] == "Success"
+    assert result["result"] == {"text": "Done"}
+
+
+@pytest.mark.asyncio
+async def test_get_execution_hides_another_users_agent_run():
+    service = MCPAgentGatewayService(_context())
+    workflow_result = MagicMock()
+    workflow_result.scalar_one_or_none.return_value = None
+    agent_run_result = MagicMock()
+    agent_run = MagicMock()
+    agent_run.caller_user_id = str(uuid4())
+    agent_run_result.scalar_one_or_none.return_value = agent_run
+    db = AsyncMock()
+    db.execute.side_effect = [workflow_result, agent_run_result]
+    db_context = MagicMock()
+    db_context.__aenter__ = AsyncMock(return_value=db)
+    db_context.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("src.core.database.get_db_context", return_value=db_context):
+        with pytest.raises(GatewayError) as exc_info:
+            await service.get_execution(str(uuid4()))
+
+    assert exc_info.value.code == "EXECUTION_NOT_FOUND_OR_FORBIDDEN"
+
+
+@pytest.mark.asyncio
+async def test_capability_search_stops_before_the_serialized_response_budget(
+    monkeypatch,
+):
+    service = MCPAgentGatewayService(_context())
+    agents = []
+    snapshots = {}
+    for index in range(8):
+        agent = _agent()
+        agent.id = uuid4()
+        agent.name = f"Ticket Agent {index}"
+        agent.description = "ticket operations " * 100
+        agents.append(agent)
+        snapshots[str(agent.id)] = AgentToolSnapshot(
+            agent=agent,
+            tools=[
+                _resolved_tool(
+                    name=f"lookup_ticket_{index}",
+                    description="ticket lookup " * 100,
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        "src.services.mcp_server.gateway.MAX_CAPABILITY_RESPONSE_BYTES",
+        4_000,
+    )
+    with (
+        patch.object(
+            service,
+            "_list_accessible_agents",
+            new=AsyncMock(return_value=agents),
+        ),
+        patch.object(
+            service,
+            "get_agent_snapshot",
+            new=AsyncMock(side_effect=lambda agent_id: snapshots[agent_id]),
+        ),
+    ):
+        result = await service.search_capabilities(query="ticket", limit=20)
+
+    from src.services.mcp_server.gateway import _serialized_size
+
+    assert _serialized_size(result) <= 4_000
+    assert result["has_more_matches"] is True
+    assert result["response_complete"] is False
+    assert result["returned_matches"] < result["total_matches"]
+
+
+@pytest.mark.asyncio
 async def test_execute_validates_before_dispatch():
     service = MCPAgentGatewayService(_context())
     agent = _agent()

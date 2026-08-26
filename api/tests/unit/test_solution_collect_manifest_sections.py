@@ -895,6 +895,7 @@ async def test_poll_deploy_job_reports_success_failure_and_read_errors(capsys):
         def __init__(self, responses):
             self.responses = list(responses)
             self.paths: list[str] = []
+            self.api_url = "https://bifrost.example"
 
         async def get(self, path):
             self.paths.append(path)
@@ -909,7 +910,9 @@ async def test_poll_deploy_job_reports_success_failure_and_read_errors(capsys):
         "/api/solutions/deploy-jobs/job-1",
         "/api/solutions/deploy-jobs/job-1",
     ]
-    assert "Still deploying" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "Still deploying" not in output
+    assert "Deploy complete" in output
 
     mismatched = Client(
         [

@@ -34,9 +34,8 @@ env:
   CI_API_TEST_IMAGE: mtg-thomas/bifrost-ci-api-dev
   CI_CLIENT_TEST_IMAGE: mtg-thomas/bifrost-ci-client-dev
   CI_PLAYWRIGHT_TEST_IMAGE: mtg-thomas/bifrost-ci-playwright
-  # Main-push verification must consume the immutable image published by this
-  # exact commit, never the previous mutable :main tag while publication races.
-  CI_TEST_IMAGE_TAG: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || inputs.queue_post_merge) && format('sha-{0}', github.sha) || 'main' }}
+  # Every test lane consumes the immutable image published from its exact tree.
+  CI_TEST_IMAGE_TAG: ${{ format('sha-{0}', github.sha) }}
 
 jobs:
   # =============================================================================
@@ -176,7 +175,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -224,7 +223,7 @@ jobs:
           cosign sign --yes "${IMAGE}@${IMAGE_DIGEST}"
 
       - name: Attest candidate build provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/${{ matrix.image }}
           subject-digest: ${{ steps.build.outputs.digest }}
@@ -267,11 +266,14 @@ jobs:
           echo "API, worker, and client candidates are ready for exact-tree promotion."
 
   # =============================================================================
-  # CI Test Images - Baked dependency/toolchain images for future PR test runs.
+  # CI Test Images - Baked dependency/toolchain images for this exact test run.
   # Source code is still mounted from each PR checkout by docker-compose.test.yml.
   # =============================================================================
   publish-ci-test-images:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     name: Publish CI Test Images
     permissions:
@@ -282,7 +284,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
@@ -299,7 +301,7 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.CI_API_TEST_IMAGE }}:main
+            ${{ github.ref == 'refs/heads/main' && format('{0}/{1}:main', env.REGISTRY, env.CI_API_TEST_IMAGE) || '' }}
             ${{ env.REGISTRY }}/${{ env.CI_API_TEST_IMAGE }}:sha-${{ github.sha }}
           cache-from: type=gha,scope=test-api-dev
           cache-to: type=gha,scope=test-api-dev,mode=max
@@ -312,7 +314,7 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.CI_CLIENT_TEST_IMAGE }}:main
+            ${{ github.ref == 'refs/heads/main' && format('{0}/{1}:main', env.REGISTRY, env.CI_CLIENT_TEST_IMAGE) || '' }}
             ${{ env.REGISTRY }}/${{ env.CI_CLIENT_TEST_IMAGE }}:sha-${{ github.sha }}
           cache-from: type=gha,scope=test-client-dev
           cache-to: type=gha,scope=test-client-dev,mode=max
@@ -325,7 +327,7 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.CI_PLAYWRIGHT_TEST_IMAGE }}:main
+            ${{ github.ref == 'refs/heads/main' && format('{0}/{1}:main', env.REGISTRY, env.CI_PLAYWRIGHT_TEST_IMAGE) || '' }}
             ${{ env.REGISTRY }}/${{ env.CI_PLAYWRIGHT_TEST_IMAGE }}:sha-${{ github.sha }}
           cache-from: type=gha,scope=test-playwright
           cache-to: type=gha,scope=test-playwright,mode=max
@@ -922,7 +924,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -993,7 +995,7 @@ jobs:
 
       - name: Attest API dev image provenance
         if: github.repository != 'MTG-Thomas/bifrost'
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/${{ env.API_IMAGE }}
           subject-digest: ${{ steps.build-api.outputs.digest }}
@@ -1068,7 +1070,7 @@ jobs:
 
       - name: Attest worker dev image provenance
         if: github.repository != 'MTG-Thomas/bifrost'
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/${{ env.WORKER_IMAGE }}
           subject-digest: ${{ steps.build-worker.outputs.digest }}
@@ -1144,7 +1146,7 @@ jobs:
 
       - name: Attest client dev image provenance
         if: github.repository != 'MTG-Thomas/bifrost'
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/${{ env.CLIENT_IMAGE }}
           subject-digest: ${{ steps.build-client.outputs.digest }}
@@ -1423,7 +1425,7 @@ jobs:
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -1472,7 +1474,7 @@ jobs:
             ghcr.io/${{ env.API_IMAGE }}@${{ steps.build-api.outputs.digest }}
 
       - name: Attest API image provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/${{ env.API_IMAGE }}
           subject-digest: ${{ steps.build-api.outputs.digest }}
@@ -1530,7 +1532,7 @@ jobs:
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -1580,7 +1582,7 @@ jobs:
             ghcr.io/${{ env.CLIENT_IMAGE }}@${{ steps.build-client.outputs.digest }}
 
       - name: Attest client image provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/${{ env.CLIENT_IMAGE }}
           subject-digest: ${{ steps.build-client.outputs.digest }}
@@ -1638,7 +1640,7 @@ jobs:
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
@@ -1687,7 +1689,7 @@ jobs:
             ghcr.io/${{ env.WORKER_IMAGE }}@${{ steps.build-worker.outputs.digest }}
 
       - name: Attest worker image provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/${{ env.WORKER_IMAGE }}
           subject-digest: ${{ steps.build-worker.outputs.digest }}
@@ -1778,7 +1780,7 @@ jobs:
       # discoverable via `gh attestation verify`. Independent signal from the
       # cosign blob signatures above.
       - name: Generate SLSA build provenance attestation
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: ${{ steps.source_tarball.outputs.tarball }}
 

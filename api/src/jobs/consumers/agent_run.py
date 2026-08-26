@@ -30,6 +30,17 @@ DEFAULT_RUN_TIMEOUT = 1800  # 30 minutes
 CANCEL_CHECK_INTERVAL = 2  # seconds between cancel flag checks
 
 
+async def _publish_sync_result(run_id: str, result: dict) -> None:
+    """Release a synchronous caller waiting on this run."""
+    result_key = f"{REDIS_PREFIX}:{run_id}:result"
+    async with get_redis() as redis:
+        await redis.lpush(  # pyright: ignore[reportGeneralTypeIssues]
+            result_key,
+            json.dumps(result),
+        )
+        await redis.expire(result_key, 300)
+
+
 class AgentRunConsumer(BaseConsumer):
     def __init__(self):
         settings = get_settings()
@@ -59,6 +70,15 @@ class AgentRunConsumer(BaseConsumer):
                 run_id,
                 durable_status or "missing",
             )
+            if sync:
+                await _publish_sync_result(
+                    run_id,
+                    {
+                        "output": None,
+                        "status": "failed",
+                        "error": "Agent run context was unavailable",
+                    },
+                )
             return
 
         context = json.loads(context_raw)
@@ -87,15 +107,19 @@ class AgentRunConsumer(BaseConsumer):
                 agent_run.started_at = datetime.now(timezone.utc)
                 agent_run.completed_at = datetime.now(timezone.utc)
                 await db.commit()
+            if sync:
+                await _publish_sync_result(
+                    run_id,
+                    {"output": None, "status": "cancelled", "error": None},
+                )
             return
-
         start_time = time.time()
         agent_run: AgentRun | None = None
         agent: Agent | None = None
         executor = None
 
         try:
-            # Load agent with relationships (brief DB session)
+            # Load agent with relationships after claiming the durable run.
             async with self._session_factory() as db:
                 result = await db.execute(
                     select(Agent)
@@ -110,13 +134,36 @@ class AgentRunConsumer(BaseConsumer):
 
             if not agent:
                 logger.error(f"Agent run {run_id}: agent {agent_id} not found")
+                sync_result = {
+                    "output": None,
+                    "status": "failed",
+                    "error": "Agent no longer exists",
+                }
                 async with self._session_factory() as db:
-                    missing_run = await db.get(AgentRun, UUID(run_id))
+                    missing_run = await db.get(
+                        AgentRun,
+                        UUID(run_id),
+                        with_for_update={"of": AgentRun},
+                    )
                     if missing_run is not None:
-                        missing_run.status = "failed"
-                        missing_run.error = f"Agent {agent_id} not found"
-                        missing_run.completed_at = datetime.now(timezone.utc)
-                        await db.commit()
+                        if missing_run.status == "running":
+                            missing_run.status = "failed"
+                            missing_run.error = "Agent no longer exists"
+                            missing_run.completed_at = datetime.now(timezone.utc)
+                            await db.commit()
+                        else:
+                            logger.info(
+                                "Agent run %s: missing-agent update skipped because current status is %s",
+                                run_id,
+                                missing_run.status,
+                            )
+                        sync_result = {
+                            "output": missing_run.output,
+                            "status": missing_run.status,
+                            "error": missing_run.error,
+                        }
+                if sync:
+                    await _publish_sync_result(run_id, sync_result)
                 return
 
             # Create AgentRun record (brief DB session)
@@ -225,12 +272,26 @@ class AgentRunConsumer(BaseConsumer):
 
             # Update run record and flush buffered steps (brief DB session)
             duration_ms = int((time.time() - start_time) * 1000)
+            consumer_applied_result = False
             async with self._session_factory() as db:
-                # Re-fetch the AgentRun in this session to update it
-                run_obj = await db.get(AgentRun, UUID(run_id))
-                if run_obj:
+                # Re-fetch the AgentRun in this session to update it, but only
+                # if it is still live. A scheduler may have already terminalized
+                # the row; in that case we must not overwrite the final status.
+                run_obj = await db.get(
+                    AgentRun,
+                    UUID(run_id),
+                    with_for_update={"of": AgentRun},
+                )
+                if run_obj is None:
+                    logger.info(f"Agent run {run_id}: final update skipped because row disappeared")
+                    return
+                if run_obj.status == "running":
                     run_obj.status = run_result.get("status", "completed")
-                    run_obj.output = run_result.get("output") if isinstance(run_result.get("output"), dict) else {"text": run_result.get("output")}
+                    run_obj.output = (
+                        run_result.get("output")
+                        if isinstance(run_result.get("output"), dict)
+                        else {"text": run_result.get("output")}
+                    )
                     run_obj.iterations_used = run_result.get("iterations_used", 0)
                     run_obj.tokens_used = run_result.get("tokens_used", 0)
                     run_obj.llm_model = run_result.get("llm_model")
@@ -238,8 +299,17 @@ class AgentRunConsumer(BaseConsumer):
                     run_obj.completed_at = datetime.now(timezone.utc)
                     if run_result.get("error"):
                         run_obj.error = run_result["error"]
+                    consumer_applied_result = True
+                else:
+                    logger.info(
+                        "Agent run %s: final update skipped because current status is %s",
+                        run_id,
+                        run_obj.status,
+                    )
 
-                # Flush executor's buffered steps and AI usage
+                # Flush metering and steps even when the scheduler won the
+                # terminal-state race; completed provider work still incurred
+                # cost and remains useful diagnostic evidence.
                 if executor:
                     await executor.flush_to_db(db)
 
@@ -264,7 +334,7 @@ class AgentRunConsumer(BaseConsumer):
             # exposes a regenerate button to retry from any state.
             # Errors here MUST NOT crash the run — summary_status stays
             # 'pending' and the UI offers a regenerate path.
-            if run_result.get("status") == "completed":
+            if consumer_applied_result and agent_run.status == "completed":
                 try:
                     from src.services.execution.run_summarizer import enqueue_summarize
                     await enqueue_summarize(UUID(run_id))
@@ -286,29 +356,41 @@ class AgentRunConsumer(BaseConsumer):
 
             # If sync, push result for BLPOP waiter
             if sync:
-                result_key = f"{REDIS_PREFIX}:{run_id}:result"
-                async with get_redis() as r:
-                    # redis-py 7.x stubs type lpush as -> int, but it's async at runtime
-                    await r.lpush(result_key, json.dumps({  # pyright: ignore[reportGeneralTypeIssues]
-                        "output": run_result.get("output"),
-                        "status": run_result.get("status", "completed"),
-                        "error": run_result.get("error"),
-                        "iterations_used": run_result.get("iterations_used", 0),
-                        "tokens_used": run_result.get("tokens_used", 0),
-                        "llm_model": run_result.get("llm_model"),
-                    }))
-                    await r.expire(result_key, 300)
+                await _publish_sync_result(
+                    run_id,
+                    {
+                        "output": agent_run.output,
+                        "status": agent_run.status,
+                        "error": agent_run.error,
+                        "iterations_used": agent_run.iterations_used,
+                        "tokens_used": agent_run.tokens_used,
+                        "llm_model": agent_run.llm_model,
+                    },
+                )
 
         except Exception as e:
             logger.exception(f"Agent run {run_id} failed: {e}")
             try:
                 async with self._session_factory() as db:
-                    run_obj = await db.get(AgentRun, UUID(run_id))
+                    run_obj = await db.get(
+                        AgentRun,
+                        UUID(run_id),
+                        with_for_update={"of": AgentRun},
+                    )
                     if run_obj:
-                        run_obj.status = "failed"
-                        run_obj.error = str(e)
-                        run_obj.duration_ms = int((time.time() - start_time) * 1000)
-                        run_obj.completed_at = datetime.now(timezone.utc)
+                        if run_obj.status == "running":
+                            run_obj.status = "failed"
+                            run_obj.error = str(e)
+                            run_obj.duration_ms = int(
+                                (time.time() - start_time) * 1000
+                            )
+                            run_obj.completed_at = datetime.now(timezone.utc)
+                        else:
+                            logger.info(
+                                "Agent run %s: failure update skipped because current status is %s",
+                                run_id,
+                                run_obj.status,
+                            )
 
                         # Still flush any buffered steps on failure
                         if executor:
@@ -337,14 +419,14 @@ class AgentRunConsumer(BaseConsumer):
                     logger.debug(f"failed to publish agent_run failure update for {run_id}: {pub_err}")
 
             if sync:
-                result_key = f"{REDIS_PREFIX}:{run_id}:result"
-                async with get_redis() as r:
-                    await r.lpush(result_key, json.dumps({  # pyright: ignore[reportGeneralTypeIssues]
-                        "output": None,
-                        "status": "failed",
-                        "error": str(e),
-                    }))
-                    await r.expire(result_key, 300)
+                await _publish_sync_result(
+                    run_id,
+                    {
+                        "output": agent_run.output if agent_run else None,
+                        "status": agent_run.status if agent_run else "failed",
+                        "error": agent_run.error if agent_run else str(e),
+                    },
+                )
 
         finally:
             try:

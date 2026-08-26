@@ -4,10 +4,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 
 from src.services.execution.agent_run_service import (
     enqueue_agent_run,
     enqueue_agent_run_once,
+    get_executable_agent,
 )
 
 
@@ -54,22 +56,21 @@ class TestEnqueueAgentRun:
 
         assert run_id is not None
         mock_publish.assert_called_once()
-
-        # Verify queue name
-        call_args = mock_publish.call_args
-        assert call_args[0][0] == "agent-runs"
+        assert mock_publish.call_args[0][0] == "agent-runs"
 
     @pytest.mark.asyncio
     @patch("src.services.execution.agent_run_service.publish_message")
     @patch("src.services.execution.agent_run_service.get_redis")
-    async def test_enqueue_stores_context_in_redis(self, mock_get_redis, mock_publish):
-        mock_redis = AsyncMock()
+    async def test_enqueue_stores_context_in_redis(
+        self, mock_get_redis, _mock_publish
+    ):
+        redis = AsyncMock()
         mock_ctx = AsyncMock()
-        mock_ctx.__aenter__ = AsyncMock(return_value=mock_redis)
+        mock_ctx.__aenter__ = AsyncMock(return_value=redis)
         mock_ctx.__aexit__ = AsyncMock(return_value=False)
         mock_get_redis.return_value = mock_ctx
-
         org_id = str(uuid4())
+
         await enqueue_agent_run(
             agent_id=str(uuid4()),
             trigger_type="sdk",
@@ -79,21 +80,23 @@ class TestEnqueueAgentRun:
             caller_user_id=str(uuid4()),
         )
 
-        mock_redis.set.assert_called_once()
-        context = json.loads(mock_redis.set.call_args.args[1])
+        redis.set.assert_awaited_once()
+        context = json.loads(redis.set.call_args.args[1])
         assert context["caller"]["organization_id"] == org_id
 
     @pytest.mark.asyncio
     @patch("src.services.execution.agent_run_service.publish_message")
     @patch("src.services.execution.agent_run_service.get_redis")
-    async def test_enqueue_uses_provided_run_id(self, mock_get_redis, mock_publish):
+    async def test_enqueue_uses_provided_run_id(
+        self, mock_get_redis, _mock_publish
+    ):
         mock_redis = AsyncMock()
         mock_ctx = AsyncMock()
         mock_ctx.__aenter__ = AsyncMock(return_value=mock_redis)
         mock_ctx.__aexit__ = AsyncMock(return_value=False)
         mock_get_redis.return_value = mock_ctx
-
         expected_run_id = str(uuid4())
+
         run_id = await enqueue_agent_run(
             agent_id=str(uuid4()),
             trigger_type="sdk",
@@ -105,7 +108,9 @@ class TestEnqueueAgentRun:
     @pytest.mark.asyncio
     @patch("src.services.execution.agent_run_service.publish_message")
     @patch("src.services.execution.agent_run_service.get_redis")
-    async def test_enqueue_message_contains_sync_flag(self, mock_get_redis, mock_publish):
+    async def test_enqueue_message_contains_sync_flag(
+        self, mock_get_redis, mock_publish
+    ):
         mock_redis = AsyncMock()
         mock_ctx = AsyncMock()
         mock_ctx.__aenter__ = AsyncMock(return_value=mock_redis)
@@ -207,3 +212,53 @@ class TestEnqueueAgentRun:
         mock_publish.assert_awaited_once()
         # Only the durable pre-publication row was committed.
         mock_agent_run_database.commit.assert_awaited_once()
+
+
+class TestGetExecutableAgent:
+    @pytest.mark.asyncio
+    @patch(
+        "src.services.execution.agent_run_service.load_agent_by_name_for_user",
+        new_callable=AsyncMock,
+    )
+    async def test_returns_standalone_agent(self, mock_load):
+        agent = MagicMock(solution_id=None)
+        mock_load.return_value = agent
+        db = AsyncMock()
+
+        result = await get_executable_agent(db, "agent", MagicMock())
+
+        assert result is agent
+        db.execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.services.execution.agent_run_service.load_agent_by_name_for_user",
+        new_callable=AsyncMock,
+    )
+    async def test_raises_not_found(self, mock_load):
+        mock_load.return_value = None
+
+        with pytest.raises(HTTPException) as exc_info:
+            await get_executable_agent(AsyncMock(), "missing", MagicMock())
+
+        assert exc_info.value.status_code == 404
+        assert exc_info.value.detail == "Agent 'missing' not found"
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.services.execution.agent_run_service.load_agent_by_name_for_user",
+        new_callable=AsyncMock,
+    )
+    async def test_rejects_agent_from_inactive_solution(self, mock_load):
+        agent = MagicMock(solution_id=uuid4(), name="dormant-agent")
+        mock_load.return_value = agent
+        db = AsyncMock()
+        solution_result = MagicMock()
+        solution_result.scalar_one_or_none.return_value = "inactive"
+        db.execute.return_value = solution_result
+
+        with pytest.raises(HTTPException) as exc_info:
+            await get_executable_agent(db, "dormant-agent", MagicMock())
+
+        assert exc_info.value.status_code == 409
+        assert "inactive solution" in exc_info.value.detail
