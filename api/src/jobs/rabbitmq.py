@@ -20,7 +20,11 @@ from aio_pika.abc import AbstractRobustConnection, AbstractRobustChannel
 from aio_pika.pool import Pool
 
 from src.config import get_settings
-from src.jobs.execution_policy import ExecutionMechanism, ExecutionOperationsPolicy
+from src.jobs.execution_policy import (
+    ExecutionMechanism,
+    ExecutionOperationsPolicy,
+    RetryProfile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +39,10 @@ class ConsumerDeliveryError(Exception):
 
 class RetryableConsumerError(ConsumerDeliveryError):
     """Transient infrastructure or admission failure that should retry later."""
+
+    def __init__(self, message: str, *, dependency: str | None = None):
+        super().__init__(message)
+        self.dependency = dependency[:64] if dependency else None
 
 
 class PermanentConsumerError(ConsumerDeliveryError):
@@ -227,6 +235,8 @@ class _AbstractConsumer(ABC):
         retry_delays_seconds: list[int] | None = None,
         max_retry_attempts: int | None = None,
         operations_policy: ExecutionOperationsPolicy | None = None,
+        retry_budget_seconds: int | None = None,
+        retry_jitter_ratio: float | None = None,
     ):
         """
         Initialize consumer.
@@ -242,6 +252,23 @@ class _AbstractConsumer(ABC):
         self.retry_delays_seconds = retry_delays_seconds or DEFAULT_RETRY_DELAYS_SECONDS
         self.max_retry_attempts = max_retry_attempts or len(self.retry_delays_seconds)
         self.operations_policy = operations_policy
+        broker_retries = (
+            operations_policy is not None
+            and operations_policy.retry_profile == RetryProfile.BROKER_STANDARD
+        )
+        self.retry_budget_seconds = (
+            retry_budget_seconds
+            if retry_budget_seconds is not None
+            else (3600 if broker_retries else None)
+        )
+        self.retry_jitter_ratio = (
+            retry_jitter_ratio
+            if retry_jitter_ratio is not None
+            else (0.2 if broker_retries else 0.0)
+        )
+        if not 0 <= self.retry_jitter_ratio <= 0.5:
+            raise ValueError("retry_jitter_ratio must be between 0 and 0.5")
+        self._dependency_failures: dict[str, int] = {}
         self._init_consumer_state()
 
     def _init_consumer_state(self) -> None:
@@ -372,7 +399,13 @@ class _AbstractConsumer(ABC):
             await message.ack()
             self._log_decision("domain_failure_ack", context, reason=str(e), duration=self._duration(started))
         except RetryableConsumerError as e:
-            await self._retry_or_poison(message, context, reason=str(e), started=started)
+            await self._retry_or_poison(
+                message,
+                context,
+                reason=str(e),
+                started=started,
+                dependency=e.dependency,
+            )
         except PermanentConsumerError as e:
             await self._dead_letter_and_ack(message, context, reason=str(e), started=started)
         except json.JSONDecodeError as e:
@@ -439,6 +472,7 @@ class _AbstractConsumer(ABC):
         *,
         reason: str,
         started: float,
+        dependency: str | None = None,
     ) -> None:
         if context is None:
             await message.nack(requeue=True)
@@ -451,8 +485,25 @@ class _AbstractConsumer(ABC):
                 started=started,
             )
             return
+        if self._retry_budget_exhausted(context):
+            await self._dead_letter_and_ack(
+                message,
+                context,
+                reason=f"retry elapsed-time budget exhausted: {reason}",
+                started=started,
+            )
+            return
+        if dependency:
+            self._dependency_failures[dependency] = (
+                self._dependency_failures.get(dependency, 0) + 1
+            )
         try:
-            await self._publish_retry(message, context, reason=reason)
+            await self._publish_retry(
+                message,
+                context,
+                reason=reason,
+                dependency=dependency,
+            )
         except Exception:
             logger.exception(
                 "Failed to publish delayed retry; requeueing original message",
@@ -486,11 +537,44 @@ class _AbstractConsumer(ABC):
         await message.ack()
         self._log_decision("dead_lettered", context, reason=reason, duration=self._duration(started))
 
-    async def _publish_retry(self, message: IncomingMessage, context: DeliveryContext, *, reason: str) -> None:
+    def _retry_budget_exhausted(self, context: DeliveryContext) -> bool:
+        if self.retry_budget_seconds is None or not context.enqueued_at:
+            return False
+        try:
+            enqueued = datetime.fromisoformat(context.enqueued_at.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        return (datetime.now(timezone.utc) - enqueued).total_seconds() >= self.retry_budget_seconds
+
+    def _retry_queue(self, context: DeliveryContext, next_retry: int) -> tuple[str, int]:
+        stage = min(next_retry, len(self.retry_delays_seconds))
+        base_delay = self.retry_delays_seconds[stage - 1]
+        if self.retry_jitter_ratio == 0:
+            return f"{self.queue_name}-retry-{stage}", base_delay
+        seed = f"{context.idempotency_key or context.message_id}:{next_retry}"
+        variant = int(hashlib.sha256(seed.encode()).hexdigest()[:2], 16) % 3
+        factor = (1 - self.retry_jitter_ratio, 1.0, 1 + self.retry_jitter_ratio)[variant]
+        delay = max(1, round(base_delay * factor))
+        return f"{self.queue_name}-retry-{stage}-{variant}", delay
+
+    async def _publish_retry(
+        self,
+        message: IncomingMessage,
+        context: DeliveryContext,
+        *,
+        reason: str,
+        dependency: str | None = None,
+    ) -> None:
         if self._channel is None:
             raise RuntimeError("consumer channel is not available")
         next_retry = context.retry_count + 1
-        retry_queue = f"{self.queue_name}-retry-{min(next_retry, len(self.retry_delays_seconds))}"
+        dependency_failures = self._dependency_failures.get(dependency or "", 0)
+        circuit_open = bool(dependency and dependency_failures >= 3)
+        delay_stage = min(
+            next_retry + (1 if circuit_open else 0),
+            len(self.retry_delays_seconds),
+        )
+        retry_queue, retry_delay = self._retry_queue(context, delay_stage)
         context_headers = dict(context.headers)
         if context.idempotency_key:
             context_headers.setdefault("x-idempotency-key", context.idempotency_key)
@@ -503,6 +587,16 @@ class _AbstractConsumer(ABC):
             replay_count=context.replay_count,
         )
         headers["x-last-error"] = reason[:500]
+        headers["x-retry-delay-seconds"] = retry_delay
+        if dependency:
+            headers["x-failed-dependency"] = dependency
+            headers["x-dependency-failure-count"] = self._dependency_failures.get(
+                dependency, 1
+            )
+            headers["x-dependency-circuit-open"] = circuit_open
+            if circuit_open:
+                # The next three failures rebuild the bounded circuit window.
+                self._dependency_failures[dependency] = 0
         await self._channel.default_exchange.publish(
             aio_pika.Message(
                 body=json.dumps(context.body).encode(),
@@ -636,6 +730,8 @@ class BaseConsumer(_AbstractConsumer):
         retry_delays_seconds: list[int] | None = None,
         max_retry_attempts: int | None = None,
         operations_policy: ExecutionOperationsPolicy | None = None,
+        retry_budget_seconds: int | None = None,
+        retry_jitter_ratio: float | None = None,
     ):
         super().__init__(
             queue_name=queue_name,
@@ -644,6 +740,8 @@ class BaseConsumer(_AbstractConsumer):
             retry_delays_seconds=retry_delays_seconds,
             max_retry_attempts=max_retry_attempts,
             operations_policy=operations_policy,
+            retry_budget_seconds=retry_budget_seconds,
+            retry_jitter_ratio=retry_jitter_ratio,
         )
         if operations_policy is not None and (
             operations_policy.identifier != queue_name
@@ -681,15 +779,31 @@ class BaseConsumer(_AbstractConsumer):
         await dlq.bind(dlx, routing_key=self.queue_name)
 
         for idx, delay in enumerate(self.retry_delays_seconds, start=1):
-            await channel.declare_queue(
-                f"{self.queue_name}-retry-{idx}",
-                durable=True,
-                arguments={
-                    "x-message-ttl": delay * 1000,
-                    "x-dead-letter-exchange": "",
-                    "x-dead-letter-routing-key": self.queue_name,
-                },
+            variants = (
+                [(None, delay)]
+                if self.retry_jitter_ratio == 0
+                else [
+                    (variant, max(1, round(delay * factor)))
+                    for variant, factor in enumerate(
+                        (
+                            1 - self.retry_jitter_ratio,
+                            1.0,
+                            1 + self.retry_jitter_ratio,
+                        )
+                    )
+                ]
             )
+            for variant, variant_delay in variants:
+                suffix = f"{idx}" if variant is None else f"{idx}-{variant}"
+                await channel.declare_queue(
+                    f"{self.queue_name}-retry-{suffix}",
+                    durable=True,
+                    arguments={
+                        "x-message-ttl": variant_delay * 1000,
+                        "x-dead-letter-exchange": "",
+                        "x-dead-letter-routing-key": self.queue_name,
+                    },
+                )
 
         # Declare main queue with dead letter routing
         queue = await channel.declare_queue(

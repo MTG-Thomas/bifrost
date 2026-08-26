@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import signal
@@ -50,6 +51,14 @@ def _now() -> datetime:
 
 def _monotonic() -> float:
     return time.monotonic()
+
+
+def _runner_retry_delay(job_id: UUID, attempt: int) -> timedelta:
+    """Stable ±20% jitter prevents synchronized runner-loss retry waves."""
+
+    seed = hashlib.sha256(f"{job_id}:{attempt}".encode()).digest()[0]
+    factor = (0.8, 1.0, 1.2)[seed % 3]
+    return timedelta(seconds=RUNNER_RETRY_DELAY.total_seconds() * factor)
 
 
 def _clear_lease(job: PlatformJob) -> None:
@@ -125,7 +134,7 @@ async def recover_expired_platform_jobs() -> tuple[int, int]:
             elif job.retry_on_runner_loss and job.attempt < job.max_attempts:
                 job.status = "queued"
                 job.phase = "Recovered after runner stopped"
-                job.available_at = now + RUNNER_RETRY_DELAY
+                job.available_at = now + _runner_retry_delay(job.id, job.attempt)
             else:
                 job.status = "failed"
                 job.phase = "Failed"
@@ -170,7 +179,6 @@ async def recover_expired_platform_jobs() -> tuple[int, int]:
 @dataclass(frozen=True)
 class ClaimedPlatformJob:
     id: UUID
-    attempt_id: UUID
     lease_token: UUID
     timeout_seconds: int
     hard_memory_ratio: float
@@ -312,7 +320,7 @@ async def claim_platform_job() -> ClaimedPlatformJob | None:
             job.memory_peak_bytes = current_memory if current_memory >= 0 else None
             job.memory_limit_bytes = memory_limit if memory_limit > 0 else None
             job.revision += 1
-            attempt = await start_execution_attempt(
+            await start_execution_attempt(
                 db,
                 logical_job_type="platform_job",
                 logical_job_id=job.id,
@@ -332,7 +340,6 @@ async def claim_platform_job() -> ClaimedPlatformJob | None:
             await db.commit()
             claimed = ClaimedPlatformJob(
                 id=job.id,
-                attempt_id=attempt.id,
                 lease_token=token,
                 timeout_seconds=job.timeout_seconds,
                 hard_memory_ratio=definition.policy.hard_memory_ratio,
@@ -431,7 +438,7 @@ async def _handle_runner_loss(
         elif job.retry_on_runner_loss and job.attempt < job.max_attempts:
             job.status = "queued"
             job.phase = "Retrying after runner stopped"
-            job.available_at = now + RUNNER_RETRY_DELAY
+            job.available_at = now + _runner_retry_delay(job.id, job.attempt)
             job.error_code = error_code
             job.error_message = error_message
             job.error_retryable = True

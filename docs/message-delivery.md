@@ -61,6 +61,15 @@ Retry queues dead-letter back to the main queue after TTL. `x-retry-count`
 increments on each retry. When retry attempts are exhausted, the message is
 published to `<queue>-poison` with `x-poison-reason` and `x-poisoned-at`.
 
+Production broker-retry policies predeclare three durable TTL variants per
+stage (80%, 100%, and 120%). A stable hash of idempotency identity and attempt
+selects the variant, preventing synchronized retry waves without creating
+unbounded queues or per-message TTL head-of-line blocking. Retries are bounded
+by both count and elapsed time from the original `x-enqueued-at` value (one
+hour for the standard profile). A retryable error may name a bounded
+dependency; repeated failures advance one delay stage and carry circuit
+evidence in headers to reduce hot loops.
+
 Examples of retryable failures:
 
 - Redis or Postgres connectivity failures.

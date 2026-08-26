@@ -353,6 +353,19 @@ is read-only and bounded. Arbitrary command payloads and shell actions are not
 supported, and workspace-generation notifications remain internal convergence
 signals rather than operator commands.
 
+## Retry and dependency protection
+
+Standard broker retry uses bounded count and elapsed-time budgets, stable
+three-bucket jitter around each declared delay, and preserved original enqueue
+identity. Named transient dependencies accumulate a bounded local failure
+window; opening the window advances retries to the next predeclared delay stage
+and annotates delivery headers for diagnosis. This protects dependencies from
+synchronized hot loops without creating another durable job authority.
+
+PlatformJob runner-loss retries remain governed by each definition's canonical
+`max_attempts`, with stable ±20% jitter by job and attempt. Retry identity never
+changes, and neither mechanism retries deterministic domain failures.
+
 The ledger contains identifiers and bounded diagnostics, never execution
 payloads, results, logs, credentials, or secrets. Tenant-scoped read surfaces
 must authorize against the underlying domain authority; the nullable

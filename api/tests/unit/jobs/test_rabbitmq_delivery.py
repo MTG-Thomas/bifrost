@@ -1,6 +1,7 @@
 """Unit tests for RabbitMQ delivery outcome decisions."""
 
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -66,7 +67,14 @@ class UnitConsumer(BaseConsumer):
         if self.outcome == "unexpected":
             raise RuntimeError("surprising failure")
 
-    async def _publish_retry(self, message: Any, context: Any, *, reason: str) -> None:
+    async def _publish_retry(
+        self,
+        message: Any,
+        context: Any,
+        *,
+        reason: str,
+        dependency: str | None = None,
+    ) -> None:
         self.retry_payloads.append((context.body, context.retry_count + 1, reason))
 
     async def _publish_poison(self, message: Any, context: Any, *, reason: str) -> None:
@@ -164,6 +172,25 @@ async def test_max_retry_exhaustion_publishes_poison_then_acks_original() -> Non
     assert "retry attempts exhausted" in consumer.poison_payloads[0][1]
     message.ack.assert_awaited_once()
     message.nack.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_elapsed_retry_budget_poison_messages_even_before_count_limit() -> None:
+    consumer = UnitConsumer("retry")
+    consumer.retry_budget_seconds = 60
+    message = FakeMessage(
+        json.dumps({"ok": True}),
+        headers={
+            "x-enqueued-at": (
+                datetime.now(timezone.utc) - timedelta(minutes=2)
+            ).isoformat()
+        },
+    )
+
+    await consumer._process_message_with_ack(message)
+
+    assert "elapsed-time budget exhausted" in consumer.poison_payloads[0][1]
+    message.ack.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -270,6 +297,34 @@ async def test_publish_retry_routes_to_delayed_queue_with_retry_headers() -> Non
     assert published.headers["x-origin-queue"] == "unit-queue"
     assert published.headers["x-idempotency-key"] == "msg-1"
     assert published.headers["x-last-error"] == "try later"
+    assert published.headers["x-retry-delay-seconds"] == 10
+
+
+@pytest.mark.asyncio
+async def test_retry_jitter_is_stable_and_dependency_circuit_advances_stage() -> None:
+    consumer = BasePublishConsumer()
+    consumer.retry_jitter_ratio = 0.2
+    consumer._dependency_failures["provider"] = 3
+    channel = FakeChannel()
+    consumer._channel = channel  # type: ignore[assignment]
+    message = FakeMessage(json.dumps({"execution_id": "exec-1"}))
+    context = consumer._build_context(message)
+
+    first = consumer._retry_queue(context, 1)
+    assert consumer._retry_queue(context, 1) == first
+    await consumer._publish_retry(
+        message,
+        context,
+        reason="provider unavailable",
+        dependency="provider",
+    )
+
+    retry_call = channel.default_exchange.publish.await_args
+    assert retry_call is not None
+    published = retry_call.args[0]
+    assert "retry-2-" in retry_call.kwargs["routing_key"]
+    assert published.headers["x-dependency-circuit-open"] is True
+    assert published.headers["x-failed-dependency"] == "provider"
 
 
 @pytest.mark.asyncio
