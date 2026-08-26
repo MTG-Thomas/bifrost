@@ -34,9 +34,8 @@ env:
   CI_API_TEST_IMAGE: mtg-thomas/bifrost-ci-api-dev
   CI_CLIENT_TEST_IMAGE: mtg-thomas/bifrost-ci-client-dev
   CI_PLAYWRIGHT_TEST_IMAGE: mtg-thomas/bifrost-ci-playwright
-  # Runs that publish test images must consume their exact immutable tag. PR
-  # events reuse the latest main image because they do not publish test images.
-  CI_TEST_IMAGE_TAG: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && format('sha-{0}', github.sha) || 'main' }}
+  # Every test lane consumes the immutable image published from its exact tree.
+  CI_TEST_IMAGE_TAG: ${{ format('sha-{0}', github.sha) }}
 
 jobs:
   # =============================================================================
@@ -267,11 +266,14 @@ jobs:
           echo "API, worker, and client candidates are ready for exact-tree promotion."
 
   # =============================================================================
-  # CI Test Images - Baked dependency/toolchain images for future PR test runs.
+  # CI Test Images - Baked dependency/toolchain images for this exact test run.
   # Source code is still mounted from each PR checkout by docker-compose.test.yml.
   # =============================================================================
   publish-ci-test-images:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     name: Publish CI Test Images
     permissions:

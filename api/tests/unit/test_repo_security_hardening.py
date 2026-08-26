@@ -57,15 +57,18 @@ def test_required_e2e_gate_includes_playwright_and_mcp_conformance() -> None:
     ]
 
 
-def test_ci_test_image_consumers_use_the_correct_published_tag() -> None:
+def test_ci_test_image_consumers_use_the_exact_published_tag() -> None:
     ci = _load_yaml(".github/workflows/ci.yml")
     jobs = ci["jobs"]
     image_jobs = {"test-unit", "mcp-conformance", "test-e2e", "test-client-e2e"}
 
-    assert ci["env"]["CI_TEST_IMAGE_TAG"] == (
-        "${{ (github.event_name == 'workflow_dispatch' || (github.event_name == "
-        "'push' && github.ref == 'refs/heads/main')) && format('sha-{0}', "
-        "github.sha) || 'main' }}"
+    assert ci["env"]["CI_TEST_IMAGE_TAG"] == "${{ format('sha-{0}', github.sha) }}"
+    assert "github.event_name == 'pull_request'" in jobs["publish-ci-test-images"][
+        "if"
+    ]
+    assert (
+        "github.event.pull_request.head.repo.full_name == github.repository"
+        in jobs["publish-ci-test-images"]["if"]
     )
     for job_name in image_jobs:
         assert set(jobs[job_name]["needs"]) == {
