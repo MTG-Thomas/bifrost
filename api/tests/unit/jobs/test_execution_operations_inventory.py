@@ -5,7 +5,7 @@ from pathlib import Path
 from src.jobs.platform.registry import list_platform_job_definitions
 
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 INVENTORY_PATH = REPOSITORY_ROOT / "docs" / "architecture" / "execution-operations.md"
 
 

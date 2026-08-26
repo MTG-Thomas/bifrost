@@ -16,6 +16,7 @@ from src.services.worker_control_commands import (
 @pytest.mark.asyncio
 async def test_create_worker_command_records_requester_and_bounded_reason() -> None:
     db = AsyncMock()
+    db.add = MagicMock()
     requester = uuid4()
     command = await create_worker_control_command(
         db,

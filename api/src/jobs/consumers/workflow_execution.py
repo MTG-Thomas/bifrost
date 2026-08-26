@@ -271,10 +271,10 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 value=roi_value,
                 session=session,
             )
-            if pending.get("execution_attempt_id"):
+            if execution_attempt_id := pending.get("execution_attempt_id"):
                 await transition_execution_attempt(
                     session,
-                    attempt_id=UUID(pending["execution_attempt_id"]),
+                    attempt_id=UUID(execution_attempt_id),
                     status=(
                         "cancelled"
                         if status == ExecutionStatus.CANCELLED
@@ -464,10 +464,10 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 duration_ms=duration_ms,
                 session=session,
             )
-            if pending.get("execution_attempt_id"):
+            if execution_attempt_id := pending.get("execution_attempt_id"):
                 await transition_execution_attempt(
                     session,
-                    attempt_id=UUID(pending["execution_attempt_id"]),
+                    attempt_id=UUID(execution_attempt_id),
                     status=(
                         "cancelled"
                         if status == ExecutionStatus.CANCELLED

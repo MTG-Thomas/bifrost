@@ -543,6 +543,7 @@ async def test_process_message_acknowledges_recorded_setup_failure_as_domain_han
     consumer._redis_client.get_pending_execution.return_value = pending_context()
     consumer._redis_client.delete_pending_execution = AsyncMock()
     consumer._redis_client.push_result = AsyncMock()
+    consumer._finish_attempt = AsyncMock()  # type: ignore[method-assign]
 
     with (
         patch(
@@ -580,6 +581,7 @@ async def test_process_message_acknowledges_recorded_setup_failure_as_domain_han
         error_type="ValueError",
         duration_ms=pytest.approx(0, abs=1000),
     )
+    consumer._finish_attempt.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -81,9 +81,15 @@ async def test_agent_not_found_returns_early(consumer):
 
     # get_redis is called multiple times (initial context read, then inside finally block)
     # We need it to work for both calls
-    with patch(
-        "src.jobs.consumers.agent_run.get_redis",
-        return_value=FakeRedisCtx(redis_mock),
+    with (
+        patch(
+            "src.jobs.consumers.agent_run.get_redis",
+            return_value=FakeRedisCtx(redis_mock),
+        ),
+        patch(
+            "src.jobs.consumers.agent_run.transition_execution_attempt",
+            new_callable=AsyncMock,
+        ) as transition_attempt,
     ):
         await consumer.process_message(
             {
@@ -95,3 +101,4 @@ async def test_agent_not_found_returns_early(consumer):
 
     # Verify the agent query was executed
     mock_session.execute.assert_called_once()
+    transition_attempt.assert_awaited_once()

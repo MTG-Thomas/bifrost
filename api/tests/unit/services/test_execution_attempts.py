@@ -1,5 +1,6 @@
 """Focused contracts for the shared durable execution-attempt ledger."""
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -16,6 +17,7 @@ from src.services.execution_attempts import (
 @pytest.mark.asyncio
 async def test_start_attempt_allocates_next_number_and_policy_snapshot() -> None:
     db = AsyncMock()
+    db.add = MagicMock()
     current = MagicMock()
     current.scalar_one_or_none.return_value = 2
     event_sequence = MagicMock()
@@ -46,6 +48,7 @@ async def test_start_attempt_allocates_next_number_and_policy_snapshot() -> None
 @pytest.mark.asyncio
 async def test_start_attempt_allows_legacy_counter_gap_but_not_regression() -> None:
     db = AsyncMock()
+    db.add = MagicMock()
     current = MagicMock()
     current.scalar_one_or_none.return_value = 3
     event_sequence = MagicMock()
@@ -80,6 +83,16 @@ async def test_start_attempt_allows_legacy_counter_gap_but_not_regression() -> N
 @pytest.mark.asyncio
 async def test_terminal_transition_records_bounded_failure() -> None:
     attempt = SimpleNamespace(
+        id=uuid4(),
+        logical_job_type="workflow_execution",
+        logical_job_id=uuid4(),
+        organization_id=None,
+        policy_identifier="broker.workflow-executions",
+        workload_class="workflow_execution",
+        admission_policy="process_slot_and_memory",
+        mechanism="rabbitmq",
+        attempt_number=1,
+        started_at=datetime.now(timezone.utc),
         status="running",
         worker_id=None,
         process_id=None,
@@ -92,6 +105,7 @@ async def test_terminal_transition_records_bounded_failure() -> None:
     event_sequence = MagicMock()
     event_sequence.scalar_one_or_none.return_value = 1
     db = AsyncMock()
+    db.add = MagicMock()
     db.execute.side_effect = [result, event_sequence]
 
     changed = await transition_execution_attempt(
