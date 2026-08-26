@@ -6,7 +6,7 @@ import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -24,6 +24,10 @@ from src.models.orm.workspace_promotions import (
     WorkspaceSourceRelease,
 )
 from src.services.github_actions_oidc import WorkspaceSourceReleaseProducer
+from src.services.solution_deploy_obligations import (
+    declare_solution_deploy_obligations,
+    solution_deploy_obligation_declaration,
+)
 
 DEFAULT_RELEASE_DUE_AFTER = timedelta(minutes=30)
 COMPLETION_EVIDENCE_SCHEMA = "bifrost.workspace-source-release-completion/v1"
@@ -38,10 +42,22 @@ def _assert_compatible_replay(
     request: WorkspaceSourceReleaseDeclareRequest,
     paths: dict[str, str | None],
 ) -> None:
+    existing_solution_obligations = [
+        solution_deploy_obligation_declaration(item).model_dump(
+            mode="json", exclude_none=True
+        )
+        for item in record.solution_deploy_obligations
+    ]
+    requested_solution_obligations = [
+        item.model_dump(mode="json", exclude_none=True)
+        for item in (request.solution_deploy_obligations or [])
+    ]
     if (
         record.source_tree_sha != request.source_tree_sha
         or dict(record.paths or {}) != paths
         or record.declared_disposition != request.disposition
+        or record.reason != request.reason
+        or existing_solution_obligations != requested_solution_obligations
     ):
         raise WorkspaceSourceReleaseConflict(
             "source commit already has different release accountability evidence"
@@ -120,6 +136,10 @@ def source_release_response(
         resolved_at=record.resolved_at,
         created_at=record.created_at,
         updated_at=record.updated_at,
+        solution_deploy_obligations=[
+            solution_deploy_obligation_declaration(item)
+            for item in record.solution_deploy_obligations
+        ],
     )
 
 
@@ -166,6 +186,7 @@ class WorkspaceSourceReleaseService:
         now = _utc_now()
         disposition = request.disposition
         record = WorkspaceSourceRelease(
+            id=uuid4(),
             organization_id=self.organization_id,
             source_commit_sha=request.source_commit_sha,
             source_tree_sha=request.source_tree_sha,
@@ -202,6 +223,14 @@ class WorkspaceSourceReleaseService:
         )
         self.db.add(record)
         try:
+            await declare_solution_deploy_obligations(
+                self.db,
+                source_release_id=record.id,
+                organization_id=self.organization_id,
+                source_commit_sha=request.source_commit_sha,
+                source_tree_sha=request.source_tree_sha,
+                requests=list(request.solution_deploy_obligations or []),
+            )
             await self.db.commit()
         except IntegrityError:
             # Two delivery attempts for one push can race. The unique key is the
@@ -218,7 +247,7 @@ class WorkspaceSourceReleaseService:
                 raise
             _assert_compatible_replay(existing, request, paths)
             return source_release_response(existing)
-        await self.db.refresh(record)
+        await self.db.refresh(record, attribute_names=["solution_deploy_obligations"])
         return source_release_response(record, now=now)
 
     async def set_manual_disposition(

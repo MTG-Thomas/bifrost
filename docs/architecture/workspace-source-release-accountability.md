@@ -46,6 +46,16 @@ The request includes:
 - `attention_required` with a reason for a deletion or unsupported change;
 - `non_production` with a reason when no production path changed.
 
+Changes under `solutions/<slug>/` use a separate child obligation. They are not
+loose Workspace files and never close against the `production-live` branch. For
+each changed Solution, the declaration carries the exact slug and repository
+subpath, base/source commit and tree evidence, changed paths, the full protected
+Git file manifest, and a canonical `source_content_id`. A solution-only commit
+may remain `non_production` in the loose-file lane while its child is
+`solution_deploy_required`. Malformed descriptors, deletions, cross-Solution
+renames, and unsupported Git objects are declared `attention_required` instead
+of disappearing from accountability.
+
 The endpoint is idempotent for identical evidence and returns `409 Conflict`
 if the same commit is redeclared with different evidence. The producer must
 fail its GitHub Actions job when declaration fails. This removes operator
@@ -83,13 +93,36 @@ must provide a reason. A later exact release may still replace `deferred` with
 verified `released` evidence. Records containing deletions remain open until a
 release path can prove runtime absence as well as signed-history absence.
 
-## Remaining repository integration
+## Solution deployment completion
 
-This platform contract does not install the producer in
-`MTG-Thomas/bifrost-workspace`. That repository must add the protected-main
-workflow, its authentication, executable-path classification, SHA-256
-calculation, and a required operational alert for declaration failures before
-the tracking state can be considered active.
+Solution obligations preserve the explicit operator-approved deployment step;
+the platform does not auto-deploy reviewed source. A deploy binds the exact raw
+uploaded ZIP SHA-256 candidate and an order-independent candidate file-manifest
+identity. The obligation closes only after all of the following succeed:
+
+- the deploy database transaction commits;
+- source-artifact and runtime-file storage finalization succeeds;
+- the stored artifact reads back and matches the protected-Git file manifest;
+- every deployed Python runtime path and hash reads back exactly;
+- every Solution-owned entity ID reads back exactly after install-specific UUID
+  remapping; and
+- workflow registrations read back with the expected ID, path, function, and
+  name.
+
+A deploy failure, storage-finalization failure, artifact mismatch, runtime-file
+mismatch, or registration mismatch cannot mark the obligation complete.
+Mismatches become durable attention records. Pending Solution obligations use
+the same 30-minute accountability sweep and administrator notification as loose
+Workspace releases. Read-only status is available from
+`GET /api/workspace-promotions/solution-deploy-obligations` and its ID-specific
+endpoint.
+
+## Repository producer
+
+`MTG-Thomas/bifrost-workspace` owns the protected-main producer, exact Git-tree
+classification, canonical manifest construction, and declaration-failure CI
+signal. The platform API must be deployed before a producer version that emits
+Solution child obligations is merged.
 
 The OIDC endpoint is disabled until all five settings are configured:
 
