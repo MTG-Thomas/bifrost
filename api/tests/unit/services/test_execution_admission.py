@@ -9,14 +9,14 @@ from src.services.execution_admission import (
 )
 
 
-def test_admission_metrics_use_only_bounded_dimensions() -> None:
+def test_admission_metrics_use_only_bounded_dimensions(monkeypatch) -> None:
     counter = MagicMock()
     histogram = MagicMock()
     meter = MagicMock()
     meter.create_counter.return_value = counter
     meter.create_histogram.return_value = histogram
-    execution_admission._admission_counter = None
-    execution_admission._admission_wait = None
+    monkeypatch.setattr(execution_admission, "_admission_counter", None)
+    monkeypatch.setattr(execution_admission, "_admission_wait", None)
 
     with patch.object(execution_admission.metrics, "get_meter", return_value=meter):
         record_admission_decision(

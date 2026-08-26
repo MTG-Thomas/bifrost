@@ -676,6 +676,30 @@ async def test_process_message_retries_pool_admission_memory_pressure_without_de
 
 
 @pytest.mark.asyncio
+async def test_process_message_releases_claim_when_redis_claim_persistence_fails() -> None:
+    consumer = make_consumer()
+    execution_id = str(uuid4())
+    attempt_id = uuid4()
+    consumer._claim_durable_execution.return_value = attempt_id  # type: ignore[attr-defined]
+    consumer._redis_client.get_pending_execution.return_value = pending_context()
+    consumer._redis_client.update_pending_execution.side_effect = RedisConnectionError(
+        "redis unavailable"
+    )
+
+    with patch(
+        "src.services.execution.queue_tracker.remove_from_queue",
+        new_callable=AsyncMock,
+    ):
+        with pytest.raises(RetryableConsumerError, match="persist durable execution claim"):
+            await consumer.process_message({"execution_id": execution_id})
+
+    consumer._release_durable_execution_claim.assert_awaited_once_with(  # type: ignore[attr-defined]
+        execution_id,
+        attempt_id,
+    )
+
+
+@pytest.mark.asyncio
 async def test_workspace_release_routes_with_verified_immutable_duration_bound() -> None:
     consumer = make_consumer()
     consumer._pool = AsyncMock()

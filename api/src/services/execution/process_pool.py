@@ -1180,6 +1180,10 @@ class ProcessPoolManager:
                 await db.commit()
             return
 
+        action = command.get("action")
+        if action != "workspace_generation_changed":
+            logger.warning("Ignoring unaudited worker command without command_id: %s", action)
+            return
         await self._dispatch_worker_command(command)
 
     async def _dispatch_worker_command(self, command: dict[str, Any]) -> None:
@@ -1819,7 +1823,10 @@ class ProcessPoolManager:
             health_reasons.append("shutting_down")
         if available_slots == 0:
             health_reasons.append("capacity_saturated")
-        if memory_utilization is not None and memory_utilization >= 0.9:
+        if (
+            memory_utilization is not None
+            and memory_utilization >= get_settings().memory_pressure_threshold
+        ):
             health_reasons.append("memory_pressure")
         if self._requirements_installed < self._requirements_total:
             health_reasons.append("requirements_incomplete")

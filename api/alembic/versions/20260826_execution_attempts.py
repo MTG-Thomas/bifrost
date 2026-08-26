@@ -1,7 +1,7 @@
 """Add durable infrastructure attempt history.
 
 Revision ID: 20260826_execution_attempts
-Revises: 20260825_delivery_attempt
+Revises: 20260826_solution_obligations
 """
 
 from collections.abc import Sequence
@@ -69,11 +69,6 @@ def upgrade() -> None:
             "attempt_number",
             name="uq_execution_attempt_logical_number",
         ),
-    )
-    op.create_index(
-        "ix_execution_attempt_logical_job",
-        "execution_attempts",
-        ["logical_job_type", "logical_job_id", "attempt_number"],
     )
     op.create_index(
         "ix_execution_attempt_status_started",
@@ -157,5 +152,4 @@ def downgrade() -> None:
     op.drop_index("uq_execution_attempt_active_lease", table_name="execution_attempts")
     op.drop_index("ix_execution_attempt_organization", table_name="execution_attempts")
     op.drop_index("ix_execution_attempt_status_started", table_name="execution_attempts")
-    op.drop_index("ix_execution_attempt_logical_job", table_name="execution_attempts")
     op.drop_table("execution_attempts")

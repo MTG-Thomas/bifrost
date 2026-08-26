@@ -77,6 +77,30 @@ async def test_capacity_limit_sums_reported_free_slots():
 
 
 @pytest.mark.asyncio
+async def test_capacity_limit_fails_closed_without_redis():
+    from src.jobs.schedulers.deferred_execution_promoter import (
+        _capacity_aware_batch_limit,
+    )
+
+    with patch("src.core.redis_client.get_redis_client", return_value=None):
+        with pytest.raises(RuntimeError, match="capacity is unavailable"):
+            await _capacity_aware_batch_limit()
+
+
+@pytest.mark.asyncio
+async def test_capacity_limit_fails_closed_without_valid_reports():
+    from src.jobs.schedulers.deferred_execution_promoter import (
+        _capacity_aware_batch_limit,
+    )
+
+    redis = AsyncMock()
+    redis.scan.return_value = (0, [])
+    with patch("src.core.redis_client.get_redis_client", return_value=redis):
+        with pytest.raises(RuntimeError, match="capacity could not be read"):
+            await _capacity_aware_batch_limit()
+
+
+@pytest.mark.asyncio
 async def test_promotes_due_rows(db_session):
     from src.jobs.schedulers.deferred_execution_promoter import promote_due_executions
 

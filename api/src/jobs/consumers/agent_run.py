@@ -309,6 +309,14 @@ class AgentRunConsumer(BaseConsumer):
                 )
                 if run_obj is None:
                     logger.info(f"Agent run {run_id}: final update skipped because row disappeared")
+                    await transition_execution_attempt(
+                        db,
+                        attempt_id=attempt_id,
+                        status="failed",
+                        failure_code="agent_run_missing",
+                        failure_message="AgentRun row disappeared before final persistence",
+                    )
+                    await db.commit()
                     return
                 if run_obj.status == "running":
                     run_obj.status = run_result.get("status", "completed")

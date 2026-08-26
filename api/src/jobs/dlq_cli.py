@@ -6,7 +6,8 @@ Run inside the API/worker environment:
     python -m src.jobs.dlq_cli replay workflow-executions --limit 5 --dry-run
     python -m src.jobs.dlq_cli discard workflow-executions --limit 5 --reason "bad payload"
     python -m src.jobs.dlq_cli reconcile-discard workflow-executions \
-        --message-id <id> --execution-id <uuid> --expected-reason <reason> --dry-run
+        --message-id <id> --execution-id <uuid> --expected-reason <reason> \
+        --actor <identity> --reason <operator-reason> --dry-run
 """
 
 import argparse
@@ -219,6 +220,8 @@ async def reconcile_discard(
     expected_reason: str,
     limit: int,
     dry_run: bool,
+    actor: str,
+    reason: str,
 ) -> list[dict[str, Any]]:
     """CAS-finalize and discard one exact workflow poison message."""
     if queue != "workflow-executions":
@@ -276,6 +279,14 @@ async def reconcile_discard(
             await channel.close()
             raise
 
+        await _record_disposition(
+            queue,
+            target,
+            action="reconcile_discard",
+            actor=actor,
+            reason=reason,
+            replay_count=int(row["replay_count"] or 0),
+        )
         await target.ack()
         await _requeue_messages([message for message in messages if message is not target])
         await channel.close()
@@ -325,6 +336,8 @@ def main(argv: list[str] | None = None) -> int:
     reconcile_parser.add_argument("--message-id", required=True)
     reconcile_parser.add_argument("--execution-id", required=True)
     reconcile_parser.add_argument("--expected-reason", required=True)
+    reconcile_parser.add_argument("--actor", required=True)
+    reconcile_parser.add_argument("--reason", required=True)
     args = parser.parse_args(argv)
 
     if args.command == "inspect":
@@ -358,6 +371,8 @@ def main(argv: list[str] | None = None) -> int:
                 expected_reason=args.expected_reason,
                 limit=args.limit,
                 dry_run=args.dry_run,
+                actor=args.actor,
+                reason=args.reason,
             )
         )
     print(json.dumps(rows, indent=2, default=str))

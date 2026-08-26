@@ -203,6 +203,8 @@ async def test_reconcile_discard_validates_exact_message_without_mutation(monkey
         expected_reason=reason,
         limit=10,
         dry_run=True,
+        actor="operator@example.com",
+        reason="verified stale poison message",
     )
 
     assert rows[0]["reconciliation"] == "validated_dry_run"
@@ -233,15 +235,21 @@ async def test_reconcile_discard_terminalizes_before_exact_ack(monkeypatch):
             )
         )
     )
+    record_disposition = AsyncMock(
+        side_effect=lambda *_args, **_kwargs: call_order.append("audited")
+    )
     monkeypatch.setattr(
         dlq_cli,
         "_connect",
         AsyncMock(return_value=FakeConnection(channel)),
     )
 
-    with patch(
-        "src.services.execution.poison.finalize_poisoned_execution",
-        finalize,
+    with (
+        patch(
+            "src.services.execution.poison.finalize_poisoned_execution",
+            finalize,
+        ),
+        patch.object(dlq_cli, "_record_disposition", record_disposition),
     ):
         rows = await reconcile_discard(
             "workflow-executions",
@@ -250,9 +258,11 @@ async def test_reconcile_discard_terminalizes_before_exact_ack(monkeypatch):
             expected_reason=reason,
             limit=10,
             dry_run=False,
+            actor="operator@example.com",
+            reason="verified stale poison message",
         )
 
-    assert call_order == ["terminalized", "acked"]
+    assert call_order == ["terminalized", "audited", "acked"]
     assert rows[0]["reconciliation"]["disposition"] == "terminalized"
     assert finalize.await_args.kwargs["require_matching_terminal"] is True
     assert finalize.await_args.kwargs["require_transient_cleanup"] is True
@@ -280,6 +290,8 @@ async def test_reconcile_discard_fails_closed_on_reason_mismatch(monkeypatch):
             expected_reason="expected reason",
             limit=10,
             dry_run=False,
+            actor="operator@example.com",
+            reason="verified stale poison message",
         )
 
     assert message.nacked is True

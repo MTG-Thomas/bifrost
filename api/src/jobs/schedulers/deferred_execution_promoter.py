@@ -45,7 +45,7 @@ async def _capacity_aware_batch_limit() -> int:
 
     redis = get_redis_client()
     if not redis:
-        return BATCH_LIMIT
+        raise RuntimeError("worker capacity is unavailable")
     try:
         cursor = 0
         available = 0
@@ -67,10 +67,12 @@ async def _capacity_aware_batch_limit() -> int:
                     available += max(0, int(slots))
             if cursor == 0:
                 break
-        return min(BATCH_LIMIT, available) if reports else BATCH_LIMIT
-    except Exception:
-        logger.warning("Unable to read worker capacity; using bounded fallback")
-        return BATCH_LIMIT
+        if not reports:
+            raise RuntimeError("no valid worker capacity reports are available")
+        return min(BATCH_LIMIT, available)
+    except Exception as exc:
+        logger.warning("Unable to read worker capacity; deferring promotion")
+        raise RuntimeError("worker capacity could not be read") from exc
 
 
 async def promote_due_executions() -> tuple[int, int]:
