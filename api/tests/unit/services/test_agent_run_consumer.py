@@ -108,7 +108,9 @@ async def test_agent_not_found_returns_early(consumer):
 
     # Redis returns valid context
     redis_mock = AsyncMock()
-    redis_mock.get.return_value = json.dumps({"org_id": str(uuid4()), "input": "hello"})
+    redis_mock.get.return_value = json.dumps(
+        {"org_id": str(uuid4()), "input": {"message": "hello"}}
+    )
 
     queued_run = MagicMock(status="queued")
 
@@ -209,7 +211,7 @@ async def test_late_terminalized_run_is_not_overwritten(
 
     async def _redis_get(key):
         if key == context_key:
-            return json.dumps({"input": "hello"})
+            return json.dumps({"input": {"message": "hello"}})
         if key == cancel_key:
             return None
         return None
@@ -236,6 +238,7 @@ async def test_late_terminalized_run_is_not_overwritten(
 
     refreshed = await _load_run(async_session_factory, run_id)
     assert refreshed.status == "timeout"
+    assert refreshed.input == {"message": "hello"}
     assert refreshed.error == "scheduler terminalized the run"
     assert refreshed.completed_at is not None
     assert publish_mock.await_count == 2
