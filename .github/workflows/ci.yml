@@ -885,7 +885,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Compute version
+      - name: Compute candidate-compatible version
         id: version
         run: |
           set -euo pipefail
@@ -893,7 +893,8 @@ jobs:
             echo "Publication checkout does not match the triggering commit." >&2
             exit 1
           fi
-          version="$(./scripts/compute-dev-version.sh)"
+          publication_parent="$(git rev-parse "${GITHUB_SHA}^1")"
+          version="$(./scripts/compute-dev-version.sh --next-after "$publication_parent")"
           tree_sha="$(git rev-parse "${GITHUB_SHA}^{tree}")"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
