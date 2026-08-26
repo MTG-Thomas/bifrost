@@ -2518,10 +2518,13 @@ async def sdk_read_artifact(
                     "X-Content-Type-Options": "nosniff",
                 },
             )
+    headers = {"X-Content-Type-Options": "nosniff"}
+    if artifact.content_type == "text/html":
+        headers["Content-Disposition"] = "attachment"
     return Response(
         content=content,
         media_type=artifact.content_type,
-        headers={"X-Content-Type-Options": "nosniff"},
+        headers=headers,
     )
 
 

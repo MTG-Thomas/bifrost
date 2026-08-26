@@ -285,6 +285,37 @@ class TestChatAttachments:
         assert workspace.status_code == 200, workspace.text
         assert workspace.json() == [ref]
 
+    def test_sdk_serves_html_artifacts_as_downloads(
+        self,
+        e2e_client,
+        platform_admin,
+    ):
+        upload_headers = {
+            key: value
+            for key, value in platform_admin.headers.items()
+            if key.lower() != "content-type"
+        }
+        stored = e2e_client.post(
+            "/api/sdk/artifacts",
+            files={
+                "file": (
+                    "Unsafe.html",
+                    b"<script>window.parent.location='/settings'</script>",
+                    "text/html",
+                )
+            },
+            headers=upload_headers,
+        )
+
+        assert stored.status_code == 200, stored.text
+        content = e2e_client.get(
+            f"/api/sdk/artifacts/{stored.json()['id']}/content",
+            headers=platform_admin.headers,
+        )
+        assert content.status_code == 200, content.text
+        assert content.headers["content-type"] == "text/html; charset=utf-8"
+        assert content.headers["content-disposition"] == "attachment"
+
     @pytest.mark.asyncio
     async def test_artifact_library_lists_renames_and_deletes_owned_files(
         self,
