@@ -45,6 +45,7 @@ from src.models.orm.executions import Execution, ExecutionLog
 from src.models.orm.execution_attempts import ExecutionAttempt
 from src.models.orm.execution_lifecycle_events import ExecutionLifecycleEvent
 from src.models.orm.worker_control_commands import WorkerControlCommand
+from src.models.orm.poison_message_dispositions import PoisonMessageDisposition
 from src.models.orm.external_mcp import (
     AgentMCPConnection,
     MCPConnection,
@@ -155,6 +156,7 @@ __all__ = [
     "ExecutionAttempt",
     "ExecutionLifecycleEvent",
     "WorkerControlCommand",
+    "PoisonMessageDisposition",
     "ExecutionLog",
     # CLI Sessions
     "CLISession",

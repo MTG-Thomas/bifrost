@@ -123,9 +123,9 @@ Run inside the API or worker environment:
 
 ```bash
 python -m src.jobs.dlq_cli inspect workflow-executions --limit 10
-python -m src.jobs.dlq_cli replay workflow-executions --limit 5 --dry-run
-python -m src.jobs.dlq_cli replay workflow-executions --limit 5
-python -m src.jobs.dlq_cli discard workflow-executions --limit 5 --reason "bad legacy payload"
+python -m src.jobs.dlq_cli replay workflow-executions --limit 5 --dry-run --actor ops@example.com --reason "validated outage"
+python -m src.jobs.dlq_cli replay workflow-executions --limit 5 --actor ops@example.com --reason "validated outage"
+python -m src.jobs.dlq_cli discard workflow-executions --limit 5 --actor ops@example.com --reason "bad legacy payload"
 ```
 
 Inspect shows decoded body, headers, retry/replay counts, original queue,
@@ -134,6 +134,10 @@ message id, idempotency key, and dead-letter metadata. Replay increments
 original queue. Consumers still enforce normal idempotency, so replay is safe
 for messages that died before a durable domain claim and harmless for already
 completed duplicates.
+Mutating operations require actor and reason and commit a PostgreSQL audit
+receipt containing identity, counts, and a body hash—not the payload. Queue
+names must exist in the policy registry, policy can forbid replay, and replay
+is capped at three cycles to prevent an operator-created poison loop.
 
 ## Known Limits
 

@@ -377,6 +377,16 @@ rejection reasons while retaining `null` when not every live worker reports a
 capacity value. These are diagnostic projections over worker heartbeats; they
 do not become a scheduling authority.
 
+## Poison investigation and disposition
+
+The poison CLI validates queue names against the execution-policy registry and
+supports non-destructive inspection, dry-run, bounded replay, and discard.
+Replay is rejected when policy forbids it and after three replay cycles.
+Every mutating disposition requires actor and reason and writes a PostgreSQL
+receipt with queue/message/idempotency identity, retry/replay counts, and a
+SHA-256 body fingerprint. Payload bytes remain in RabbitMQ and are not copied
+into the audit table.
+
 The ledger contains identifiers and bounded diagnostics, never execution
 payloads, results, logs, credentials, or secrets. Tenant-scoped read surfaces
 must authorize against the underlying domain authority; the nullable

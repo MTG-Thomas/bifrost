@@ -148,6 +148,8 @@ async def test_replay_publishes_with_incremented_replay_headers(monkeypatch):
     messages = [FakeMessage("one", body=b'{"execution_id":"one"}')]
     channel = FakeChannel(messages)
     monkeypatch.setattr(dlq_cli, "_connect", AsyncMock(return_value=FakeConnection(channel)))
+    record = AsyncMock()
+    monkeypatch.setattr(dlq_cli, "_record_disposition", record)
 
     rows = await replay("workflow-executions", limit=1, dry_run=False)
 
@@ -158,6 +160,7 @@ async def test_replay_publishes_with_incremented_replay_headers(monkeypatch):
     assert published.headers["x-replayed-count"] == 3
     assert published.headers["x-retry-count"] == 0
     assert published.headers["x-original-message-id"] == "one"
+    record.assert_awaited_once()
 
 
 @pytest.mark.asyncio
