@@ -607,6 +607,7 @@ build_local_api_candidate() {
         .
     docker run --rm \
         --env "EXPECTED_VERSION=$version" \
+        --env "BIFROST_SECRET_KEY=local-production-candidate-smoke-key" \
         --entrypoint python \
         "$image_tag" \
         -c "import os; from shared.version import get_version; from src.main import app; assert app is not None; assert get_version() == os.environ['EXPECTED_VERSION']"
