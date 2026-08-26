@@ -640,7 +640,7 @@ async def test_route_execution_rejects_when_slot_wait_times_out(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_handle_command_dispatches_recycle_actions_and_ignores_unknown():
+async def test_handle_command_rejects_unaudited_controls_but_allows_generation_event():
     pool = ProcessPoolManager()
     process_commands: list[dict[str, object]] = []
     all_commands: list[dict[str, object]] = []
@@ -666,8 +666,8 @@ async def test_handle_command_dispatches_recycle_actions_and_ignores_unknown():
     await pool._handle_command(generation_changed)
     await pool._handle_command({"action": "unknown"})
 
-    assert process_commands == [recycle_process]
-    assert all_commands == [recycle_all]
+    assert process_commands == []
+    assert all_commands == []
     assert generation_commands == [generation_changed]
 
 
