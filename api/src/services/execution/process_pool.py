@@ -1110,6 +1110,8 @@ class ProcessPoolManager:
                     if message and message["type"] == "message":
                         data = json.loads(message["data"])
                         await self._handle_command(data)
+                    else:
+                        await self._poll_durable_worker_command()
             except Exception as e:
                 logger.error(f"Command listener error: {e}; reconnecting in 1s")
                 await asyncio.sleep(1.0)
@@ -1131,6 +1133,50 @@ class ProcessPoolManager:
         Args:
             command: Command dict with 'action' field and action-specific data
         """
+        command_id = command.get("command_id")
+        if command_id:
+            from src.core.database import get_db_context
+            from src.services.worker_control_commands import (
+                claim_worker_control_command,
+                finish_worker_control_command,
+            )
+
+            async with get_db_context() as db:
+                claimed = await claim_worker_control_command(
+                    db,
+                    command_id=uuid.UUID(str(command_id)),
+                    worker_id=self.worker_id,
+                )
+                await db.commit()
+            if claimed is None:
+                logger.info("Ignoring completed or concurrently claimed command %s", command_id)
+                return
+            try:
+                await self._dispatch_worker_command(command)
+            except Exception as exc:
+                async with get_db_context() as db:
+                    await finish_worker_control_command(
+                        db,
+                        command_id=uuid.UUID(str(command_id)),
+                        worker_id=self.worker_id,
+                        succeeded=False,
+                        failure_message=str(exc),
+                    )
+                    await db.commit()
+                raise
+            async with get_db_context() as db:
+                await finish_worker_control_command(
+                    db,
+                    command_id=uuid.UUID(str(command_id)),
+                    worker_id=self.worker_id,
+                    succeeded=True,
+                )
+                await db.commit()
+            return
+
+        await self._dispatch_worker_command(command)
+
+    async def _dispatch_worker_command(self, command: dict[str, Any]) -> None:
         action = command.get("action")
         logger.info(f"Received command: {action}")
 
@@ -1142,6 +1188,29 @@ class ProcessPoolManager:
             await self._handle_workspace_generation_changed_command(command)
         else:
             logger.warning(f"Unknown command action: {action}")
+
+    async def _poll_durable_worker_command(self) -> None:
+        """Converge commands even when their Redis notification was lost."""
+
+        from src.core.database import get_db_context
+        from src.services.worker_control_commands import (
+            get_pending_worker_control_command,
+        )
+
+        async with get_db_context() as db:
+            command = await get_pending_worker_control_command(
+                db,
+                worker_id=self.worker_id,
+            )
+            if command is None:
+                return
+            data = {
+                "command_id": str(command.id),
+                "action": command.action,
+                "pid": command.process_id,
+                "reason": command.reason,
+            }
+        await self._handle_command(data)
 
     async def _handle_recycle_process_command(self, command: dict[str, Any]) -> None:
         """

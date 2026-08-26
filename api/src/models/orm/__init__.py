@@ -44,6 +44,7 @@ from src.models.orm.events import Event, EventDelivery, EventSource, EventSubscr
 from src.models.orm.executions import Execution, ExecutionLog
 from src.models.orm.execution_attempts import ExecutionAttempt
 from src.models.orm.execution_lifecycle_events import ExecutionLifecycleEvent
+from src.models.orm.worker_control_commands import WorkerControlCommand
 from src.models.orm.external_mcp import (
     AgentMCPConnection,
     MCPConnection,
@@ -153,6 +154,7 @@ __all__ = [
     "Execution",
     "ExecutionAttempt",
     "ExecutionLifecycleEvent",
+    "WorkerControlCommand",
     "ExecutionLog",
     # CLI Sessions
     "CLISession",

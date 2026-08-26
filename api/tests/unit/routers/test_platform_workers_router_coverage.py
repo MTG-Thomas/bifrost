@@ -1,6 +1,7 @@
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -212,7 +213,21 @@ async def test_recycle_process_and_all_publish_commands():
         "bifrost:pool:worker-a:heartbeat": json.dumps({"pool_size": 3})
     }
 
-    with patch.object(workers, "_get_redis", AsyncMock(return_value=redis)):
+    db = AsyncMock()
+    db_context = AsyncMock()
+    db_context.__aenter__.return_value = db
+    command_ids = [uuid4(), uuid4()]
+    create_command = AsyncMock(
+        side_effect=[SimpleNamespace(id=value) for value in command_ids]
+    )
+    with patch.object(
+        workers, "_get_redis", AsyncMock(return_value=redis)
+    ), patch.object(
+        workers, "get_db_context", return_value=db_context
+    ), patch(
+        "src.services.worker_control_commands.create_worker_control_command",
+        create_command,
+    ):
         process_result = await workers.recycle_process(
             "worker-a",
             123,

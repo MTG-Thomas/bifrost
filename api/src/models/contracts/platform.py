@@ -175,6 +175,7 @@ class RecycleProcessResponse(BaseModel):
     worker_id: str
     process_id: str | None = None
     pid: int | None = None
+    command_id: str | None = None
 
 
 class RecycleAllRequest(BaseModel):
@@ -193,6 +194,21 @@ class RecycleAllResponse(BaseModel):
     message: str
     worker_id: str
     processes_affected: int
+    command_id: str | None = None
+
+
+class WorkerControlCommandPublic(BaseModel):
+    id: str
+    worker_id: str
+    action: str
+    process_id: int | None
+    status: str
+    requested_by_user_id: str
+    reason: str
+    failure_message: str | None
+    requested_at: datetime
+    claimed_at: datetime | None
+    completed_at: datetime | None
 
 
 # =============================================================================

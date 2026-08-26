@@ -20,7 +20,7 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.auth import CurrentSuperuser, get_current_superuser
-from src.core.database import get_db
+from src.core.database import get_db, get_db_context
 from src.core.log_safety import log_safe
 from src.models import Execution, Workflow
 from src.models.contracts.platform import (
@@ -39,6 +39,7 @@ from src.models.contracts.platform import (
     StuckWorkflowStats,
     WorkerMetricPoint,
     WorkerMetricsResponse,
+    WorkerControlCommandPublic,
 )
 
 logger = logging.getLogger(__name__)
@@ -444,11 +445,25 @@ async def recycle_process(
         )
 
     # Publish recycle command via Redis pub/sub
+    from src.services.worker_control_commands import create_worker_control_command
+
+    reason = request.reason if request else "manual_recycle"
+    async with get_db_context() as db:
+        durable_command = await create_worker_control_command(
+            db,
+            worker_id=worker_id,
+            action="recycle_process",
+            process_id=pid,
+            requested_by_user_id=admin.user_id,
+            reason=reason,
+        )
+        await db.commit()
     command_channel = f"bifrost:pool:{worker_id}:commands"
     command = {
+        "command_id": str(durable_command.id),
         "action": "recycle_process",
         "pid": pid,
-        "reason": request.reason if request else "manual_recycle",
+        "reason": reason,
         "requested_by": str(admin.user_id),
         "requested_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -465,6 +480,7 @@ async def recycle_process(
         message=f"Recycle request sent for process PID={pid}",
         worker_id=worker_id,
         pid=pid,
+        command_id=str(durable_command.id),
     )
 
 
@@ -515,10 +531,23 @@ async def recycle_all_processes(
             logger.debug(f"invalid heartbeat JSON for worker {log_safe(worker_id)}: {log_safe(e)}")
 
     # Publish recycle_all command via Redis pub/sub
+    from src.services.worker_control_commands import create_worker_control_command
+
+    reason = request.reason if request else "Manual recycle from Diagnostics UI"
+    async with get_db_context() as db:
+        durable_command = await create_worker_control_command(
+            db,
+            worker_id=worker_id,
+            action="recycle_all",
+            requested_by_user_id=admin.user_id,
+            reason=reason,
+        )
+        await db.commit()
     command_channel = f"bifrost:pool:{worker_id}:commands"
     command = {
+        "command_id": str(durable_command.id),
         "action": "recycle_all",
-        "reason": request.reason if request else "Manual recycle from Diagnostics UI",
+        "reason": reason,
         "requested_by": str(admin.user_id),
         "requested_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -535,7 +564,50 @@ async def recycle_all_processes(
         message=f"Recycle request sent for all {processes_affected} processes",
         worker_id=worker_id,
         processes_affected=processes_affected,
+        command_id=str(durable_command.id),
     )
+
+
+@router.get(
+    "/commands/history",
+    response_model=list[WorkerControlCommandPublic],
+    summary="List audited worker controls",
+)
+async def list_worker_control_commands(
+    admin: CurrentSuperuser,
+    db: AsyncSession = Depends(get_db),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> list[WorkerControlCommandPublic]:
+    del admin
+    from src.models.orm.worker_control_commands import WorkerControlCommand
+
+    commands = (
+        (
+            await db.execute(
+                select(WorkerControlCommand)
+                .order_by(WorkerControlCommand.requested_at.desc())
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        WorkerControlCommandPublic(
+            id=str(command.id),
+            worker_id=command.worker_id,
+            action=command.action,
+            process_id=command.process_id,
+            status=command.status,
+            requested_by_user_id=str(command.requested_by_user_id),
+            reason=command.reason,
+            failure_message=command.failure_message,
+            requested_at=command.requested_at,
+            claimed_at=command.claimed_at,
+            completed_at=command.completed_at,
+        )
+        for command in commands
+    ]
 
 
 # =============================================================================

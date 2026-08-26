@@ -337,6 +337,22 @@ workflow claim is returned to its durable pending state and records an
 reason labels. Memory pressure, slot timeout, class concurrency, and resource
 serialization are therefore distinguishable without job-ID metric cardinality.
 
+## Durable operator controls
+
+Manual worker recycle requests are desired-state records, not fire-and-forget
+Redis messages. The platform-admin endpoint first commits a
+`worker_control_commands` row containing the target, allow-listed action,
+requester, bounded reason, and timestamps, then publishes a Redis hint carrying
+the command ID. Workers fence the pending-to-running claim in PostgreSQL and
+record success or bounded failure. They also poll their own pending commands,
+so a lost pub/sub notification converges after reconnect; a running command
+whose worker disappeared becomes reclaimable after a bounded stale interval.
+
+Only platform superusers may create or list these controls. The history route
+is read-only and bounded. Arbitrary command payloads and shell actions are not
+supported, and workspace-generation notifications remain internal convergence
+signals rather than operator commands.
+
 The ledger contains identifiers and bounded diagnostics, never execution
 payloads, results, logs, credentials, or secrets. Tenant-scoped read surfaces
 must authorize against the underlying domain authority; the nullable
@@ -360,6 +376,7 @@ must authorize against the underlying domain authority; the nullable
 | PlatformJob definitions | `api/src/jobs/platform/registry.py` |
 | PlatformJob durable row and projections | `api/src/models/orm/platform_jobs.py`, `api/src/services/platform_jobs.py` |
 | PlatformJob claiming and lease recovery | `api/src/jobs/schedulers/platform_jobs.py` |
+| Durable worker controls | `api/src/models/orm/worker_control_commands.py`, `api/src/services/worker_control_commands.py`, `api/src/routers/platform/workers.py` |
 | Trigger leadership | `api/src/scheduler/leadership.py` |
 | Deferred workflow promotion | `api/src/jobs/schedulers/deferred_execution_promoter.py` |
 | Current delivery runbook | `docs/message-delivery.md` |
