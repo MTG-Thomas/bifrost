@@ -665,8 +665,8 @@ class TestIntegration:
         finally:
             sys.modules.pop(optional_name, None)
 
-    def test_workspace_import_still_fails_when_resolver_is_unavailable(self):
-        """Workspace imports remain fail-closed during a resolver outage."""
+    def test_workspace_optional_import_preserves_importerror(self, caplog):
+        """Workspace code gets the same optional-import behavior as dependencies."""
         module_name = "virtual_resolver_outage_workflow"
         missing_name = "virtual_resolver_outage_helper"
         install_virtual_import_hook()
@@ -676,7 +676,10 @@ class TestIntegration:
                 return ModuleResolution(
                     kind="module",
                     path=f"{module_name}.py",
-                    content=f"import {missing_name}\n",
+                    content=(
+                        f"try:\n    import {missing_name}\nexcept ImportError:\n"
+                        "    OPTIONAL_AVAILABLE = False\n"
+                    ),
                     hash="abc",
                 )
             raise ModuleResolutionError("resolver unavailable")
@@ -691,9 +694,24 @@ class TestIntegration:
                     "src.services.execution.virtual_import.resolve_module_sync",
                     side_effect=resolve,
                 ),
-                pytest.raises(ModuleResolutionError, match="resolver unavailable"),
             ):
-                importlib.import_module(module_name)
+                module = importlib.import_module(module_name)
+
+            assert module.OPTIONAL_AVAILABLE is False
+            assert (
+                "Virtual module resolution failed for "
+                f"{missing_name}; continuing normal import"
+            ) in caplog.text
+            failure_record = next(
+                record
+                for record in caplog.records
+                if record.getMessage().startswith(
+                    f"Virtual module resolution failed for {missing_name}"
+                )
+            )
+            assert failure_record.exc_info is not None
+            assert isinstance(failure_record.exc_info[1], ModuleResolutionError)
+            assert str(failure_record.exc_info[1]) == "resolver unavailable"
         finally:
             sys.modules.pop(module_name, None)
             sys.modules.pop(missing_name, None)
