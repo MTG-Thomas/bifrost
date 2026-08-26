@@ -17,6 +17,7 @@ async def test_update_event_status_completes_when_all_deliveries_are_skipped() -
     count_result = MagicMock()
     count_result.all.return_value = [(EventDeliveryStatus.SKIPPED, 1)]
     session.execute.return_value = count_result
+    session.scalar.return_value = 0
 
     await EventDeliveryRepository(session).update_event_status(uuid4())
 

@@ -5850,26 +5850,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/agent-runs/enqueue": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Enqueue Agent Run Request
-         * @description Queue an agent run and return without waiting for execution.
-         */
-        post: operations["enqueue_agent_run_request_api_agent_runs_enqueue_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/agent-runs/execute": {
         parameters: {
             query?: never;
@@ -9972,6 +9952,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/platform/workers/commands/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List audited worker controls */
+        get: operations["list_worker_control_commands_api_platform_workers_commands_history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/platform/queue": {
         parameters: {
             query?: never;
@@ -10973,6 +10970,38 @@ export interface components {
             /** User Id */
             user_id: string;
         };
+        /** AdmissionDiagnostics */
+        AdmissionDiagnostics: {
+            /**
+             * Attempts
+             * @default 0
+             */
+            attempts: number;
+            /**
+             * Successes
+             * @default 0
+             */
+            successes: number;
+            /** Rejections */
+            rejections?: {
+                [key: string]: number;
+            };
+            /**
+             * Wait Seconds Total
+             * @default 0
+             */
+            wait_seconds_total: number;
+            /**
+             * Wait Seconds Max
+             * @default 0
+             */
+            wait_seconds_max: number;
+            /**
+             * Wait Seconds Average
+             * @default 0
+             */
+            wait_seconds_average: number;
+        };
         /**
          * AffectedEntity
          * @description Entity that depends on a workflow being deactivated.
@@ -11338,33 +11367,6 @@ export interface components {
             /** Ai Usage */
             ai_usage?: components["schemas"]["AIUsagePublicSimple"][] | null;
             ai_totals?: components["schemas"]["AIUsageTotalsSimple"] | null;
-        };
-        /** AgentRunEnqueueRequest */
-        AgentRunEnqueueRequest: {
-            /** Agent Name */
-            agent_name: string;
-            /** Input */
-            input?: {
-                [key: string]: unknown;
-            } | null;
-            /** Output Schema */
-            output_schema?: {
-                [key: string]: unknown;
-            } | null;
-        };
-        /** AgentRunEnqueueResponse */
-        AgentRunEnqueueResponse: {
-            /**
-             * Run Id
-             * Format: uuid
-             */
-            run_id: string;
-            /**
-             * Status
-             * @default queued
-             * @constant
-             */
-            status: "queued";
         };
         /** AgentRunListResponse */
         AgentRunListResponse: {
@@ -15465,6 +15467,89 @@ export interface components {
             workflow_count: number;
         };
         /**
+         * EventCriteria
+         * @description Versioned, bounded criteria for deciding whether a subscription matches.
+         */
+        "EventCriteria-Input": {
+            /**
+             * Version
+             * @default 1
+             * @constant
+             */
+            version: 1;
+            /** Root */
+            root: components["schemas"]["EventCriteriaCondition"] | components["schemas"]["EventCriteriaGroup-Input"];
+        };
+        /**
+         * EventCriteria
+         * @description Versioned, bounded criteria for deciding whether a subscription matches.
+         */
+        "EventCriteria-Output": {
+            /**
+             * Version
+             * @default 1
+             * @constant
+             */
+            version: 1;
+            /** Root */
+            root: components["schemas"]["EventCriteriaCondition"] | components["schemas"]["EventCriteriaGroup-Output"];
+        };
+        /**
+         * EventCriteriaCondition
+         * @description One comparison against the normalized event envelope.
+         */
+        EventCriteriaCondition: {
+            /**
+             * Kind
+             * @default condition
+             * @constant
+             */
+            kind: "condition";
+            /**
+             * Field
+             * @description Dot-separated field rooted at event or schedule, for example event.body.ticket.priority
+             */
+            field: string;
+            operator: components["schemas"]["EventCriteriaOperator"];
+            /**
+             * Value
+             * @description Comparison value; omitted for exists and not_exists
+             */
+            value?: unknown;
+        };
+        /**
+         * EventCriteriaGroup
+         * @description Boolean composition of event criteria nodes.
+         */
+        "EventCriteriaGroup-Input": {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "all" | "any" | "not";
+            /** Items */
+            items: (components["schemas"]["EventCriteriaCondition"] | components["schemas"]["EventCriteriaGroup-Input"])[];
+        };
+        /**
+         * EventCriteriaGroup
+         * @description Boolean composition of event criteria nodes.
+         */
+        "EventCriteriaGroup-Output": {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "all" | "any" | "not";
+            /** Items */
+            items: (components["schemas"]["EventCriteriaCondition"] | components["schemas"]["EventCriteriaGroup-Output"])[];
+        };
+        /**
+         * EventCriteriaOperator
+         * @description Bounded operators supported by event-subscription criteria v1.
+         * @enum {string}
+         */
+        EventCriteriaOperator: "equals" | "not_equals" | "in" | "not_in" | "exists" | "not_exists" | "contains" | "starts_with" | "ends_with" | "greater_than" | "greater_than_or_equal" | "less_than" | "less_than_or_equal";
+        /**
          * EventDeliveryListResponse
          * @description Response model for listing event deliveries.
          *     GET /api/events/{event_id}/deliveries
@@ -15553,6 +15638,13 @@ export interface components {
              * @description Error message if failed
              */
             error_message?: string | null;
+            /**
+             * Rule Decision
+             * @description Safe persisted criteria outcome; never contains event values
+             */
+            rule_decision?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Attempt Count
              * @description Number of delivery attempts
@@ -15665,6 +15757,18 @@ export interface components {
              * @default 0
              */
             failed_count: number;
+            /**
+             * Skipped Count
+             * @description Number of targets skipped because criteria did not match
+             * @default 0
+             */
+            skipped_count: number;
+            /**
+             * Evaluation Error Count
+             * @description Number of targets skipped because criteria evaluation failed
+             * @default 0
+             */
+            evaluation_error_count: number;
             /**
              * Created At
              * Format: date-time
@@ -15860,11 +15964,8 @@ export interface components {
              * @description Optional event type filter (e.g., 'ticket.created')
              */
             event_type?: string | null;
-            /**
-             * Filter Expression
-             * @description Optional JSONPath-style event payload filter (JMESPath syntax; '$' root prefix supported)
-             */
-            filter_expression?: string | null;
+            /** @description Optional structured criteria evaluated before target delivery */
+            criteria?: components["schemas"]["EventCriteria-Input"] | null;
             /**
              * Input Mapping
              * @description Template mapping for workflow input parameters. Maps workflow params to static values or template expressions (e.g., {'report_type': 'daily', 'as_of_date': '{{ scheduled_time }}'})
@@ -15939,11 +16040,8 @@ export interface components {
              * @description Event type filter
              */
             event_type?: string | null;
-            /**
-             * Filter Expression
-             * @description JSONPath filter expression
-             */
-            filter_expression?: string | null;
+            /** @description Structured criteria evaluated before target delivery */
+            criteria?: components["schemas"]["EventCriteria-Output"] | null;
             /**
              * Is Active
              * @description Whether the subscription is active
@@ -15975,6 +16073,18 @@ export interface components {
              */
             failed_count: number;
             /**
+             * Skipped Count
+             * @description Number of targets skipped because criteria did not match
+             * @default 0
+             */
+            skipped_count: number;
+            /**
+             * Evaluation Error Count
+             * @description Number of targets skipped because criteria evaluation failed
+             * @default 0
+             */
+            evaluation_error_count: number;
+            /**
              * Created By
              * @description User who created the subscription
              */
@@ -16003,11 +16113,8 @@ export interface components {
              * @description Event type filter
              */
             event_type?: string | null;
-            /**
-             * Filter Expression
-             * @description JSONPath filter expression
-             */
-            filter_expression?: string | null;
+            /** @description Structured criteria evaluated before target delivery */
+            criteria?: components["schemas"]["EventCriteria-Input"] | null;
             /**
              * Is Active
              * @description Whether the subscription is active
@@ -21373,34 +21480,6 @@ export interface components {
             new_password: string;
         };
         /**
-         * PausedResponse
-         * @description Returned by /agent-runs/execute when the target agent is paused.
-         *
-         *     Returned with HTTP 200 — pause is a graceful, expected state, not an error.
-         *     Downstream consumers discriminate on ``status == "paused"``.
-         */
-        PausedResponse: {
-            /**
-             * Status
-             * @default paused
-             * @constant
-             */
-            status: "paused";
-            /**
-             * Accepted
-             * @default false
-             * @constant
-             */
-            accepted: false;
-            /** Message */
-            message: string;
-            /**
-             * Agent Id
-             * Format: uuid
-             */
-            agent_id: string;
-        };
-        /**
          * PendingDeactivation
          * @description Workflow/tool/data_provider that would be deactivated by a file save.
          */
@@ -21800,6 +21879,21 @@ export interface components {
             last_heartbeat?: string | null;
             /** Processes */
             processes?: components["schemas"]["ProcessInfo"][];
+            /** Available Slots */
+            available_slots?: number | null;
+            /** Saturation Ratio */
+            saturation_ratio?: number | null;
+            /** Memory Current Bytes */
+            memory_current_bytes?: number | null;
+            /** Memory Max Bytes */
+            memory_max_bytes?: number | null;
+            /** Memory Utilization */
+            memory_utilization?: number | null;
+            /** Estimated Drain Seconds */
+            estimated_drain_seconds?: number | null;
+            /** Health Reasons */
+            health_reasons?: string[];
+            admission?: components["schemas"]["AdmissionDiagnostics"];
         };
         /**
          * PoolStatsResponse
@@ -21826,6 +21920,17 @@ export interface components {
              * @description Total busy processes across all pools
              */
             total_busy: number;
+            /** Total Available Slots */
+            total_available_slots?: number | null;
+            /**
+             * Saturated Workers
+             * @default 0
+             */
+            saturated_workers: number;
+            /** Admission Rejections */
+            admission_rejections?: {
+                [key: string]: number;
+            };
         };
         /**
          * PoolSummary
@@ -21886,6 +21991,17 @@ export interface components {
              * @description Memory limit of the worker container in bytes (from cgroup, -1 if unlimited)
              */
             memory_max_bytes?: number | null;
+            /** Available Slots */
+            available_slots?: number | null;
+            /** Saturation Ratio */
+            saturation_ratio?: number | null;
+            /** Memory Utilization */
+            memory_utilization?: number | null;
+            /** Estimated Drain Seconds */
+            estimated_drain_seconds?: number | null;
+            /** Health Reasons */
+            health_reasons?: string[];
+            admission?: components["schemas"]["AdmissionDiagnostics"];
         };
         /**
          * PoolsListResponse
@@ -22319,6 +22435,8 @@ export interface components {
             worker_id: string;
             /** Processes Affected */
             processes_affected: number;
+            /** Command Id */
+            command_id?: string | null;
         };
         /**
          * RecycleProcessRequest
@@ -22346,6 +22464,8 @@ export interface components {
             process_id?: string | null;
             /** Pid */
             pid?: number | null;
+            /** Command Id */
+            command_id?: string | null;
         };
         /**
          * RefreshJobRun
@@ -26166,6 +26286,34 @@ export interface components {
              * @default 0
              */
             rate_limited_count_24h: number;
+        };
+        /** WorkerControlCommandPublic */
+        WorkerControlCommandPublic: {
+            /** Id */
+            id: string;
+            /** Worker Id */
+            worker_id: string;
+            /** Action */
+            action: string;
+            /** Process Id */
+            process_id: number | null;
+            /** Status */
+            status: string;
+            /** Requested By User Id */
+            requested_by_user_id: string;
+            /** Reason */
+            reason: string;
+            /** Failure Message */
+            failure_message: string | null;
+            /**
+             * Requested At
+             * Format: date-time
+             */
+            requested_at: string;
+            /** Claimed At */
+            claimed_at: string | null;
+            /** Completed At */
+            completed_at: string | null;
         };
         /**
          * WorkerMetricPoint
@@ -32602,7 +32750,7 @@ export interface operations {
                 start_date?: string | null;
                 /** @description End of time range (inclusive) */
                 end_date?: string | null;
-                /** @description Free-text search on actor, organization, action, resource type, IP address, and event details */
+                /** @description Free-text search on action/resource_type */
                 search?: string | null;
                 limit?: number;
                 /** @description Pagination cursor */
@@ -37176,39 +37324,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DryRunResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    enqueue_agent_run_request_api_agent_runs_enqueue_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AgentRunEnqueueRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AgentRunEnqueueResponse"] | components["schemas"]["PausedResponse"];
                 };
             };
             /** @description Validation Error */
@@ -44953,6 +45068,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RecycleAllResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_worker_control_commands_api_platform_workers_commands_history_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerControlCommandPublic"][];
                 };
             };
             /** @description Validation Error */

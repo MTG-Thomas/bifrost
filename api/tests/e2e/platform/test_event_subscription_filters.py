@@ -13,7 +13,7 @@ pytestmark = pytest.mark.e2e
 
 
 @pytest.mark.asyncio
-async def test_topic_filter_non_match_persists_skipped_delivery(db_session) -> None:
+async def test_topic_criteria_non_match_persists_decision_without_execution(db_session) -> None:
     topic = f"ticket.filter_{uuid.uuid4().hex[:8]}"
     workflow = Workflow(
         id=uuid.uuid4(),
@@ -39,7 +39,15 @@ async def test_topic_filter_non_match_persists_skipped_delivery(db_session) -> N
         target_type="workflow",
         workflow_id=workflow.id,
         event_type=topic,
-        filter_expression="$.priority == 'high'",
+        criteria={
+            "version": 1,
+            "root": {
+                "kind": "condition",
+                "field": "event.body.priority",
+                "operator": "equals",
+                "value": "high",
+            },
+        },
         is_active=True,
         created_by="event-filter-test@gobifrost.com",
     )
@@ -66,4 +74,9 @@ async def test_topic_filter_non_match_persists_skipped_delivery(db_session) -> N
     assert event.status == EventStatus.COMPLETED
     assert delivery.status == EventDeliveryStatus.SKIPPED
     assert delivery.execution_id is None
-    assert delivery.error_message == "Subscription filter did not match the event payload"
+    assert delivery.error_message is None
+    assert delivery.rule_decision == {
+        "criteria_version": 1,
+        "outcome": "not_matched",
+        "code": "criteria_not_matched",
+    }

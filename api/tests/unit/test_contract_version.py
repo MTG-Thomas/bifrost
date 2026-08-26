@@ -225,11 +225,10 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     #
     # SDK AI completion requests gained optional `profile` (2026-08-23).
     # ADDITIVE: older SDKs omit it and continue using the Primary assignment.
-    #
-    # EventSubscriptionCreate's filter_expression description now documents
-    # its enforced JMESPath-compatible behavior (2026-08-26). COSMETIC: the
-    # field shape is unchanged; fingerprint refreshed only.
-    "3052c60686d4a80f3321b1bb73054fdee3ab261813cc162fe7566f2074e26f36"
+    # Event subscriptions replaced the inert filter_expression string with the
+    # structured criteria v1 contract (2026-08-26). BREAKING: older clients
+    # cannot express or inspect enforceable subscription rules.
+    "523e23464688f07fe132185e7230ab4b501f177bf7c48a0ef0fb54c2233638d6"
 )
 
 
