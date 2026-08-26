@@ -53,6 +53,10 @@ from src.services.execution_admission import (
     AdmissionOutcome,
     record_admission_decision,
 )
+from src.services.execution.fault_injection import (
+    FailurePoint,
+    execution_failure_checkpoint,
+)
 from src.models.contracts.notifications import NotificationCategory, NotificationCreate, NotificationStatus
 from src.services.execution.simple_worker import install_requirements, RequirementsInstallResult
 from src.services.notification_service import get_notification_service
@@ -750,6 +754,7 @@ class ProcessPoolManager:
             context: Execution context sent to the child and retained in Redis
         """
         self._admission_attempts += 1
+        execution_failure_checkpoint(FailurePoint.WORKFLOW_ADMISSION)
         admission_started = time.monotonic()
 
         # Validate immutable draft limits before writing context or forking.
@@ -831,6 +836,7 @@ class ProcessPoolManager:
             # template dead after the restart lock is released. Heal that state
             # once, while preserving a concurrent stop as authoritative.
             await self._ensure_template_alive_for_route()
+            execution_failure_checkpoint(FailurePoint.CHILD_FORK)
             # _fork_process repeats the final template-alive validation and
             # returns a handle already in BUSY.
             handle = self._fork_process()

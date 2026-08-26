@@ -17,6 +17,10 @@ from src.jobs.rabbitmq import (
     infer_idempotency_key,
     rabbitmq,
 )
+from src.services.execution.fault_injection import (
+    FailurePoint,
+    inject_execution_failures,
+)
 
 
 class FakeMessage:
@@ -159,6 +163,18 @@ async def test_retry_publish_failure_requeues_original() -> None:
 
 
 @pytest.mark.asyncio
+async def test_injected_retry_publish_failure_requeues_original() -> None:
+    consumer = UnitConsumer("retry")
+    message = FakeMessage(json.dumps({"ok": True}))
+
+    with inject_execution_failures({FailurePoint.RETRY_PUBLISH: 1}):
+        await consumer._process_message_with_ack(message)
+
+    message.ack.assert_not_awaited()
+    message.nack.assert_awaited_once_with(requeue=True)
+
+
+@pytest.mark.asyncio
 async def test_max_retry_exhaustion_publishes_poison_then_acks_original() -> None:
     consumer = UnitConsumer("retry")
     message = FakeMessage(
@@ -249,6 +265,18 @@ async def test_poison_publish_failure_requeues_original() -> None:
     message = FakeMessage(json.dumps({"ok": True}))
 
     await consumer._process_message_with_ack(message)
+
+    message.ack.assert_not_awaited()
+    message.nack.assert_awaited_once_with(requeue=True)
+
+
+@pytest.mark.asyncio
+async def test_injected_poison_publish_failure_requeues_original() -> None:
+    consumer = UnitConsumer("permanent")
+    message = FakeMessage(json.dumps({"ok": True}))
+
+    with inject_execution_failures({FailurePoint.POISON_PUBLISH: 1}):
+        await consumer._process_message_with_ack(message)
 
     message.ack.assert_not_awaited()
     message.nack.assert_awaited_once_with(requeue=True)

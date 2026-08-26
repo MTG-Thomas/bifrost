@@ -25,6 +25,10 @@ from src.jobs.execution_policy import (
     ExecutionOperationsPolicy,
     RetryProfile,
 )
+from src.services.execution.fault_injection import (
+    FailurePoint,
+    execution_failure_checkpoint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -383,6 +387,7 @@ class _AbstractConsumer(ABC):
         context: DeliveryContext | None = None
         try:
             context = self._build_context(message)
+            execution_failure_checkpoint(FailurePoint.BROKER_HANDLER_START)
 
             logger.info(
                 f"Processing message from {self.queue_name}",
@@ -498,6 +503,7 @@ class _AbstractConsumer(ABC):
                 self._dependency_failures.get(dependency, 0) + 1
             )
         try:
+            execution_failure_checkpoint(FailurePoint.RETRY_PUBLISH)
             await self._publish_retry(
                 message,
                 context,
@@ -526,6 +532,7 @@ class _AbstractConsumer(ABC):
             await message.reject(requeue=False)
             return
         try:
+            execution_failure_checkpoint(FailurePoint.POISON_PUBLISH)
             await self._publish_poison(message, context, reason=reason)
         except Exception:
             logger.exception(

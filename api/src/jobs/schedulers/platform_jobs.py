@@ -29,6 +29,10 @@ from src.services.execution_admission import (
     AdmissionOutcome,
     record_admission_decision,
 )
+from src.services.execution.fault_injection import (
+    FailurePoint,
+    execution_failure_checkpoint,
+)
 from src.services.platform_job_memory_profiles import (
     record_platform_job_memory_profile,
 )
@@ -303,6 +307,7 @@ async def claim_platform_job() -> ClaimedPlatformJob | None:
                 continue
 
             now = _now()
+            execution_failure_checkpoint(FailurePoint.PLATFORM_CLAIM)
             token = uuid4()
             job.status = "running"
             job.phase = "Starting"

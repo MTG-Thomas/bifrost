@@ -29,6 +29,10 @@ from src.core.database import get_db_context
 from src.models.enums import ExecutionStatus
 from src.models.orm.executions import Execution
 from src.services.execution.async_executor import _publish_pending
+from src.services.execution.fault_injection import (
+    FailurePoint,
+    execution_failure_checkpoint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +123,7 @@ async def promote_due_executions() -> tuple[int, int]:
                     ).scalar_one_or_none()
                     if row is None:
                         continue
+                    execution_failure_checkpoint(FailurePoint.SCHEDULE_PUBLISH)
                     await _publish_pending(
                         execution_id=str(row.id),
                         workflow_id=str(row.workflow_id) if row.workflow_id else None,

@@ -401,6 +401,16 @@ Zero known capacity defers promotion; missing Redis diagnostics use the bounded
 fallback because Redis is not schedule authority. Each deferred row is an
 explicit one-shot request, so it is never coalesced with another row.
 
+## Deterministic failure injection
+
+Critical broker handling, retry/poison publication, workflow admission, child
+fork, PlatformJob claim, and scheduled-publication boundaries have explicit
+failure checkpoints. A test installs an exact fail-on-Nth-hit plan in a
+`ContextVar`; plans are isolated between concurrent tasks and automatically
+restore the inert default. There is intentionally no setting, environment
+variable, REST route, or CLI switch that can arm failure injection in a running
+deployment.
+
 The ledger contains identifiers and bounded diagnostics, never execution
 payloads, results, logs, credentials, or secrets. Tenant-scoped read surfaces
 must authorize against the underlying domain authority; the nullable
