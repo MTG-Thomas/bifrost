@@ -215,6 +215,7 @@ async def test_deploy_accountability_runs_after_storage_finalize(tmp_path, monke
         zip_path,
         force=False,
         candidate_id="sha256:" + "a" * 64,
+        accountability_organization_id=solution.organization_id,
     )
 
     assert events[:4] == ["commit", "finalize", "artifact_read", "reconcile"]
