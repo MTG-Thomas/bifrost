@@ -2,6 +2,10 @@
 
 from pydantic import BaseModel
 
+from src.jobs.execution_policy import (
+    WorkloadClass,
+    platform_job_operations_policy,
+)
 from src.jobs.platform.base import (
     PlatformJobCancelled,
     PlatformJobContext,
@@ -57,5 +61,9 @@ EMBEDDING_REINDEX_DEFINITION = PlatformJobDefinition(
         max_attempts=2,
         max_concurrency=1,
         min_memory_headroom_mb=512,
+    ),
+    operations_policy=platform_job_operations_policy(
+        "embedding.reindex",
+        workload_class=WorkloadClass.PLATFORM_BATCH,
     ),
 )

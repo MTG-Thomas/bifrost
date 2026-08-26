@@ -23,6 +23,8 @@ Execution Model:
 
 import asyncio
 import logging
+import os
+import socket
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -33,6 +35,7 @@ from sqlalchemy import text
 from src.core.database import get_db_context
 from src.core.pubsub import publish_execution_update, publish_history_update
 from src.core.redis_client import get_redis_client
+from src.jobs.execution_policy import broker_execution_policies
 from src.jobs.rabbitmq import (
     BaseConsumer,
     DomainFailureHandled,
@@ -42,6 +45,10 @@ from src.jobs.rabbitmq import (
 )
 from src.models.enums import ExecutionStatus
 from src.repositories.executions import create_execution, update_execution
+from src.services.execution_attempts import (
+    start_execution_attempt,
+    transition_execution_attempt,
+)
 from src.services.execution.process_pool import ProcessPoolAdmissionRejected
 
 logger = logging.getLogger(__name__)
@@ -84,6 +91,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
         super().__init__(
             queue_name=QUEUE_NAME,
             prefetch_count=workflow_prefetch_count(settings),
+            operations_policy=broker_execution_policies()[QUEUE_NAME],
         )
         self._redis_client = get_redis_client()
 
@@ -263,6 +271,16 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 value=roi_value,
                 session=session,
             )
+            if pending.get("execution_attempt_id"):
+                await transition_execution_attempt(
+                    session,
+                    attempt_id=UUID(pending["execution_attempt_id"]),
+                    status=(
+                        "cancelled"
+                        if status == ExecutionStatus.CANCELLED
+                        else "succeeded"
+                    ),
+                )
             execution_update_ms = (time.perf_counter() - completion_started) * 1000
             if status == ExecutionStatus.CANCELLED:
                 workflow_result = None
@@ -446,6 +464,18 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 duration_ms=duration_ms,
                 session=session,
             )
+            if pending.get("execution_attempt_id"):
+                await transition_execution_attempt(
+                    session,
+                    attempt_id=UUID(pending["execution_attempt_id"]),
+                    status=(
+                        "cancelled"
+                        if status == ExecutionStatus.CANCELLED
+                        else "failed"
+                    ),
+                    failure_code=error_type,
+                    failure_message=error,
+                )
 
             if pending.get("event") is not None:
                 try:
@@ -604,10 +634,20 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 f"pending execution not found in Redis: {execution_id}"
             )
 
-        if not await self._claim_durable_execution(execution_id):
+        attempt_id = await self._claim_durable_execution(
+            execution_id,
+            organization_id=(UUID(pending["org_id"]) if pending.get("org_id") else None),
+            message_id=message_data.get("message_id"),
+        )
+        if attempt_id is None:
             raise DuplicateMessage(
                 f"workflow execution {execution_id} is not claimable"
             )
+        pending["execution_attempt_id"] = str(attempt_id)
+        await self._redis_client.update_pending_execution(
+            execution_id=execution_id,
+            updates={"execution_attempt_id": str(attempt_id)},
+        )
         pending_ready_ms = (time.perf_counter() - dispatch_started) * 1000
 
         # Extract context from Redis pending record
@@ -663,6 +703,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     error_message="Execution was cancelled before it could start",
                     duration_ms=0,
                 )
+                await self._finish_attempt(attempt_id, status="cancelled")
                 await publish_execution_update(execution_id, "Cancelled")
                 await publish_history_update(
                     execution_id=execution_id,
@@ -905,6 +946,12 @@ class WorkflowExecutionConsumer(BaseConsumer):
                         result={"error": "WorkflowNotFound", "message": error_msg},
                         duration_ms=duration_ms,
                     )
+                    await self._finish_attempt(
+                        attempt_id,
+                        status="failed",
+                        failure_code="WorkflowNotFound",
+                        failure_message=error_msg,
+                    )
                     await publish_execution_update(execution_id, "Failed", {"error": error_msg})
                     await publish_history_update(
                         execution_id=execution_id,
@@ -1091,7 +1138,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
             )
             # Don't mark as failed — the execution hasn't started yet.
             # Keep pending state intact so the requeued message can be routed later.
-            await self._release_durable_execution_claim(execution_id)
+            await self._release_durable_execution_claim(execution_id, attempt_id)
             # Re-raise so the consumer framework NACKs with requeue=True
             raise RetryableConsumerError(f"process pool admission rejected: {e}") from e
 
@@ -1108,6 +1155,12 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 error_message=error_msg,
                 error_type=error_type,
                 duration_ms=duration_ms,
+            )
+            await self._finish_attempt(
+                attempt_id,
+                status="failed",
+                failure_code=error_type,
+                failure_message=error_msg,
             )
 
             await publish_execution_update(
@@ -1192,7 +1245,13 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 await db.commit()
             return execution.status.value
 
-    async def _claim_durable_execution(self, execution_id: str) -> bool:
+    async def _claim_durable_execution(
+        self,
+        execution_id: str,
+        *,
+        organization_id: UUID | None,
+        message_id: str | None,
+    ) -> UUID | None:
         """Claim a published durable execution before any execution side effects.
 
         The publisher holds the same advisory transaction lock through broker
@@ -1224,15 +1283,30 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 {"execution_id": execution_id},
             )
             execution = await db.get(Execution, execution_uuid)
-            if execution is None:
-                return True
-            if execution.status != ExecutionStatus.PENDING:
-                return False
-            execution.status = ExecutionStatus.RUNNING
+            if execution is not None:
+                if execution.status != ExecutionStatus.PENDING:
+                    return None
+                execution.status = ExecutionStatus.RUNNING
+            attempt = await start_execution_attempt(
+                db,
+                logical_job_type="workflow_execution",
+                logical_job_id=execution_uuid,
+                organization_id=organization_id,
+                policy=broker_execution_policies()[QUEUE_NAME],
+                status="running",
+                queue_name=QUEUE_NAME,
+                message_id=message_id,
+                worker_id=f"{socket.gethostname()}:{os.getpid()}",
+                process_id=os.getpid(),
+            )
             await db.commit()
-            return True
+            return attempt.id
 
-    async def _release_durable_execution_claim(self, execution_id: str) -> None:
+    async def _release_durable_execution_claim(
+        self,
+        execution_id: str,
+        attempt_id: UUID,
+    ) -> None:
         """Make an admission-rejected claim retryable without undoing cancellation."""
         from src.core.database import get_db_context
         from src.models.enums import ExecutionStatus
@@ -1249,4 +1323,29 @@ class WorkflowExecutionConsumer(BaseConsumer):
             execution = await db.get(Execution, UUID(execution_id))
             if execution is not None and execution.status == ExecutionStatus.RUNNING:
                 execution.status = ExecutionStatus.PENDING
-                await db.commit()
+            await transition_execution_attempt(
+                db,
+                attempt_id=attempt_id,
+                status="admission_deferred",
+                failure_code="admission_rejected",
+                failure_message="The local process pool could not admit the work.",
+            )
+            await db.commit()
+
+    async def _finish_attempt(
+        self,
+        attempt_id: UUID,
+        *,
+        status: str,
+        failure_code: str | None = None,
+        failure_message: str | None = None,
+    ) -> None:
+        async with get_db_context() as db:
+            await transition_execution_attempt(
+                db,
+                attempt_id=attempt_id,
+                status=status,
+                failure_code=failure_code,
+                failure_message=failure_message,
+            )
+            await db.commit()

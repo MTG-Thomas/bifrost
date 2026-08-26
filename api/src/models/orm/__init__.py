@@ -42,6 +42,7 @@ from src.models.orm.codex_gateway import (
 from src.models.orm.config import Config, SystemConfig
 from src.models.orm.events import Event, EventDelivery, EventSource, EventSubscription, WebhookSource
 from src.models.orm.executions import Execution, ExecutionLog
+from src.models.orm.execution_attempts import ExecutionAttempt
 from src.models.orm.external_mcp import (
     AgentMCPConnection,
     MCPConnection,
@@ -149,6 +150,7 @@ __all__ = [
     "FormPublication",
     # Executions
     "Execution",
+    "ExecutionAttempt",
     "ExecutionLog",
     # CLI Sessions
     "CLISession",

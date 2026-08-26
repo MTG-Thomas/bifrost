@@ -5,6 +5,10 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from src.core.database import get_db_context
+from src.jobs.execution_policy import (
+    WorkloadClass,
+    platform_job_operations_policy,
+)
 from src.jobs.platform.base import (
     PlatformJobContext,
     PlatformJobDefinition,
@@ -144,6 +148,10 @@ OAUTH_REFRESH_DEFINITION = PlatformJobDefinition(
         max_concurrency=1,
         min_memory_headroom_mb=128,
     ),
+    operations_policy=platform_job_operations_policy(
+        "oauth.refresh",
+        workload_class=WorkloadClass.PLATFORM_MAINTENANCE,
+    ),
 )
 
 WEBHOOK_RENEWAL_DEFINITION = PlatformJobDefinition(
@@ -156,6 +164,10 @@ WEBHOOK_RENEWAL_DEFINITION = PlatformJobDefinition(
         max_attempts=2,
         max_concurrency=1,
         min_memory_headroom_mb=128,
+    ),
+    operations_policy=platform_job_operations_policy(
+        "webhook.renew",
+        workload_class=WorkloadClass.PLATFORM_MAINTENANCE,
     ),
 )
 
@@ -170,6 +182,10 @@ SOLUTION_UPDATE_CHECK_DEFINITION = PlatformJobDefinition(
         max_concurrency=1,
         min_memory_headroom_mb=256,
     ),
+    operations_policy=platform_job_operations_policy(
+        "solution.update_check",
+        workload_class=WorkloadClass.PLATFORM_MAINTENANCE,
+    ),
 )
 
 FILE_INDEX_RECONCILIATION_DEFINITION = PlatformJobDefinition(
@@ -183,6 +199,10 @@ FILE_INDEX_RECONCILIATION_DEFINITION = PlatformJobDefinition(
         max_concurrency=1,
         min_memory_headroom_mb=256,
     ),
+    operations_policy=platform_job_operations_policy(
+        "workspace.file_index_reconcile",
+        workload_class=WorkloadClass.PLATFORM_MAINTENANCE,
+    ),
 )
 
 ARTIFACT_RETENTION_CLEANUP_DEFINITION = PlatformJobDefinition(
@@ -195,6 +215,10 @@ ARTIFACT_RETENTION_CLEANUP_DEFINITION = PlatformJobDefinition(
         max_attempts=2,
         max_concurrency=1,
         min_memory_headroom_mb=128,
+    ),
+    operations_policy=platform_job_operations_policy(
+        "artifact.retention_cleanup",
+        workload_class=WorkloadClass.PLATFORM_MAINTENANCE,
     ),
 )
 

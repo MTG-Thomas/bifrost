@@ -19,6 +19,7 @@ from src.core.pubsub import publish_execution_update, publish_history_update
 from src.core.redis_client import get_redis_client
 from src.models import Execution as ExecutionModel, ExecutionLog
 from src.models.orm.workflows import Workflow
+from src.services.execution_attempts import transition_execution_attempt
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +192,7 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
 
             for execution in all_stuck:
                 try:
+                    original_status = execution.status
                     # Determine timeout reason and final status
                     if execution.status == ExecutionStatus.PENDING.value:
                         timeout_reason = (
@@ -251,6 +253,22 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
                     execution.status = final_status.value  # type: ignore[assignment]
                     execution.error_message = timeout_reason
                     execution.completed_at = now
+                    if original_status in {
+                        ExecutionStatus.RUNNING.value,
+                        ExecutionStatus.CANCELLING.value,
+                    }:
+                        await transition_execution_attempt(
+                            db,
+                            logical_job_type="workflow_execution",
+                            logical_job_id=execution.id,
+                            status=(
+                                "cancelled"
+                                if final_status == ExecutionStatus.CANCELLED
+                                else "worker_lost"
+                            ),
+                            failure_code="automatic_cleanup",
+                            failure_message=timeout_reason,
+                        )
 
                     # Add timeout log entry
                     log_entry = ExecutionLog(
@@ -259,7 +277,7 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
                         message=timeout_reason,
                         log_metadata={
                             "timeout_type": "automatic_cleanup",
-                            "original_status": execution.status,
+                            "original_status": original_status,
                         },
                         timestamp=now,
                     )

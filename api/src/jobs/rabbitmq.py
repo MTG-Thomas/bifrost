@@ -20,6 +20,7 @@ from aio_pika.abc import AbstractRobustConnection, AbstractRobustChannel
 from aio_pika.pool import Pool
 
 from src.config import get_settings
+from src.jobs.execution_policy import ExecutionMechanism, ExecutionOperationsPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +226,7 @@ class _AbstractConsumer(ABC):
         dead_letter_exchange: str | None = None,
         retry_delays_seconds: list[int] | None = None,
         max_retry_attempts: int | None = None,
+        operations_policy: ExecutionOperationsPolicy | None = None,
     ):
         """
         Initialize consumer.
@@ -239,6 +241,7 @@ class _AbstractConsumer(ABC):
         self.dead_letter_exchange = dead_letter_exchange or f"{queue_name}-dlx"
         self.retry_delays_seconds = retry_delays_seconds or DEFAULT_RETRY_DELAYS_SECONDS
         self.max_retry_attempts = max_retry_attempts or len(self.retry_delays_seconds)
+        self.operations_policy = operations_policy
         self._init_consumer_state()
 
     def _init_consumer_state(self) -> None:
@@ -561,6 +564,17 @@ class _AbstractConsumer(ABC):
             extra["error_type"] = error_type
         if duration is not None:
             extra["duration_seconds"] = duration
+        if self.operations_policy is not None:
+            extra.update(
+                {
+                    "execution_policy": self.operations_policy.identifier,
+                    "workload_class": self.operations_policy.workload_class.value,
+                    "execution_mechanism": self.operations_policy.mechanism.value,
+                    "completion_boundary": (
+                        self.operations_policy.completion_boundary.value
+                    ),
+                }
+            )
         if context is not None:
             extra.update(
                 {
@@ -620,6 +634,7 @@ class BaseConsumer(_AbstractConsumer):
         dead_letter_exchange: str | None = None,
         retry_delays_seconds: list[int] | None = None,
         max_retry_attempts: int | None = None,
+        operations_policy: ExecutionOperationsPolicy | None = None,
     ):
         super().__init__(
             queue_name=queue_name,
@@ -627,7 +642,15 @@ class BaseConsumer(_AbstractConsumer):
             dead_letter_exchange=dead_letter_exchange,
             retry_delays_seconds=retry_delays_seconds,
             max_retry_attempts=max_retry_attempts,
+            operations_policy=operations_policy,
         )
+        if operations_policy is not None and (
+            operations_policy.identifier != queue_name
+            or operations_policy.mechanism != ExecutionMechanism.RABBITMQ_QUEUE
+        ):
+            raise ValueError(
+                f"queue {queue_name!r} requires a matching rabbitmq_queue policy"
+            )
 
     async def start(self) -> None:
         """Start consuming messages."""
@@ -748,14 +771,28 @@ class BroadcastConsumer(_AbstractConsumer):
     such as package installation or cache invalidation.
     """
 
-    def __init__(self, exchange_name: str):
+    def __init__(
+        self,
+        exchange_name: str,
+        operations_policy: ExecutionOperationsPolicy | None = None,
+    ):
         """
         Initialize broadcast consumer.
 
         Args:
             exchange_name: Name of the fanout exchange to consume from
         """
-        super().__init__(queue_name=f"{exchange_name} (broadcast)")
+        super().__init__(
+            queue_name=f"{exchange_name} (broadcast)",
+            operations_policy=operations_policy,
+        )
+        if operations_policy is not None and (
+            operations_policy.identifier != exchange_name
+            or operations_policy.mechanism != ExecutionMechanism.RABBITMQ_FANOUT
+        ):
+            raise ValueError(
+                f"exchange {exchange_name!r} requires a matching rabbitmq_fanout policy"
+            )
         self.exchange_name = exchange_name
 
     async def start(self) -> None:

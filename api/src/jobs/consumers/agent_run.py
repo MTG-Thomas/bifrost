@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import socket
 import time
 from contextlib import suppress
 from datetime import datetime, timezone
@@ -18,9 +20,14 @@ from src.core.cache.keys import agent_run_steps_stream_key
 from src.core.cache.redis_client import get_redis
 from src.core.database import get_session_factory
 from src.core.pubsub import publish_agent_run_update
+from src.jobs.execution_policy import broker_execution_policies
 from src.jobs.rabbitmq import BaseConsumer, DuplicateMessage, MalformedMessage
 from src.models.orm.agents import Agent
 from src.models.orm.agent_runs import AgentRun
+from src.services.execution_attempts import (
+    start_execution_attempt,
+    transition_execution_attempt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +43,7 @@ class AgentRunConsumer(BaseConsumer):
         super().__init__(
             queue_name=QUEUE_NAME,
             prefetch_count=settings.max_concurrency,
+            operations_policy=broker_execution_policies()[QUEUE_NAME],
         )
         self._session_factory = get_session_factory()
 
@@ -63,7 +71,12 @@ class AgentRunConsumer(BaseConsumer):
 
         context = json.loads(context_raw)
 
-        if not await self._claim_durable_run(run_id):
+        attempt_id = await self._claim_durable_run(
+            run_id,
+            organization_id=(UUID(context["org_id"]) if context.get("org_id") else None),
+            message_id=body.get("message_id"),
+        )
+        if attempt_id is None:
             raise DuplicateMessage(f"agent run {run_id} is not claimable")
 
         # Pre-cancel check: if cancelled before worker picked it up, skip execution
@@ -86,6 +99,11 @@ class AgentRunConsumer(BaseConsumer):
                 agent_run.status = "cancelled"
                 agent_run.started_at = datetime.now(timezone.utc)
                 agent_run.completed_at = datetime.now(timezone.utc)
+                await transition_execution_attempt(
+                    db,
+                    attempt_id=attempt_id,
+                    status="cancelled",
+                )
                 await db.commit()
             return
 
@@ -116,7 +134,14 @@ class AgentRunConsumer(BaseConsumer):
                         missing_run.status = "failed"
                         missing_run.error = f"Agent {agent_id} not found"
                         missing_run.completed_at = datetime.now(timezone.utc)
-                        await db.commit()
+                    await transition_execution_attempt(
+                        db,
+                        attempt_id=attempt_id,
+                        status="failed",
+                        failure_code="agent_not_found",
+                        failure_message=f"Agent {agent_id} not found",
+                    )
+                    await db.commit()
                 return
 
             # Create AgentRun record (brief DB session)
@@ -243,6 +268,20 @@ class AgentRunConsumer(BaseConsumer):
                 if executor:
                     await executor.flush_to_db(db)
 
+                attempt_status = {
+                    "completed": "succeeded",
+                    "cancelled": "cancelled",
+                }.get(run_result.get("status"), "failed")
+                await transition_execution_attempt(
+                    db,
+                    attempt_id=attempt_id,
+                    status=attempt_status,
+                    failure_code=(
+                        None if attempt_status == "succeeded" else run_result.get("status")
+                    ),
+                    failure_message=run_result.get("error"),
+                )
+
                 await db.commit()
 
                 # Re-read for publish (need agent relationship)
@@ -314,8 +353,15 @@ class AgentRunConsumer(BaseConsumer):
                         if executor:
                             await executor.flush_to_db(db)
 
-                        await db.commit()
-                        agent_run = run_obj
+                    await transition_execution_attempt(
+                        db,
+                        attempt_id=attempt_id,
+                        status="failed",
+                        failure_code=type(e).__name__,
+                        failure_message=str(e),
+                    )
+                    await db.commit()
+                    agent_run = run_obj
             except Exception:
                 logger.exception(f"Failed to update agent_run {run_id} after error")
 
@@ -354,7 +400,13 @@ class AgentRunConsumer(BaseConsumer):
                 # Context key has a TTL; leaking one for a few minutes is harmless
                 logger.debug(f"failed to delete agent_run context key for {run_id}: {e}")
 
-    async def _claim_durable_run(self, run_id: str) -> bool:
+    async def _claim_durable_run(
+        self,
+        run_id: str,
+        *,
+        organization_id: UUID | None,
+        message_id: str | None,
+    ) -> UUID | None:
         """Claim a published run under the publisher's advisory lock.
 
         Existing queued rows advance to running before the agent can execute.
@@ -376,13 +428,24 @@ class AgentRunConsumer(BaseConsumer):
                 {"run_id": run_id},
             )
             agent_run = await db.get(AgentRun, run_uuid)
-            if agent_run is None:
-                return True
-            if agent_run.status != "queued":
-                return False
-            agent_run.status = "running"
+            if agent_run is not None:
+                if agent_run.status != "queued":
+                    return None
+                agent_run.status = "running"
+            attempt = await start_execution_attempt(
+                db,
+                logical_job_type="agent_run",
+                logical_job_id=run_uuid,
+                organization_id=organization_id,
+                policy=broker_execution_policies()[QUEUE_NAME],
+                status="running",
+                queue_name=QUEUE_NAME,
+                message_id=message_id,
+                worker_id=f"{socket.gethostname()}:{os.getpid()}",
+                process_id=os.getpid(),
+            )
             await db.commit()
-            return True
+            return attempt.id
 
     async def _fail_missing_context_run(self, run_id: str) -> str | None:
         """Fail a published run whose required Redis context disappeared.

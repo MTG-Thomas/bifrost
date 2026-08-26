@@ -19,6 +19,10 @@ from src.core.database import get_db_context
 from src.jobs.platform.base import PlatformJobPolicy
 from src.jobs.platform.registry import get_platform_job_definition
 from src.models.orm.platform_jobs import PlatformJob
+from src.services.execution_attempts import (
+    start_execution_attempt,
+    transition_execution_attempt,
+)
 from src.services.execution.memory_monitor import get_cgroup_memory
 from src.services.platform_job_memory_profiles import (
     record_platform_job_memory_profile,
@@ -96,6 +100,7 @@ async def recover_expired_platform_jobs() -> tuple[int, int]:
         )
         failed = 0
         for job in jobs:
+            lease_token = job.lease_token
             if job.status == "cancel_requested":
                 job.status = "cancelled"
                 job.phase = "Cancelled after runner stopped"
@@ -114,6 +119,26 @@ async def recover_expired_platform_jobs() -> tuple[int, int]:
                 job.error_retryable = False
                 job.completed_at = now
                 failed += 1
+            if lease_token is not None:
+                await transition_execution_attempt(
+                    db,
+                    logical_job_type="platform_job",
+                    logical_job_id=job.id,
+                    lease_token=lease_token,
+                    status=(
+                        "cancelled"
+                        if job.status == "cancelled"
+                        else "worker_lost"
+                    ),
+                    failure_code=(
+                        None if job.status == "cancelled" else "runner_lost"
+                    ),
+                    failure_message=(
+                        None
+                        if job.status == "cancelled"
+                        else "Platform-job runner lease expired."
+                    ),
+                )
             await record_platform_job_memory_profile(db, job)
             _clear_lease(job)
             job.revision += 1
@@ -128,6 +153,7 @@ async def recover_expired_platform_jobs() -> tuple[int, int]:
 @dataclass(frozen=True)
 class ClaimedPlatformJob:
     id: UUID
+    attempt_id: UUID
     lease_token: UUID
     timeout_seconds: int
     hard_memory_ratio: float
@@ -244,9 +270,22 @@ async def claim_platform_job() -> ClaimedPlatformJob | None:
             job.memory_peak_bytes = current_memory if current_memory >= 0 else None
             job.memory_limit_bytes = memory_limit if memory_limit > 0 else None
             job.revision += 1
+            attempt = await start_execution_attempt(
+                db,
+                logical_job_type="platform_job",
+                logical_job_id=job.id,
+                organization_id=job.organization_id,
+                policy=definition.operations_policy,
+                status="running",
+                attempt_number=job.attempt,
+                worker_id=job.lease_owner,
+                process_id=os.getpid(),
+                lease_token=token,
+            )
             await db.commit()
             claimed = ClaimedPlatformJob(
                 id=job.id,
+                attempt_id=attempt.id,
                 lease_token=token,
                 timeout_seconds=job.timeout_seconds,
                 hard_memory_ratio=definition.policy.hard_memory_ratio,
@@ -336,10 +375,12 @@ async def _handle_runner_loss(
         if job is None:
             return False
         now = _now()
+        terminal_attempt_status = "worker_lost"
         if job.status == "cancel_requested":
             job.status = "cancelled"
             job.phase = "Cancelled"
             job.completed_at = now
+            terminal_attempt_status = "cancelled"
         elif job.retry_on_runner_loss and job.attempt < job.max_attempts:
             job.status = "queued"
             job.phase = "Retrying after runner stopped"
@@ -354,6 +395,17 @@ async def _handle_runner_loss(
             job.error_message = error_message
             job.error_retryable = False
             job.completed_at = now
+        await transition_execution_attempt(
+            db,
+            logical_job_type="platform_job",
+            logical_job_id=job.id,
+            lease_token=lease_token,
+            status=terminal_attempt_status,
+            failure_code=None if terminal_attempt_status == "cancelled" else error_code,
+            failure_message=(
+                None if terminal_attempt_status == "cancelled" else error_message
+            ),
+        )
         await record_platform_job_memory_profile(db, job)
         _clear_lease(job)
         job.revision += 1

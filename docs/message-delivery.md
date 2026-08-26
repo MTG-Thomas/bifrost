@@ -3,6 +3,12 @@
 Bifrost RabbitMQ consumers use explicit delivery outcomes instead of relying on
 implicit `message.process(requeue=False)` behavior.
 
+Production consumers attach the declarative policy registered in
+`src.jobs.execution_policy`. Delivery-decision logs include the policy name,
+workload class, mechanism, and completion boundary. The policy records existing
+semantics while the consumer implementation remains responsible for executing
+the acknowledged/retry/poison decision.
+
 ## Queues and Idempotency
 
 | Queue | Idempotency key | Terminal duplicate behavior |
@@ -34,9 +40,13 @@ Consumers classify work with explicit exceptions:
 - `PermanentConsumerError` and `MalformedMessage`: publish to poison, then ack the original.
 - `ConsumerShutdown`: schedule retry or requeue before the channel closes.
 
-Unhandled exceptions are treated as retryable infrastructure failures by the
-base framework and are logged with queue, message id, idempotency key, retry
-count, replay count, redelivery flag, and processing duration.
+Unhandled exceptions are currently poisoned by the base framework and are
+logged with queue, message id, idempotency key, retry count, replay count,
+redelivery flag, and processing duration. Consumers must raise
+`RetryableConsumerError` explicitly for infrastructure failures that are safe
+to retry. The execution-operations migration baseline and the policy decision
+that will replace this implicit default are documented in
+[`architecture/execution-operations.md`](architecture/execution-operations.md).
 
 ## Retry Policy
 
@@ -70,17 +80,19 @@ domain state are domain failures, not broker-delivery failures.
 
 ## Backpressure and Shutdown
 
-RabbitMQ QoS still uses `prefetch_count`, but each `BaseConsumer` also has an
-in-process semaphore:
+RabbitMQ QoS uses `prefetch_count` as the consumer reservation limit:
 
 - `BIFROST_WORKFLOW_CONSUMER_CONCURRENCY` default `10`
 - `BIFROST_AGENT_RUN_CONSUMER_CONCURRENCY` default `4`
 - `BIFROST_TUNE_CHAT_CONSUMER_CONCURRENCY` default `2`
-- summarization and package broadcast stay at one-at-a-time per worker
+- summarization and package broadcast stay at one-at-a-time per worker where
+  their consumer configuration selects a prefetch of one
 
-On shutdown, consumers stop accepting new deliveries, wait up to
-`BIFROST_CONSUMER_SHUTDOWN_TIMEOUT_SECONDS` for active message tasks, then
-cancel/retry in-flight work as safely as the current claim state allows.
+There is no additional base-consumer semaphore. On shutdown, consumers cancel
+their consumer tag, wait for tracked in-flight tasks up to
+`BIFROST_DRAIN_DEADLINE_SECONDS` (default 300 seconds), then close their channel
+and connection. A delivery that races with drain is negatively acknowledged
+and requeued.
 
 ## Recovery
 
