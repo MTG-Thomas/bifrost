@@ -58,6 +58,25 @@ class _DbCtx:
 
 
 @pytest.mark.asyncio
+async def test_capacity_limit_sums_reported_free_slots():
+    from src.jobs.schedulers.deferred_execution_promoter import (
+        _capacity_aware_batch_limit,
+    )
+
+    redis = AsyncMock()
+    redis.scan.return_value = (0, ["a", "b"])
+    redis.get.side_effect = [
+        '{"available_slots": 2}',
+        '{"available_slots": 3}',
+    ]
+    with patch(
+        "src.core.redis_client.get_redis_client",
+        return_value=redis,
+    ):
+        assert await _capacity_aware_batch_limit() == 5
+
+
+@pytest.mark.asyncio
 async def test_promotes_due_rows(db_session):
     from src.jobs.schedulers.deferred_execution_promoter import promote_due_executions
 

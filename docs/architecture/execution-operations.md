@@ -387,6 +387,20 @@ receipt with queue/message/idempotency identity, retry/replay counts, and a
 SHA-256 body fingerprint. Payload bytes remain in RabbitMQ and are not copied
 into the audit table.
 
+## Durable scheduling
+
+Deferred workflow rows remain PostgreSQL `Scheduled` authority until a broker
+publish is confirmed under the same execution-ID advisory lock used by
+immediate dispatch; only then does the transaction commit `Pending`. Competing
+schedulers can discover the same row but cannot publish it twice. Publish
+failure leaves the row scheduled without a compensating-state window.
+
+Catch-up is oldest-first and bounded to 500 per tick, further capped by
+reported free workflow slots when every usable heartbeat supplies capacity.
+Zero known capacity defers promotion; missing Redis diagnostics use the bounded
+fallback because Redis is not schedule authority. Each deferred row is an
+explicit one-shot request, so it is never coalesced with another row.
+
 The ledger contains identifiers and bounded diagnostics, never execution
 payloads, results, logs, credentials, or secrets. Tenant-scoped read surfaces
 must authorize against the underlying domain authority; the nullable
