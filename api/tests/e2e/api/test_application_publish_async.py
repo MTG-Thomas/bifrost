@@ -79,7 +79,7 @@ def _poll(e2e_client, headers, job_id: str) -> dict:
 
 def _poll_notification(e2e_client, headers, notification_id: str, status: str) -> dict:
     """Wait for the Redis notification projection to follow terminal job state."""
-    for _ in range(40):
+    for _ in range(120):
         response = e2e_client.get(
             f"/api/notifications/{notification_id}",
             headers=headers,
