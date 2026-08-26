@@ -31,6 +31,7 @@ from types import ModuleType
 from typing import Any
 
 from src.core.module_cache_sync import (
+    ModuleResolutionError,
     resolve_module_sync,
 )
 
@@ -348,7 +349,18 @@ class VirtualModuleFinder(MetaPathFinder):
         if local_spec is not None and not _is_bifrost_source_spec(local_spec):
             return None
 
-        resolution = resolve_module_sync(fullname)
+        try:
+            resolution = resolve_module_sync(fullname)
+        except ModuleResolutionError:
+            # A finder that cannot provide a module must let Python continue
+            # through the normal import chain. Keep the resolver failure visible
+            # to operators without exposing platform-specific import semantics
+            # to workspace or dependency code.
+            logger.exception(
+                "Virtual module resolution failed for %s; continuing normal import",
+                fullname,
+            )
+            return None
         if resolution.kind in {"module", "package"} and resolution.content is not None:
             is_package = resolution.kind == "package"
             loader = VirtualModuleLoader(
