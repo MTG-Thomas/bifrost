@@ -260,6 +260,11 @@ IDENTITY_MODELS: set[str] = {
     # looked up by id with requester/admin authorization, never name-resolved
     # through the org-to-global execution cascade.
     "PlatformJob",
+    # Execution attempts and lifecycle events are immutable/durable execution
+    # history addressed by logical-job or attempt identity. They are never
+    # name-resolved through the organization-to-global cascade.
+    "ExecutionAttempt",
+    "ExecutionLifecycleEvent",
     # Artifacts are opaque file identities authorized by creator/org and
     # workspace membership. They are never resolved through the name cascade.
     "Artifact",

@@ -21,6 +21,7 @@ class TestHeartbeatCgroupData:
         pool._requirements_installed = 0
         pool._requirements_total = 0
         pool.heartbeat_interval_seconds = 10
+        pool._shutdown = False
 
         with patch(
             "src.services.execution.process_pool.get_cgroup_memory",
@@ -43,6 +44,7 @@ class TestHeartbeatCgroupData:
         pool._requirements_installed = 0
         pool._requirements_total = 0
         pool.heartbeat_interval_seconds = 10
+        pool._shutdown = False
 
         with patch(
             "src.services.execution.process_pool.get_cgroup_memory",
@@ -65,6 +67,7 @@ class TestHeartbeatCgroupData:
         pool._requirements_installed = 0
         pool._requirements_total = 0
         pool.heartbeat_interval_seconds = 10
+        pool._shutdown = False
 
         with patch(
             "src.services.execution.process_pool.get_cgroup_memory",
@@ -87,6 +90,7 @@ class TestHeartbeatCgroupData:
         pool._requirements_installed = 0
         pool._requirements_total = 0
         pool.heartbeat_interval_seconds = 10
+        pool._shutdown = False
         pool._admission_attempts = 8
         pool._admission_successes = 6
         pool._admission_rejections = {
@@ -122,6 +126,7 @@ class TestHeartbeatCgroupData:
         pool._requirements_installed = 0
         pool._requirements_total = 0
         pool.heartbeat_interval_seconds = 10
+        pool._shutdown = False
 
         fake_proc = type(
             "P",
@@ -162,6 +167,7 @@ class TestHeartbeatCgroupData:
         pool._requirements_installed = 0
         pool._requirements_total = 0
         pool.heartbeat_interval_seconds = 10
+        pool._shutdown = False
 
         fake_proc = type(
             "P",
