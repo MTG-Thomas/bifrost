@@ -4,7 +4,14 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 
 class PromotionEntry(BaseModel):
@@ -391,6 +398,90 @@ WorkspaceSourceDisposition = Literal[
 ]
 
 
+class SolutionSourceFile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    mode: Literal["100644", "100755"]
+    path: str = Field(min_length=1, max_length=1000)
+    size: int = Field(ge=0)
+
+
+class SolutionDeployObligationDeclare(BaseModel):
+    """Exact protected-Git evidence for one changed Solution subtree."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    solution_slug: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$", max_length=255)
+    repo_subpath: str = Field(pattern=r"^solutions/[^/]+$", max_length=1000)
+    base_commit_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    source_subtree_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    source_content_id: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+    base_source_content_id: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+    declared_version: str | None = Field(default=None, max_length=64)
+    source_files: list[SolutionSourceFile] = Field(
+        default_factory=list, max_length=4000
+    )
+    changed_paths: dict[str, str | None] = Field(min_length=1, max_length=4000)
+    disposition: Literal["solution_deploy_required", "attention_required"]
+    reason: str | None = Field(default=None, min_length=1, max_length=2000)
+
+    @model_serializer(mode="wrap")
+    def serialize_without_nulls(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        return {key: value for key, value in handler(self).items() if value is not None}
+
+    @model_validator(mode="after")
+    def validate_solution_evidence(self):
+        expected_prefix = f"{self.repo_subpath}/"
+        if self.repo_subpath != f"solutions/{self.solution_slug}":
+            raise ValueError("Solution slug must match its repository subpath")
+        if any(not item.path.startswith(expected_prefix) for item in self.source_files):
+            raise ValueError("Solution source files must remain inside repo_subpath")
+        if any(not path.startswith(expected_prefix) for path in self.changed_paths):
+            raise ValueError("Solution changed paths must remain inside repo_subpath")
+        if self.disposition == "solution_deploy_required" and (
+            not self.source_files
+            or not self.source_content_id
+            or not self.source_subtree_sha
+        ):
+            raise ValueError(
+                "deploy-required Solution obligation requires exact source evidence"
+            )
+        file_paths = [item.path for item in self.source_files]
+        if file_paths != sorted(set(file_paths)):
+            raise ValueError("Solution source files must be sorted and unique by path")
+        invalid_hashes = [
+            path
+            for path, digest in self.changed_paths.items()
+            if digest is not None and not _is_sha256(digest)
+        ]
+        if invalid_hashes:
+            raise ValueError("Solution changed path digests must be lowercase SHA-256")
+        file_hashes = {item.path: item.sha256 for item in self.source_files}
+        inconsistent_changes = [
+            path
+            for path, digest in self.changed_paths.items()
+            if (digest is None and path in file_hashes)
+            or (digest is not None and file_hashes.get(path) != digest)
+        ]
+        if inconsistent_changes:
+            raise ValueError("Solution changed paths contradict the full source manifest")
+        if self.disposition == "attention_required" and not self.reason:
+            raise ValueError("attention-required Solution obligation requires a reason")
+        if self.disposition == "solution_deploy_required":
+            if self.reason:
+                raise ValueError(
+                    "deploy-required Solution obligation cannot carry an attention reason"
+                )
+        return self
+
+
 class WorkspaceSourceReleaseDeclareRequest(BaseModel):
     """Exact reviewed source state declared by the trusted merge producer."""
 
@@ -401,6 +492,9 @@ class WorkspaceSourceReleaseDeclareRequest(BaseModel):
     paths: dict[str, str | None] = Field(default_factory=dict, max_length=4000)
     disposition: Literal["pending", "attention_required", "non_production"]
     reason: str | None = Field(default=None, min_length=1, max_length=2000)
+    solution_deploy_obligations: list[SolutionDeployObligationDeclare] | None = Field(
+        default=None, max_length=100
+    )
 
     @model_validator(mode="after")
     def validate_disposition(self):
@@ -421,6 +515,12 @@ class WorkspaceSourceReleaseDeclareRequest(BaseModel):
         if invalid_hashes:
             raise ValueError(
                 "source release path digests must be lowercase SHA-256 values"
+            )
+        obligations = self.solution_deploy_obligations or []
+        slugs = [item.solution_slug for item in obligations]
+        if slugs != sorted(set(slugs)):
+            raise ValueError(
+                "Solution deploy obligations must be sorted and unique by slug"
             )
         return self
 
@@ -470,6 +570,63 @@ class WorkspaceSourceReleaseResponse(BaseModel):
     resolved_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+    solution_deploy_obligations: list[SolutionDeployObligationDeclare] = Field(
+        default_factory=list
+    )
+
+
+SolutionDeployDisposition = Literal[
+    "pending", "attention_required", "released", "superseded"
+]
+
+
+class SolutionDeployObligationResponse(BaseModel):
+    schema_version: Literal["bifrost.solution-deploy-obligation/v1"] = (
+        "bifrost.solution-deploy-obligation/v1"
+    )
+    id: UUID
+    source_release_id: UUID
+    organization_id: UUID
+    source_commit_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    source_tree_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    base_commit_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    kind: Literal["solution_deploy_required"]
+    solution_slug: str
+    repo_subpath: str
+    source_subtree_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    source_content_id: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+    base_source_content_id: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+    declared_version: str | None = None
+    source_files: list[SolutionSourceFile]
+    changed_paths: dict[str, str | None]
+    disposition: SolutionDeployDisposition
+    reason: str | None = None
+    solution_id: UUID | None = None
+    deploy_job_id: UUID | None = None
+    candidate_id: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    source_artifact_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    completion_evidence: dict[str, Any] | None = None
+    due_at: datetime | None = None
+    overdue: bool
+    requires_attention: bool
+    resolved_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SolutionDeployObligationListResponse(BaseModel):
+    schema_version: Literal["bifrost.solution-deploy-obligation-list/v1"] = (
+        "bifrost.solution-deploy-obligation-list/v1"
+    )
+    records: list[SolutionDeployObligationResponse]
+    total: int
+    pending: int
+    attention_required: int
+    overdue: int
 
 
 class WorkspaceSourceReleaseListResponse(BaseModel):

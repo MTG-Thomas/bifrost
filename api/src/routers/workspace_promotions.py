@@ -12,6 +12,8 @@ from src.core.auth import Context, CurrentSuperuser, bearer_scheme
 from src.core.constants import SYSTEM_USER_UUID
 from src.core.db_deps import DbSession
 from src.models.contracts.workspace_promotions import (
+    SolutionDeployObligationListResponse,
+    SolutionDeployObligationResponse,
     WorkspacePromotionCanaryAccepted,
     WorkspacePromotionCanaryRequest,
     WorkspacePromotionPreviewRequest,
@@ -53,6 +55,10 @@ from src.services.workspace_promotions import (
 from src.services.workspace_source_releases import (
     WorkspaceSourceReleaseConflict,
     WorkspaceSourceReleaseService,
+)
+from src.services.solution_deploy_obligations import (
+    SolutionDeployObligationConflict,
+    SolutionDeployObligationService,
 )
 from src.services.github_actions_oidc import (
     GitHubActionsOIDCError,
@@ -458,7 +464,7 @@ async def declare_workspace_source_release(
             request,
             created_by=user.user_id,
         )
-    except WorkspaceSourceReleaseConflict as exc:
+    except (WorkspaceSourceReleaseConflict, SolutionDeployObligationConflict) as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc
@@ -494,7 +500,7 @@ async def declare_workspace_source_release_from_github(
             created_by=SYSTEM_USER_UUID,
             producer=producer,
         )
-    except WorkspaceSourceReleaseConflict as exc:
+    except (WorkspaceSourceReleaseConflict, SolutionDeployObligationConflict) as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc
@@ -524,6 +530,49 @@ async def list_workspace_source_releases(
         limit=limit,
         tracking_expected=workspace_source_release_tracking_expected(get_settings()),
     )
+
+
+@router.get(
+    "/solution-deploy-obligations",
+    response_model=SolutionDeployObligationListResponse,
+)
+async def list_solution_deploy_obligations(
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> SolutionDeployObligationListResponse:
+    """List reviewed Solution source that requires an explicit deployment."""
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    return await SolutionDeployObligationService(db, ctx.org_id).list(limit=limit)
+
+
+@router.get(
+    "/solution-deploy-obligations/{obligation_id}",
+    response_model=SolutionDeployObligationResponse,
+)
+async def get_solution_deploy_obligation(
+    obligation_id: UUID,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+) -> SolutionDeployObligationResponse:
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    try:
+        return await SolutionDeployObligationService(db, ctx.org_id).get(obligation_id)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Solution deploy obligation not found",
+        ) from exc
 
 
 @router.get(

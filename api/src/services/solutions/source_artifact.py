@@ -8,13 +8,17 @@ Python full-replace writer from deleting it.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from pathlib import Path
 from uuid import UUID
+
+from anyio import open_file
 
 from src.config import Settings, get_settings
 
 SOURCE_ARTIFACTS_ROOT = "_solution_artifacts"
 SOURCE_ARTIFACT_NAME = "source.zip"
+CHUNK_SIZE = 8 * 1024 * 1024
 
 
 class SolutionSourceArtifactStorage:
@@ -46,6 +50,16 @@ class SolutionSourceArtifactStorage:
     async def write(self, data: bytes) -> None:
         async with self._get_client() as client:
             await client.put_object(Bucket=self._bucket, Key=self._key(), Body=data)
+
+    async def write_path(self, path: Path) -> None:
+        async def chunks() -> AsyncIterator[bytes]:
+            async with await open_file(path, "rb") as source:
+                while chunk := await source.read(CHUNK_SIZE):
+                    yield chunk
+
+        await self._storage.put_object_from_chunks(
+            self._key(), chunks(), content_type="application/zip"
+        )
 
     async def read(self) -> bytes | None:
         async with self._get_client() as client:

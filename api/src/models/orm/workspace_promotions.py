@@ -17,7 +17,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.models.orm.base import Base
 
@@ -347,6 +347,14 @@ class WorkspaceSourceRelease(Base):
         server_default=text("NOW()"),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+    solution_deploy_obligations: Mapped[list["SolutionDeployObligation"]] = (
+        relationship(
+            back_populates="source_release",
+            cascade="all, delete-orphan",
+            lazy="selectin",
+            order_by="SolutionDeployObligation.solution_slug",
+        )
+    )
 
     __table_args__ = (
         UniqueConstraint(
@@ -431,5 +439,122 @@ class WorkspaceSourceRelease(Base):
             "disposition NOT IN ('deferred', 'non_production') OR "
             "(reason IS NOT NULL AND resolved_at IS NOT NULL)",
             name="ck_workspace_source_release_manual_reason",
+        ),
+    )
+
+
+class SolutionDeployObligation(Base):
+    """One reviewed Solution subtree that still requires an explicit deploy."""
+
+    __tablename__ = "solution_deploy_obligations"
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    source_release_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("workspace_source_releases.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source_commit_sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_tree_sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    base_commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    solution_slug: Mapped[str] = mapped_column(String(255), nullable=False)
+    repo_subpath: Mapped[str] = mapped_column(String(1000), nullable=False)
+    source_subtree_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    source_content_id: Mapped[str | None] = mapped_column(String(71), nullable=True)
+    base_source_content_id: Mapped[str | None] = mapped_column(
+        String(71), nullable=True
+    )
+    declared_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_files: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    changed_paths: Mapped[dict[str, str | None]] = mapped_column(JSONB, nullable=False)
+    kind: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="solution_deploy_required"
+    )
+    disposition: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="pending"
+    )
+    declared_disposition: Mapped[str] = mapped_column(String(30), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    solution_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=True
+    )
+    deploy_job_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=True
+    )
+    candidate_id: Mapped[str | None] = mapped_column(String(71), nullable=True)
+    source_artifact_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    completion_evidence: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True
+    )
+    due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("NOW()"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("NOW()"),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    source_release: Mapped[WorkspaceSourceRelease] = relationship(
+        back_populates="solution_deploy_obligations"
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "source_commit_sha",
+            "solution_slug",
+            name="uq_solution_deploy_obligation_commit_slug",
+        ),
+        Index(
+            "ix_solution_deploy_obligation_attention",
+            "disposition",
+            "due_at",
+            postgresql_where=text("disposition IN ('pending', 'attention_required')"),
+        ),
+        CheckConstraint(
+            "kind = 'solution_deploy_required'",
+            name="ck_solution_deploy_obligation_kind",
+        ),
+        CheckConstraint(
+            "disposition IN ('pending', 'attention_required', 'released', "
+            "'superseded')",
+            name="ck_solution_deploy_obligation_disposition",
+        ),
+        CheckConstraint(
+            "declared_disposition IN ('solution_deploy_required', 'attention_required')",
+            name="ck_solution_deploy_obligation_declared_disposition",
+        ),
+        CheckConstraint(
+            "disposition <> 'released' OR "
+            "(solution_id IS NOT NULL AND deploy_job_id IS NOT NULL AND "
+            "candidate_id IS NOT NULL AND source_artifact_sha256 IS NOT NULL AND "
+            "completion_evidence IS NOT NULL AND resolved_at IS NOT NULL)",
+            name="ck_solution_deploy_obligation_released_evidence",
+        ),
+        CheckConstraint(
+            "disposition <> 'attention_required' OR reason IS NOT NULL",
+            name="ck_solution_deploy_obligation_attention_reason",
         ),
     )
