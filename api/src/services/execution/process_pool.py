@@ -1791,6 +1791,32 @@ class ProcessPoolManager:
         available_slots = max(0, max_workers - busy_count)
 
         memory_current, memory_max = get_cgroup_memory()
+        admission_attempts = getattr(self, "_admission_attempts", 0)
+        admission_wait_total = getattr(self, "_admission_wait_seconds_total", 0.0)
+        active_executions = [
+            p.current_execution for p in self.processes.values() if p.current_execution
+        ]
+        estimated_drain_seconds = max(
+            (
+                max(0.0, info.timeout_seconds - info.elapsed_seconds)
+                for info in active_executions
+            ),
+            default=0.0,
+        )
+        memory_utilization = (
+            memory_current / memory_max
+            if memory_current >= 0 and memory_max > 0
+            else None
+        )
+        health_reasons = []
+        if self._shutdown:
+            health_reasons.append("shutting_down")
+        if available_slots == 0:
+            health_reasons.append("capacity_saturated")
+        if memory_utilization is not None and memory_utilization >= 0.9:
+            health_reasons.append("memory_pressure")
+        if self._requirements_installed < self._requirements_total:
+            health_reasons.append("requirements_incomplete")
 
         return {
             "type": "worker_heartbeat",
@@ -1807,6 +1833,10 @@ class ProcessPoolManager:
             "idle_count": idle_count,
             "busy_count": busy_count,
             "available_slots": available_slots,
+            "saturation_ratio": busy_count / max_workers if max_workers else None,
+            "memory_utilization": memory_utilization,
+            "estimated_drain_seconds": estimated_drain_seconds,
+            "health_reasons": health_reasons,
             "requirements_installed": self._requirements_installed,
             "requirements_total": self._requirements_total,
             "memory_current_bytes": memory_current,
@@ -1820,6 +1850,11 @@ class ProcessPoolManager:
                 ),
                 "wait_seconds_max": getattr(
                     self, "_admission_wait_seconds_max", 0.0
+                ),
+                "wait_seconds_average": (
+                    admission_wait_total / admission_attempts
+                    if admission_attempts
+                    else 0.0
                 ),
             },
         }

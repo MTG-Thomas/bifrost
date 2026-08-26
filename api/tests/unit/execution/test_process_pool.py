@@ -603,6 +603,11 @@ class TestProcessPoolManagerHeartbeat:
         # KILLED handles are pending removal and never counted as idle/busy.
         assert heartbeat["idle_count"] == 0
         assert heartbeat["busy_count"] == 1
+        assert heartbeat["available_slots"] == pool.max_workers - 1
+        assert heartbeat["saturation_ratio"] == 1 / pool.max_workers
+        assert 0 <= heartbeat["estimated_drain_seconds"] <= 300
+        assert "wait_seconds_average" in heartbeat["admission"]
+        assert isinstance(heartbeat["health_reasons"], list)
         assert len(heartbeat["processes"]) == 2
 
         # Find busy process info

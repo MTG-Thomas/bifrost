@@ -366,6 +366,17 @@ PlatformJob runner-loss retries remain governed by each definition's canonical
 `max_attempts`, with stable ±20% jitter by job and attempt. Retry identity never
 changes, and neither mechanism retries deterministic domain failures.
 
+## Capacity diagnostics
+
+Worker heartbeats and platform-admin projections expose configured capacity,
+active children, available slots, saturation ratio, cgroup memory utilization,
+an upper-bound drain estimate from active execution timeouts, normalized health
+reasons, and admission attempts/successes/rejections with average and maximum
+wait. Fleet statistics aggregate known available slots, saturated workers, and
+rejection reasons while retaining `null` when not every live worker reports a
+capacity value. These are diagnostic projections over worker heartbeats; they
+do not become a scheduling authority.
+
 The ledger contains identifiers and bounded diagnostics, never execution
 payloads, results, logs, credentials, or secrets. Tenant-scoped read surfaces
 must authorize against the underlying domain authority; the nullable

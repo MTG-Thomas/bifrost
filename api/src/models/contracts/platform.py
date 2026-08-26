@@ -55,6 +55,15 @@ class ProcessInfo(BaseModel):
     )
 
 
+class AdmissionDiagnostics(BaseModel):
+    attempts: int = 0
+    successes: int = 0
+    rejections: dict[str, int] = Field(default_factory=dict)
+    wait_seconds_total: float = 0.0
+    wait_seconds_max: float = 0.0
+    wait_seconds_average: float = 0.0
+
+
 class PoolSummary(BaseModel):
     """Summary of a process pool for list endpoint."""
 
@@ -109,6 +118,12 @@ class PoolSummary(BaseModel):
         default=None,
         description="Memory limit of the worker container in bytes (from cgroup, -1 if unlimited)"
     )
+    available_slots: int | None = None
+    saturation_ratio: float | None = None
+    memory_utilization: float | None = None
+    estimated_drain_seconds: float | None = None
+    health_reasons: list[str] = Field(default_factory=list)
+    admission: AdmissionDiagnostics = Field(default_factory=AdmissionDiagnostics)
 
 
 class PoolDetail(BaseModel):
@@ -136,6 +151,14 @@ class PoolDetail(BaseModel):
         description="Configured ProcessPoolManager max_workers value",
     )
     processes: list[ProcessInfo] = Field(default_factory=list)
+    available_slots: int | None = None
+    saturation_ratio: float | None = None
+    memory_current_bytes: int | None = None
+    memory_max_bytes: int | None = None
+    memory_utilization: float | None = None
+    estimated_drain_seconds: float | None = None
+    health_reasons: list[str] = Field(default_factory=list)
+    admission: AdmissionDiagnostics = Field(default_factory=AdmissionDiagnostics)
 
 
 class PoolsListResponse(BaseModel):
@@ -156,6 +179,9 @@ class PoolStatsResponse(BaseModel):
     )
     total_idle: int = Field(..., description="Total idle processes across all pools")
     total_busy: int = Field(..., description="Total busy processes across all pools")
+    total_available_slots: int | None = None
+    saturated_workers: int = 0
+    admission_rejections: dict[str, int] = Field(default_factory=dict)
 
 
 class RecycleProcessRequest(BaseModel):

@@ -24,6 +24,7 @@ from src.core.database import get_db, get_db_context
 from src.core.log_safety import log_safe
 from src.models import Execution, Workflow
 from src.models.contracts.platform import (
+    AdmissionDiagnostics,
     PoolDetail,
     PoolsListResponse,
     PoolStatsResponse,
@@ -190,6 +191,9 @@ async def get_pool_stats(
     workers_reporting_capacity = 0
     total_idle = 0
     total_busy = 0
+    total_available_slots = 0
+    saturated_workers = 0
+    admission_rejections: dict[str, int] = {}
 
     for key in pool_keys:
         parts = key.split(":")
@@ -218,6 +222,17 @@ async def get_pool_stats(
                         )
                 total_idle += hb.get("idle_count", 0)
                 total_busy += hb.get("busy_count", 0)
+                available = hb.get("available_slots")
+                if available is not None:
+                    total_available_slots += int(available)
+                if hb.get("saturation_ratio") == 1 or available == 0:
+                    saturated_workers += 1
+                for reason, count in (hb.get("admission") or {}).get(
+                    "rejections", {}
+                ).items():
+                    admission_rejections[reason] = (
+                        admission_rejections.get(reason, 0) + int(count)
+                    )
             except json.JSONDecodeError as e:
                 # Corrupted heartbeat JSON for this worker — skip its contribution
                 logger.debug(f"invalid heartbeat JSON for worker {log_safe(worker_id)}: {log_safe(e)}")
@@ -233,6 +248,11 @@ async def get_pool_stats(
         total_configured_capacity=total_configured_capacity if fleet_capacity_known else None,
         total_idle=total_idle,
         total_busy=total_busy,
+        total_available_slots=(
+            total_available_slots if fleet_capacity_known else None
+        ),
+        saturated_workers=saturated_workers,
+        admission_rejections=admission_rejections,
     )
 
 
@@ -318,6 +338,16 @@ async def list_pools(
                 pool_info.requirements_total = hb.get("requirements_total")
                 pool_info.memory_current_bytes = hb.get("memory_current_bytes")
                 pool_info.memory_max_bytes = hb.get("memory_max_bytes")
+                pool_info.available_slots = hb.get("available_slots")
+                pool_info.saturation_ratio = hb.get("saturation_ratio")
+                pool_info.memory_utilization = hb.get("memory_utilization")
+                pool_info.estimated_drain_seconds = hb.get(
+                    "estimated_drain_seconds"
+                )
+                pool_info.health_reasons = hb.get("health_reasons", [])
+                pool_info.admission = AdmissionDiagnostics.model_validate(
+                    hb.get("admission") or {}
+                )
             except json.JSONDecodeError:
                 logger.warning(f"Invalid heartbeat JSON for pool {log_safe(worker_id)}")
 
@@ -375,6 +405,16 @@ async def get_pool(
             result.last_heartbeat = hb.get("timestamp")
             result.configured_capacity = hb.get("configured_capacity", hb.get("max_workers"))
             result.max_workers = hb.get("max_workers", result.configured_capacity)
+            result.available_slots = hb.get("available_slots")
+            result.saturation_ratio = hb.get("saturation_ratio")
+            result.memory_current_bytes = hb.get("memory_current_bytes")
+            result.memory_max_bytes = hb.get("memory_max_bytes")
+            result.memory_utilization = hb.get("memory_utilization")
+            result.estimated_drain_seconds = hb.get("estimated_drain_seconds")
+            result.health_reasons = hb.get("health_reasons", [])
+            result.admission = AdmissionDiagnostics.model_validate(
+                hb.get("admission") or {}
+            )
             if (rt := hb.get("runtime")) is not None:
                 runtime_changed = rt != result.runtime
                 result.runtime = rt
