@@ -534,15 +534,28 @@ class _AbstractConsumer(ABC):
         try:
             execution_failure_checkpoint(FailurePoint.POISON_PUBLISH)
             await self._publish_poison(message, context, reason=reason)
+            await self._finalize_poison_delivery(context, reason=reason)
         except Exception:
             logger.exception(
-                "Failed to publish poison message; requeueing original",
+                "Failed to publish or finalize poison message; requeueing original",
                 extra=self._log_extra(context, reason=reason),
             )
             await message.nack(requeue=True)
             return
         await message.ack()
         self._log_decision("dead_lettered", context, reason=reason, duration=self._duration(started))
+
+    async def _finalize_poison_delivery(
+        self,
+        context: DeliveryContext,
+        *,
+        reason: str,
+    ) -> None:
+        """Persist consumer-specific terminal state before acknowledging poison.
+
+        Queue consumers that own durable domain state override this hook. The
+        base consumer has no such state to update.
+        """
 
     def _retry_budget_exhausted(self, context: DeliveryContext) -> bool:
         if self.retry_budget_seconds is None or not context.enqueued_at:

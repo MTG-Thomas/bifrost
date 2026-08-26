@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
+from redis.exceptions import RedisError
 from sqlalchemy import text
 
 from src.core.database import get_db_context
@@ -38,6 +39,7 @@ from src.core.redis_client import get_redis_client
 from src.jobs.execution_policy import broker_execution_policies
 from src.jobs.rabbitmq import (
     BaseConsumer,
+    DeliveryContext,
     DomainFailureHandled,
     DuplicateMessage,
     MalformedMessage,
@@ -612,11 +614,15 @@ class WorkflowExecutionConsumer(BaseConsumer):
         if not execution_id:
             raise MalformedMessage("workflow execution message missing execution_id")
 
-        # Remove from queue tracking (execution is now being processed)
-        await remove_from_queue(execution_id)
-
-        # Read execution context from Redis
-        pending = await self._redis_client.get_pending_execution(execution_id)
+        try:
+            # Remove from queue tracking (execution is now being processed),
+            # then load the context required before workflow code can run.
+            await remove_from_queue(execution_id)
+            pending = await self._redis_client.get_pending_execution(execution_id)
+        except RedisError as exc:
+            raise RetryableConsumerError(
+                f"Redis pending execution state is unavailable: {exc}"
+            ) from exc
 
         if pending is None:
             existing_status = await self._fail_missing_pending_execution(execution_id)
@@ -1203,6 +1209,48 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 exc_info=True,
             )
             raise DomainFailureHandled("workflow setup failure recorded") from e
+
+    async def _finalize_poison_delivery(
+        self,
+        context: DeliveryContext,
+        *,
+        reason: str,
+    ) -> None:
+        """Terminalize a poisoned execution before RabbitMQ acknowledges it."""
+        from src.services.execution.poison import (
+            PoisonFinalizationConflict,
+            finalize_poisoned_execution,
+        )
+
+        execution_id = context.body.get("execution_id")
+        try:
+            UUID(str(execution_id))
+        except (TypeError, ValueError):
+            # Malformed messages have no durable execution to reconcile. The
+            # poison record is their terminal audit evidence; requeueing after
+            # it was published would manufacture duplicate poison messages.
+            logger.warning(
+                "Poisoned workflow delivery has no valid execution UUID; "
+                "skipping durable execution finalization",
+                extra={
+                    "queue": context.queue_name,
+                    "message_id": context.message_id,
+                    "reason": reason,
+                },
+            )
+            return
+        try:
+            await finalize_poisoned_execution(
+                execution_id=str(execution_id),
+                queue=context.queue_name,
+                reason=reason,
+                retry_count=context.retry_count,
+                replay_count=context.replay_count,
+                message_id=context.message_id,
+                sync=bool(context.body.get("sync")),
+            )
+        except PoisonFinalizationConflict as exc:
+            raise MalformedMessage(str(exc)) from exc
 
     async def _fail_missing_pending_execution(
         self,
