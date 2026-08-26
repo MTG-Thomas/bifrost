@@ -16,7 +16,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import func, or_, select, text
 
 from src.core.database import get_db_context
-from src.jobs.platform.base import PlatformJobPolicy
+from src.jobs.platform.base import PlatformJobDefinition, PlatformJobPolicy
 from src.jobs.platform.registry import get_platform_job_definition
 from src.models.orm.platform_jobs import PlatformJob
 from src.services.execution_attempts import (
@@ -24,6 +24,10 @@ from src.services.execution_attempts import (
     transition_execution_attempt,
 )
 from src.services.execution.memory_monitor import get_cgroup_memory
+from src.services.execution_admission import (
+    AdmissionOutcome,
+    record_admission_decision,
+)
 from src.services.platform_job_memory_profiles import (
     record_platform_job_memory_profile,
 )
@@ -73,6 +77,19 @@ def _memory_allows_start(
 def _memory_exceeds_hard_limit(hard_ratio: float) -> bool:
     current, limit = get_cgroup_memory()
     return current >= 0 and limit > 0 and current / limit >= hard_ratio
+
+
+def _record_platform_admission(
+    definition: PlatformJobDefinition,
+    outcome: AdmissionOutcome,
+    reason: str,
+) -> None:
+    record_admission_decision(
+        workload_class=definition.operations_policy.workload_class.value,
+        admission_policy=definition.operations_policy.admission_policy.value,
+        outcome=outcome,
+        reason=reason,
+    )
 
 
 async def recover_expired_platform_jobs() -> tuple[int, int]:
@@ -210,6 +227,11 @@ async def claim_platform_job() -> ClaimedPlatformJob | None:
                     )
                 ).scalar_one()
                 if not handler_lock:
+                    _record_platform_admission(
+                        definition,
+                        AdmissionOutcome.DEFERRED,
+                        "concurrency_lock_busy",
+                    )
                     continue
                 running_count = (
                     await db.execute(
@@ -220,6 +242,11 @@ async def claim_platform_job() -> ClaimedPlatformJob | None:
                     )
                 ).scalar_one()
                 if running_count >= definition.policy.max_concurrency:
+                    _record_platform_admission(
+                        definition,
+                        AdmissionOutcome.DEFERRED,
+                        "class_concurrency_limit",
+                    )
                     continue
             if job.resource_lock_key is not None:
                 resource_lock = (
@@ -231,6 +258,11 @@ async def claim_platform_job() -> ClaimedPlatformJob | None:
                     )
                 ).scalar_one()
                 if not resource_lock:
+                    _record_platform_admission(
+                        definition,
+                        AdmissionOutcome.DEFERRED,
+                        "resource_lock_busy",
+                    )
                     continue
                 resource_busy = (
                     await db.execute(
@@ -241,11 +273,21 @@ async def claim_platform_job() -> ClaimedPlatformJob | None:
                     )
                 ).scalar_one()
                 if resource_busy:
+                    _record_platform_admission(
+                        definition,
+                        AdmissionOutcome.DEFERRED,
+                        "resource_concurrency_limit",
+                    )
                     continue
             if not _memory_allows_start(
                 definition.policy,
                 memory_required_bytes=job.memory_required_bytes,
             ):
+                _record_platform_admission(
+                    definition,
+                    AdmissionOutcome.DEFERRED,
+                    "memory_pressure",
+                )
                 if job.phase != "Waiting for scheduler memory":
                     job.phase = "Waiting for scheduler memory"
                     job.revision += 1
@@ -281,6 +323,11 @@ async def claim_platform_job() -> ClaimedPlatformJob | None:
                 worker_id=job.lease_owner,
                 process_id=os.getpid(),
                 lease_token=token,
+            )
+            _record_platform_admission(
+                definition,
+                AdmissionOutcome.ADMITTED,
+                "capacity_available",
             )
             await db.commit()
             claimed = ClaimedPlatformJob(

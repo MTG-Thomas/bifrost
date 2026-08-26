@@ -49,6 +49,10 @@ import redis.asyncio as redis
 
 from src.config import get_settings
 from src.services.execution.memory_monitor import get_cgroup_memory, has_sufficient_memory_cgroup
+from src.services.execution_admission import (
+    AdmissionOutcome,
+    record_admission_decision,
+)
 from src.models.contracts.notifications import NotificationCategory, NotificationCreate, NotificationStatus
 from src.services.execution.simple_worker import install_requirements, RequirementsInstallResult
 from src.services.notification_service import get_notification_service
@@ -769,6 +773,13 @@ class ProcessPoolManager:
                 self._admission_wait_seconds_max,
                 wait_seconds,
             )
+            record_admission_decision(
+                workload_class="interactive_workflow",
+                admission_policy="workflow_process_pool",
+                outcome=AdmissionOutcome.DEFERRED,
+                reason="memory_pressure",
+                wait_seconds=wait_seconds,
+            )
             raise MemoryError(
                 f"Cannot route execution {execution_id[:8]}: memory pressure "
                 f"exceeds {settings.memory_pressure_threshold:.0%} threshold"
@@ -801,6 +812,13 @@ class ProcessPoolManager:
                 self._admission_wait_seconds_max = max(
                     self._admission_wait_seconds_max,
                     wait_seconds,
+                )
+                record_admission_decision(
+                    workload_class="interactive_workflow",
+                    admission_policy="workflow_process_pool",
+                    outcome=AdmissionOutcome.DEFERRED,
+                    reason="slot_timeout",
+                    wait_seconds=wait_seconds,
                 )
                 raise ProcessPoolAdmissionRejected("No worker slot available after timeout")
 
@@ -840,6 +858,13 @@ class ProcessPoolManager:
         self._admission_wait_seconds_max = max(
             self._admission_wait_seconds_max,
             wait_seconds,
+        )
+        record_admission_decision(
+            workload_class="interactive_workflow",
+            admission_policy="workflow_process_pool",
+            outcome=AdmissionOutcome.ADMITTED,
+            reason="capacity_available",
+            wait_seconds=wait_seconds,
         )
 
         logger.info(

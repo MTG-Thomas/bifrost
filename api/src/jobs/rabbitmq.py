@@ -569,6 +569,7 @@ class _AbstractConsumer(ABC):
                 {
                     "execution_policy": self.operations_policy.identifier,
                     "workload_class": self.operations_policy.workload_class.value,
+                    "admission_policy": self.operations_policy.admission_policy.value,
                     "execution_mechanism": self.operations_policy.mechanism.value,
                     "completion_boundary": (
                         self.operations_policy.completion_boundary.value

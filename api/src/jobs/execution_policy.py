@@ -33,6 +33,16 @@ class WorkloadClass(StrEnum):
     PLATFORM_MAINTENANCE = "platform_maintenance"
 
 
+class AdmissionPolicy(StrEnum):
+    """Runtime boundary that owns capacity and backpressure decisions."""
+
+    WORKFLOW_PROCESS_POOL = "workflow_process_pool"
+    CONSUMER_QOS = "consumer_qos"
+    SERIAL_CONSUMER_QOS = "serial_consumer_qos"
+    PER_WORKER_SERIAL = "per_worker_serial"
+    PLATFORM_SCHEDULER = "platform_scheduler"
+
+
 class CompletionBoundary(StrEnum):
     """Point after which the delivery or durable claim may be released."""
 
@@ -76,6 +86,7 @@ class ExecutionOperationsPolicy:
     identifier: str
     mechanism: ExecutionMechanism
     workload_class: WorkloadClass
+    admission_policy: AdmissionPolicy
     durable_authority: str
     completion_boundary: CompletionBoundary
     idempotency: IdempotencyRequirement
@@ -127,6 +138,20 @@ class ExecutionOperationsPolicy:
             raise ValueError(
                 f"retryable policy {self.identifier!r} requires idempotency"
             )
+        if (
+            self.workload_class == WorkloadClass.INTERACTIVE_WORKFLOW
+            and self.admission_policy != AdmissionPolicy.WORKFLOW_PROCESS_POOL
+        ):
+            raise ValueError(
+                "interactive workflows must be admitted by the process pool"
+            )
+        if (
+            self.mechanism == ExecutionMechanism.POSTGRES_LEASE
+            and self.admission_policy != AdmissionPolicy.PLATFORM_SCHEDULER
+        ):
+            raise ValueError(
+                f"leased policy {self.identifier!r} must use platform admission"
+            )
 
 
 def platform_job_operations_policy(
@@ -142,6 +167,7 @@ def platform_job_operations_policy(
         identifier=job_type,
         mechanism=ExecutionMechanism.POSTGRES_LEASE,
         workload_class=workload_class,
+        admission_policy=AdmissionPolicy.PLATFORM_SCHEDULER,
         durable_authority="platform_jobs",
         completion_boundary=CompletionBoundary.PLATFORM_JOB_TERMINAL_OR_WAITING,
         idempotency=IdempotencyRequirement.REQUIRED,
@@ -164,6 +190,7 @@ _BROKER_POLICIES: Mapping[str, ExecutionOperationsPolicy] = MappingProxyType(
             identifier="workflow-executions",
             mechanism=ExecutionMechanism.RABBITMQ_QUEUE,
             workload_class=WorkloadClass.INTERACTIVE_WORKFLOW,
+            admission_policy=AdmissionPolicy.WORKFLOW_PROCESS_POOL,
             durable_authority="executions",
             completion_boundary=CompletionBoundary.CHILD_DISPATCHED,
             idempotency=IdempotencyRequirement.REQUIRED,
@@ -178,6 +205,7 @@ _BROKER_POLICIES: Mapping[str, ExecutionOperationsPolicy] = MappingProxyType(
             identifier="agent-runs",
             mechanism=ExecutionMechanism.RABBITMQ_QUEUE,
             workload_class=WorkloadClass.INTERACTIVE_AGENT,
+            admission_policy=AdmissionPolicy.CONSUMER_QOS,
             durable_authority="agent_runs",
             completion_boundary=CompletionBoundary.DOMAIN_OUTCOME_DURABLE,
             idempotency=IdempotencyRequirement.REQUIRED,
@@ -192,6 +220,7 @@ _BROKER_POLICIES: Mapping[str, ExecutionOperationsPolicy] = MappingProxyType(
             identifier="agent-summarization",
             mechanism=ExecutionMechanism.RABBITMQ_QUEUE,
             workload_class=WorkloadClass.DERIVED_AI,
+            admission_policy=AdmissionPolicy.SERIAL_CONSUMER_QOS,
             durable_authority="agent_runs.summary_status",
             completion_boundary=CompletionBoundary.DOMAIN_OUTCOME_DURABLE,
             idempotency=IdempotencyRequirement.REQUIRED,
@@ -206,6 +235,7 @@ _BROKER_POLICIES: Mapping[str, ExecutionOperationsPolicy] = MappingProxyType(
             identifier="agent-summarization-backfill",
             mechanism=ExecutionMechanism.RABBITMQ_QUEUE,
             workload_class=WorkloadClass.DERIVED_AI,
+            admission_policy=AdmissionPolicy.SERIAL_CONSUMER_QOS,
             durable_authority="platform_jobs_and_agent_runs.summary_status",
             completion_boundary=CompletionBoundary.DOMAIN_OUTCOME_DURABLE,
             idempotency=IdempotencyRequirement.REQUIRED,
@@ -220,6 +250,7 @@ _BROKER_POLICIES: Mapping[str, ExecutionOperationsPolicy] = MappingProxyType(
             identifier="agent-tuning-chat",
             mechanism=ExecutionMechanism.RABBITMQ_QUEUE,
             workload_class=WorkloadClass.DERIVED_AI,
+            admission_policy=AdmissionPolicy.SERIAL_CONSUMER_QOS,
             durable_authority="agent_tuning_conversation",
             completion_boundary=CompletionBoundary.DOMAIN_OUTCOME_DURABLE,
             idempotency=IdempotencyRequirement.REQUIRED,
@@ -234,6 +265,7 @@ _BROKER_POLICIES: Mapping[str, ExecutionOperationsPolicy] = MappingProxyType(
             identifier="package-installations",
             mechanism=ExecutionMechanism.RABBITMQ_FANOUT,
             workload_class=WorkloadClass.WORKER_MAINTENANCE,
+            admission_policy=AdmissionPolicy.PER_WORKER_SERIAL,
             durable_authority="package_operation_progress",
             completion_boundary=CompletionBoundary.LOCAL_WORKER_CONVERGED,
             idempotency=IdempotencyRequirement.LOCAL_WORKER_REQUIRED,
@@ -298,6 +330,7 @@ def all_execution_policies(
 
 __all__ = [
     "CancellationMode",
+    "AdmissionPolicy",
     "CompletionBoundary",
     "ExecutionMechanism",
     "ExecutionOperationsPolicy",

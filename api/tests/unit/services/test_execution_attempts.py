@@ -37,6 +37,7 @@ async def test_start_attempt_allocates_next_number_and_policy_snapshot() -> None
     assert attempt.attempt_number == 3
     assert attempt.policy_identifier == policy.identifier
     assert attempt.workload_class == policy.workload_class.value
+    assert attempt.admission_policy == policy.admission_policy.value
     assert attempt.mechanism == policy.mechanism.value
     assert db.add.call_count == 2
     assert db.flush.await_count == 2

@@ -314,6 +314,29 @@ same low-cardinality dimensions through
 not metric labels. PostgreSQL events remain the authoritative timeline if a
 telemetry exporter is unavailable.
 
+## Workload admission and backpressure
+
+Workload class and admission ownership are separate policy dimensions. The
+class describes what is competing for capacity; `AdmissionPolicy` identifies
+the runtime boundary that must apply backpressure:
+
+- interactive workflows use RabbitMQ QoS capped to `max_workers`, then the
+  cgroup-aware one-shot process-pool admission gate;
+- interactive agent runs use consumer QoS bounded by worker concurrency;
+- derived AI queues are deliberately serial per worker so backfills cannot
+  multiply concurrency by the global setting;
+- package installation fanout is serial on every worker;
+- PlatformJobs remain in PostgreSQL until their scheduler can acquire class
+  and resource locks and pass cgroup memory admission.
+
+Admission does not create a second queue or state authority. A rejected
+workflow claim is returned to its durable pending state and records an
+`admission_deferred` attempt; an inadmissible PlatformJob stays queued.
+`bifrost.execution.admission.decisions` and
+`bifrost.execution.admission.wait` use bounded workload, policy, outcome, and
+reason labels. Memory pressure, slot timeout, class concurrency, and resource
+serialization are therefore distinguishable without job-ID metric cardinality.
+
 The ledger contains identifiers and bounded diagnostics, never execution
 payloads, results, logs, credentials, or secrets. Tenant-scoped read surfaces
 must authorize against the underlying domain authority; the nullable

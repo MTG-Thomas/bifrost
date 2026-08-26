@@ -5,6 +5,7 @@ from dataclasses import replace
 import pytest
 
 from src.jobs.execution_policy import (
+    AdmissionPolicy,
     CancellationMode,
     CompletionBoundary,
     ExecutionMechanism,
@@ -54,6 +55,7 @@ def test_workflow_policy_records_the_existing_dispatch_boundary() -> None:
     assert policy is not None
     assert policy.mechanism == ExecutionMechanism.RABBITMQ_QUEUE
     assert policy.workload_class == WorkloadClass.INTERACTIVE_WORKFLOW
+    assert policy.admission_policy == AdmissionPolicy.WORKFLOW_PROCESS_POOL
     assert policy.completion_boundary == CompletionBoundary.CHILD_DISPATCHED
     assert policy.idempotency == IdempotencyRequirement.REQUIRED
     assert policy.worker_loss == WorkerLossBehavior.DURABLE_RECOVERY
@@ -76,6 +78,7 @@ def test_retryable_policy_requires_idempotency() -> None:
             identifier="unsafe",
             mechanism=ExecutionMechanism.RABBITMQ_QUEUE,
             workload_class=WorkloadClass.PLATFORM_BATCH,
+            admission_policy=AdmissionPolicy.CONSUMER_QOS,
             durable_authority="unsafe_jobs",
             completion_boundary=CompletionBoundary.DOMAIN_OUTCOME_DURABLE,
             idempotency=IdempotencyRequirement.NONE,
@@ -94,6 +97,7 @@ def test_platform_semantics_agree_with_runner_policy() -> None:
         operations = definition.operations_policy
 
         assert operations.mechanism == ExecutionMechanism.POSTGRES_LEASE
+        assert operations.admission_policy == AdmissionPolicy.PLATFORM_SCHEDULER
         assert (operations.worker_loss == WorkerLossBehavior.RETRY) == (
             definition.policy.retry_on_runner_loss
         )

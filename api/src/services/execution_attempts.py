@@ -73,6 +73,7 @@ async def _append_lifecycle_event(
         event_type=event_type,
         policy_identifier=attempt.policy_identifier,
         workload_class=attempt.workload_class,
+        admission_policy=attempt.admission_policy,
         mechanism=attempt.mechanism,
         worker_id=attempt.worker_id,
         reason_code=reason_code,
@@ -85,6 +86,7 @@ async def _append_lifecycle_event(
         "logical_job_type": attempt.logical_job_type,
         "policy_identifier": attempt.policy_identifier,
         "workload_class": attempt.workload_class,
+        "admission_policy": attempt.admission_policy,
         "mechanism": attempt.mechanism,
     }
     counter.add(1, attributes)
@@ -160,6 +162,7 @@ async def start_execution_attempt(
         status=status,
         policy_identifier=policy.identifier,
         workload_class=policy.workload_class.value,
+        admission_policy=policy.admission_policy.value,
         mechanism=policy.mechanism.value,
         queue_name=queue_name,
         message_id=message_id,

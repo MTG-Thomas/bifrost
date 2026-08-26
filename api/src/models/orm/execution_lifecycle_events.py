@@ -32,6 +32,7 @@ class ExecutionLifecycleEvent(Base):
     event_type: Mapped[str] = mapped_column(String(32), nullable=False)
     policy_identifier: Mapped[str] = mapped_column(String(100), nullable=False)
     workload_class: Mapped[str] = mapped_column(String(64), nullable=False)
+    admission_policy: Mapped[str] = mapped_column(String(64), nullable=False)
     mechanism: Mapped[str] = mapped_column(String(32), nullable=False)
     worker_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     reason_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
