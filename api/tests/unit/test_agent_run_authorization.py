@@ -127,6 +127,7 @@ async def _make_run(db: AsyncSession, agent: Agent, org: Organization) -> AgentR
         id=uuid4(),
         agent_id=agent.id,
         trigger_type="api",
+        input={},
         status="completed",
         org_id=org.id,
         iterations_used=1,
