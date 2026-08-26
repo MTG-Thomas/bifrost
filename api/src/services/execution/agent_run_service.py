@@ -4,15 +4,51 @@ import logging
 from uuid import uuid4
 
 import redis.asyncio as aioredis
-from sqlalchemy import text
+from fastapi import HTTPException, status
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.auth import UserPrincipal
 from src.core.cache.redis_client import get_redis
 from src.jobs.rabbitmq import publish_message
+from src.models.orm.agents import Agent
+from src.models.orm.solutions import Solution
+from src.services.agent_run_access import load_agent_by_name_for_user
 
 logger = logging.getLogger(__name__)
 
 QUEUE_NAME = "agent-runs"
 REDIS_PREFIX = "bifrost:agent_run"
+
+
+async def get_executable_agent(
+    db: AsyncSession,
+    agent_name: str,
+    user: UserPrincipal,
+) -> Agent:
+    """Resolve an agent and enforce solution execution availability."""
+    agent = await load_agent_by_name_for_user(db, agent_name, user)
+
+    if agent is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Agent '{agent_name}' not found",
+        )
+
+    if agent.solution_id is not None:
+        sol_result = await db.execute(
+            select(Solution.status).where(Solution.id == agent.solution_id)
+        )
+        if sol_result.scalar_one_or_none() != "active":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Agent '{agent.name}' belongs to an inactive solution. "
+                    "Reinstall the solution to execute this agent."
+                ),
+            )
+
+    return agent
 
 
 async def enqueue_agent_run(

@@ -22,7 +22,6 @@ from src.core.db_deps import DbSession
 from src.core.log_safety import log_safe
 from src.services.agent_run_access import (
     apply_agent_run_access,
-    load_agent_by_name_for_user,
     load_agent_for_user,
     load_agent_run_for_user,
 )
@@ -56,14 +55,13 @@ from src.models.contracts.agent_runs import (
 from src.models.contracts.executions import AIUsagePublicSimple, AIUsageTotalsSimple
 from src.models.orm.agent_run_verdict_history import AgentRunVerdictHistory
 from src.models.orm.agent_runs import AgentRun
-from src.models.orm.agents import Agent
 from src.models.orm.ai_usage import AIUsage
-from src.models.orm.solutions import Solution
 from src.models.orm.summary_backfill_job import SummaryBackfillJob
 from src.core.redis_client import get_redis_client
 from src.services.execution.agent_run_access import agent_run_visibility_conditions
 from src.services.execution.agent_run_service import (
     enqueue_agent_run,
+    get_executable_agent,
     wait_for_agent_run_result,
 )
 from src.services.execution.dry_run import evaluate_against_prompt
@@ -76,36 +74,6 @@ from src.services.execution.tuning_service import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/agent-runs", tags=["Agent Runs"])
-
-
-async def _get_executable_agent(
-    db: DbSession,
-    agent_name: str,
-    user: CurrentActiveUser,
-) -> Agent:
-    """Resolve an agent and enforce solution execution availability."""
-    agent = await load_agent_by_name_for_user(db, agent_name, user)
-
-    if agent is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Agent '{agent_name}' not found",
-        )
-
-    if agent.solution_id is not None:
-        sol_result = await db.execute(
-            select(Solution.status).where(Solution.id == agent.solution_id)
-        )
-        if sol_result.scalar_one_or_none() != "active":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    f"Agent '{agent.name}' belongs to an inactive solution. "
-                    "Reinstall the solution to execute this agent."
-                ),
-            )
-
-    return agent
 
 
 def _run_to_response(run: AgentRun) -> AgentRunResponse:
@@ -1033,7 +1001,7 @@ async def enqueue_agent_run_request(
     user: CurrentActiveUser,
 ) -> AgentRunEnqueueResponse | PausedResponse:
     """Queue an agent run and return without waiting for execution."""
-    agent = await _get_executable_agent(db, request.agent_name, user)
+    agent = await get_executable_agent(db, request.agent_name, user)
 
     if not agent.is_active:
         response.status_code = status.HTTP_200_OK
@@ -1063,7 +1031,7 @@ async def execute_agent_run(
     user: CurrentActiveUser,
 ) -> dict:
     """Execute an agent synchronously via the SDK."""
-    agent = await _get_executable_agent(db, request.agent_name, user)
+    agent = await get_executable_agent(db, request.agent_name, user)
 
     # Paused agents short-circuit gracefully — HTTP 200 with structured body.
     # Downstream consumers (webhook senders, SDK) discriminate on status="paused".
