@@ -350,7 +350,8 @@ async def finish_platform_job(
         if status == "succeeded":
             job.progress_percent = 100
         job.result = result
-        job.error_code = error_code
+        bounded_error_code = error_code[:100] if error_code else None
+        job.error_code = bounded_error_code
         job.error_message = error_message.strip()[:4000] if error_message else None
         job.error_retryable = error_retryable if error_message else None
         job.completed_at = _now()
@@ -360,7 +361,7 @@ async def finish_platform_job(
             logical_job_id=job.id,
             lease_token=lease_token,
             status=status,
-            failure_code=error_code,
+            failure_code=bounded_error_code,
             failure_message=error_message,
         )
         await record_platform_job_memory_profile(db, job)

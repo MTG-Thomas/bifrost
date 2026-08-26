@@ -204,6 +204,37 @@ async def test_progress_and_terminal_writes_are_fenced(
 
 
 @pytest.mark.asyncio
+async def test_finish_platform_job_bounds_error_code_for_job_and_attempt(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = await _enqueue(db_session)
+    token = uuid4()
+    job.status = "running"
+    job.lease_token = token
+    job.lease_expires_at = datetime.now(timezone.utc) + timedelta(minutes=1)
+    await db_session.commit()
+
+    @asynccontextmanager
+    async def test_context() -> AsyncGenerator[AsyncSession, None]:
+        yield db_session
+
+    monkeypatch.setattr(service, "get_db_context", test_context)
+    monkeypatch.setattr(service, "publish_platform_job_update", AsyncMock())
+
+    assert await service.finish_platform_job(
+        job.id,
+        token,
+        status="failed",
+        error_code="x" * 200,
+        error_message="failed",
+    )
+
+    await db_session.refresh(job)
+    assert job.error_code == "x" * 100
+
+
+@pytest.mark.asyncio
 async def test_cancel_is_idempotent(
     db_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
