@@ -12,6 +12,8 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
+
 from src.services.file_storage.azure_blob_client import AzureBlobStorageClient
 from src.services.file_storage.s3_client import S3StorageClient
 from src.services.solutions.storage import SolutionStorage
@@ -73,3 +75,10 @@ def test_storage_uses_configured_s3_provider() -> None:
 
     assert isinstance(storage._storage, S3StorageClient)
     assert storage._bucket == "s3-bucket"
+
+
+def test_storage_rejects_unknown_provider() -> None:
+    solution_id = uuid.uuid4()
+
+    with pytest.raises(ValueError, match="Unsupported object_storage_provider"):
+        SolutionStorage(solution_id, settings=_settings("filesystem"))

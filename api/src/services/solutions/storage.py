@@ -40,11 +40,16 @@ class SolutionStorage:
 
             self._storage = AzureBlobStorageClient(self._settings)
             self._bucket = self._settings.azure_blob_container or ""
-        else:
+        elif self._settings.object_storage_provider == "s3":
             from src.services.file_storage.s3_client import S3StorageClient
 
             self._storage = S3StorageClient(self._settings)
             self._bucket = self._settings.s3_bucket or ""
+        else:
+            raise ValueError(
+                "Unsupported object_storage_provider: "
+                f"{self._settings.object_storage_provider}"
+            )
 
     def _get_client(self):
         return self._storage.get_client()
