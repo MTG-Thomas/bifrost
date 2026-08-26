@@ -146,6 +146,65 @@ async def test_agent_not_found_returns_early(consumer):
     assert mock_session.execute.await_count == 2
     assert queued_run.status == "failed"
     assert queued_run.error == "Agent no longer exists"
+    assert mock_session.commit.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_agent_not_found_preserves_terminal_run(consumer):
+    """A scheduler terminal state wins a race with missing-agent handling."""
+    run_id = str(uuid4())
+    redis_mock = AsyncMock()
+    redis_mock.get.return_value = json.dumps(
+        {"org_id": str(uuid4()), "input": {"message": "hello"}}
+    )
+
+    claim_run = MagicMock(status="queued")
+    terminal_run = MagicMock(
+        status="timeout",
+        output={"text": "scheduler result"},
+        error="scheduler terminalized the run",
+    )
+    missing_agent_result = MagicMock()
+    missing_agent_result.scalar_one_or_none.return_value = None
+
+    mock_session = AsyncMock()
+    mock_session.get.side_effect = [claim_run, terminal_run]
+    mock_session.execute.side_effect = [MagicMock(), missing_agent_result]
+    mock_session_ctx = AsyncMock()
+    mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
+    consumer._session_factory = MagicMock(return_value=mock_session_ctx)
+
+    with (
+        patch(
+            "src.jobs.consumers.agent_run.get_redis",
+            return_value=FakeRedisCtx(redis_mock),
+        ),
+        patch(
+            "src.jobs.consumers.agent_run._publish_sync_result",
+            AsyncMock(),
+        ) as sync_mock,
+    ):
+        await consumer.process_message(
+            {
+                "run_id": run_id,
+                "agent_id": str(uuid4()),
+                "trigger_type": "manual",
+                "sync": True,
+            }
+        )
+
+    assert terminal_run.status == "timeout"
+    assert terminal_run.error == "scheduler terminalized the run"
+    mock_session.commit.assert_awaited_once()
+    sync_mock.assert_awaited_once_with(
+        run_id,
+        {
+            "output": {"text": "scheduler result"},
+            "status": "timeout",
+            "error": "scheduler terminalized the run",
+        },
+    )
 
 
 @pytest.mark.asyncio

@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 )
 async def e2e_scheduled_task() -> dict:
     """
-    E2E scheduled workflow that runs on a cron schedule.
+    E2E workflow used by the schedules endpoint tests.
 
     Returns:
         Dictionary with execution result

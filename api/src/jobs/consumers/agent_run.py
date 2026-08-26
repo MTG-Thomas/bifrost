@@ -134,22 +134,36 @@ class AgentRunConsumer(BaseConsumer):
 
             if not agent:
                 logger.error(f"Agent run {run_id}: agent {agent_id} not found")
+                sync_result = {
+                    "output": None,
+                    "status": "failed",
+                    "error": "Agent no longer exists",
+                }
                 async with self._session_factory() as db:
-                    missing_run = await db.get(AgentRun, UUID(run_id))
-                    if missing_run is not None:
-                        missing_run.status = "failed"
-                        missing_run.error = "Agent no longer exists"
-                        missing_run.completed_at = datetime.now(timezone.utc)
-                        await db.commit()
-                if sync:
-                    await _publish_sync_result(
-                        run_id,
-                        {
-                            "output": None,
-                            "status": "failed",
-                            "error": "Agent no longer exists",
-                        },
+                    missing_run = await db.get(
+                        AgentRun,
+                        UUID(run_id),
+                        with_for_update={"of": AgentRun},
                     )
+                    if missing_run is not None:
+                        if missing_run.status == "running":
+                            missing_run.status = "failed"
+                            missing_run.error = "Agent no longer exists"
+                            missing_run.completed_at = datetime.now(timezone.utc)
+                            await db.commit()
+                        else:
+                            logger.info(
+                                "Agent run %s: missing-agent update skipped because current status is %s",
+                                run_id,
+                                missing_run.status,
+                            )
+                        sync_result = {
+                            "output": missing_run.output,
+                            "status": missing_run.status,
+                            "error": missing_run.error,
+                        }
+                if sync:
+                    await _publish_sync_result(run_id, sync_result)
                 return
 
             # Create AgentRun record (brief DB session)
