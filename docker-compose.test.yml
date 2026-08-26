@@ -499,6 +499,18 @@ services:
     profiles:
       - test
 
+  client-check-runner:
+    image: bifrost-test-client-check:latest
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+      target: ci
+      args:
+        VITE_BIFROST_VERSION: test
+    security_opt: ["no-new-privileges:true"]
+    profiles:
+      - client-check
+
   # =============================================================================
   # Client E2E Testing Services (started with --profile client)
   # =============================================================================
