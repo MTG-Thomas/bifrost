@@ -352,7 +352,11 @@ run_pytest() {
 
     docker compose -f "$COMPOSE_FILE" --profile test run "${build_args[@]}" --rm test-runner \
         pytest "$@" --durations=25 --junitxml="$LOG_DIR/test-results.xml" 2>&1 | tee "$LOG_DIR/test-runner.log"
-    return "${PIPESTATUS[0]}"
+    runner_status="${PIPESTATUS[0]}"
+    trap - INT TERM
+    cleanup_pytest_runner
+    exec {runner_lock_fd}>&-
+    return "$runner_status"
 }
 
 # `unit` is the fast every-PR lane: it deselects `@pytest.mark.slow` tests
