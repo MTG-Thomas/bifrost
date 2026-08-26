@@ -59,6 +59,40 @@ EXECUTION_DELIVERY_STATUS = {
 }
 
 
+def build_event_delivery(
+    *,
+    event: Event,
+    subscription: EventSubscription,
+) -> EventDelivery:
+    """Create a delivery with one durable criteria decision."""
+    from src.services.events.criteria import evaluate_subscription_criteria
+
+    decision = evaluate_subscription_criteria(
+        getattr(subscription, "criteria", None),
+        event,
+    )
+    matched = decision["outcome"] == "matched"
+    evaluation_error = decision["outcome"] == "evaluation_error"
+    return EventDelivery(
+        id=uuid.uuid4(),
+        event_id=event.id,
+        event_subscription_id=subscription.id,
+        workflow_id=subscription.workflow_id,
+        status=(
+            EventDeliveryStatus.PENDING
+            if matched
+            else EventDeliveryStatus.SKIPPED
+        ),
+        error_message=(
+            "Rule criteria could not be evaluated"
+            if evaluation_error
+            else None
+        ),
+        rule_decision=decision,
+        completed_at=None if matched else datetime.now(timezone.utc),
+    )
+
+
 async def resolve_webhook_source(
     db: AsyncSession,
     source_id: str,
@@ -402,13 +436,7 @@ class EventProcessor:
                     )
                     continue
 
-            delivery = EventDelivery(
-                id=uuid.uuid4(),
-                event_id=event.id,
-                event_subscription_id=subscription.id,
-                workflow_id=subscription.workflow_id,
-                status=EventDeliveryStatus.PENDING,
-            )
+            delivery = build_event_delivery(event=event, subscription=subscription)
             self.session.add(delivery)
 
         await self.session.flush()
@@ -503,13 +531,7 @@ class EventProcessor:
                     continue
 
             # Create delivery record
-            delivery = EventDelivery(
-                id=uuid.uuid4(),
-                event_id=event.id,
-                event_subscription_id=subscription.id,
-                workflow_id=subscription.workflow_id,  # None for agent targets
-                status=EventDeliveryStatus.PENDING,
-            )
+            delivery = build_event_delivery(event=event, subscription=subscription)
             self.session.add(delivery)
             deliveries_created += 1
 
@@ -537,6 +559,8 @@ class EventProcessor:
         update_type: str,
         success_count: int = 0,
         failed_count: int = 0,
+        skipped_count: int = 0,
+        evaluation_error_count: int = 0,
         queued_count: int = 0,
         pending_count: int = 0,
     ) -> None:
@@ -549,6 +573,8 @@ class EventProcessor:
             update_type: Type of update (event_created, event_updated, deliveries_queued)
             success_count: Number of successful deliveries
             failed_count: Number of failed deliveries
+            skipped_count: Number of criteria non-matches
+            evaluation_error_count: Number of criteria evaluation errors
             queued_count: Number of queued deliveries
             pending_count: Number of pending deliveries
         """
@@ -568,9 +594,18 @@ class EventProcessor:
                 "source_ip": event.source_ip,
                 "success_count": success_count,
                 "failed_count": failed_count,
+                "skipped_count": skipped_count,
+                "evaluation_error_count": evaluation_error_count,
                 "queued_count": queued_count,
                 "pending_count": pending_count,
-                "delivery_count": success_count + failed_count + queued_count + pending_count,
+                "delivery_count": (
+                    success_count
+                    + failed_count
+                    + skipped_count
+                    + evaluation_error_count
+                    + queued_count
+                    + pending_count
+                ),
             },
         }
 
@@ -639,6 +674,21 @@ class EventProcessor:
         pending_count = sum(
             1 for d in deliveries if d.status == EventDeliveryStatus.PENDING
         )
+        skipped_count = sum(
+            1
+            for d in deliveries
+            if d.status == EventDeliveryStatus.SKIPPED
+            and (getattr(d, "rule_decision", None) or {}).get("outcome")
+            == "not_matched"
+        )
+        evaluation_error_count = sum(
+            1
+            for d in deliveries
+            if (getattr(d, "rule_decision", None) or {}).get("outcome")
+            == "evaluation_error"
+        )
+
+        await self._delivery_repo.update_event_status(event_id)
 
         await self._broadcast_event_update(
             event_source_id=event_obj.event_source_id,
@@ -646,6 +696,8 @@ class EventProcessor:
             update_type="deliveries_queued",
             success_count=success_count,
             failed_count=failed_count,
+            skipped_count=skipped_count,
+            evaluation_error_count=evaluation_error_count,
             queued_count=queued_count,
             pending_count=pending_count,
         )
@@ -899,6 +951,19 @@ async def _broadcast_event_status_update(
     deliveries = await delivery_repo.get_by_event(delivery.event_id)
     success_count = sum(1 for d in deliveries if d.status == EventDeliveryStatus.SUCCESS)
     failed_count = sum(1 for d in deliveries if d.status == EventDeliveryStatus.FAILED)
+    skipped_count = sum(
+        1
+        for d in deliveries
+        if d.status == EventDeliveryStatus.SKIPPED
+        and (getattr(d, "rule_decision", None) or {}).get("outcome")
+        == "not_matched"
+    )
+    evaluation_error_count = sum(
+        1
+        for d in deliveries
+        if (getattr(d, "rule_decision", None) or {}).get("outcome")
+        == "evaluation_error"
+    )
 
     channel = f"event-source:{event.event_source_id}"
     message = {
@@ -912,6 +977,8 @@ async def _broadcast_event_status_update(
             "source_ip": event.source_ip,
             "success_count": success_count,
             "failed_count": failed_count,
+            "skipped_count": skipped_count,
+            "evaluation_error_count": evaluation_error_count,
             "delivery_count": len(deliveries),
         },
     }

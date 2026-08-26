@@ -151,7 +151,15 @@ class TestEventResponseBuilders:
             agent=SimpleNamespace(name="Dispatcher"),
             workflow=None,
             event_type="ticket.created",
-            filter_expression="$.priority == 'high'",
+            criteria={
+                "version": 1,
+                "root": {
+                    "kind": "condition",
+                    "field": "event.body.priority",
+                    "operator": "equals",
+                    "value": "high",
+                },
+            },
             input_mapping={"ticket": "{{ event.data.id }}"},
             is_active=True,
             created_by="admin@example.com",
@@ -162,6 +170,7 @@ class TestEventResponseBuilders:
         with patch.object(events, "EventDeliveryRepository") as delivery_repo_cls:
             repo = delivery_repo_cls.return_value
             repo.count_by_subscription = AsyncMock(side_effect=[5, 3, 2])
+            repo.count_by_subscription_decision = AsyncMock(side_effect=[1, 1])
 
             result = await events._build_event_subscription_response(
                 subscription, AsyncMock()
@@ -172,11 +181,19 @@ class TestEventResponseBuilders:
         assert result.delivery_count == 5
         assert result.success_count == 3
         assert result.failed_count == 2
+        assert result.skipped_count == 1
+        assert result.evaluation_error_count == 1
         repo.count_by_subscription.assert_any_await(
             subscription.id, status=EventDeliveryStatus.SUCCESS
         )
         repo.count_by_subscription.assert_any_await(
             subscription.id, status=EventDeliveryStatus.FAILED
+        )
+        repo.count_by_subscription_decision.assert_any_await(
+            subscription.id, "not_matched"
+        )
+        repo.count_by_subscription_decision.assert_any_await(
+            subscription.id, "evaluation_error"
         )
 
 
