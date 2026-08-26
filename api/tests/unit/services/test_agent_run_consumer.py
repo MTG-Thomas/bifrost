@@ -111,14 +111,14 @@ async def test_agent_not_found_returns_early(consumer):
         {"org_id": str(uuid4()), "input": {"message": "hello"}}
     )
 
-    queued_run = MagicMock(status="queued")
+    running_run = MagicMock(status="running")
 
     # DB session where the durable run exists but the agent no longer does.
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = None
 
     mock_session = AsyncMock()
-    mock_session.get.return_value = queued_run
+    mock_session.get.return_value = running_run
     mock_session.execute.return_value = mock_result
 
     mock_session_ctx = AsyncMock()
@@ -150,8 +150,8 @@ async def test_agent_not_found_returns_early(consumer):
 
     # Verify the agent query and durable attempt transition were executed.
     mock_session.execute.assert_called_once()
-    assert queued_run.status == "failed"
-    assert queued_run.error == "Agent no longer exists"
+    assert running_run.status == "failed"
+    assert running_run.error == "Agent no longer exists"
     mock_session.commit.assert_awaited_once()
     transition_attempt.assert_awaited_once()
 
@@ -235,9 +235,15 @@ async def test_pre_cancel_updates_existing_queued_run(consumer):
     redis_mock = AsyncMock()
     redis_mock.get.return_value = json.dumps({"cancelled": True})
 
-    with patch(
-        "src.jobs.consumers.agent_run.get_redis",
-        return_value=FakeRedisCtx(redis_mock),
+    with (
+        patch(
+            "src.jobs.consumers.agent_run.get_redis",
+            return_value=FakeRedisCtx(redis_mock),
+        ),
+        patch(
+            "src.jobs.consumers.agent_run.transition_execution_attempt",
+            AsyncMock(),
+        ) as transition_attempt,
     ):
         await consumer.process_message(
             {
@@ -253,6 +259,7 @@ async def test_pre_cancel_updates_existing_queued_run(consumer):
     mock_session.execute.assert_not_awaited()
     assert mock_session.get.await_count == 1
     assert mock_session.commit.await_count == 1
+    transition_attempt.assert_awaited_once()
 
 
 @pytest.mark.asyncio
