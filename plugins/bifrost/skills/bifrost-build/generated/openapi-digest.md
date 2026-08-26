@@ -577,6 +577,8 @@
 | POST | `/api/workspace-promotions/preview` |
 | GET | `/api/workspace-promotions/releases/{release_id}` |
 | POST | `/api/workspace-promotions/releases/{release_id}/activate` |
+| GET | `/api/workspace-promotions/solution-deploy-obligations` |
+| GET | `/api/workspace-promotions/solution-deploy-obligations/{obligation_id}` |
 | GET | `/api/workspace-promotions/source-releases` |
 | POST | `/api/workspace-promotions/source-releases` |
 | POST | `/api/workspace-promotions/source-releases/github` |

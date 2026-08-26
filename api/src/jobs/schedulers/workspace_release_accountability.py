@@ -12,11 +12,13 @@ from src.models.contracts.notifications import (
     NotificationUpdate,
 )
 from src.models.orm.workspace_promotions import (
+    SolutionDeployObligation,
     WorkspacePromotionRelease,
     WorkspaceSourceRelease,
 )
 from src.services.notification_service import get_notification_service
 from src.services.workspace_source_releases import sweep_overdue_workspace_releases
+from src.services.solution_deploy_obligations import sweep_overdue_solution_deploys
 
 logger = logging.getLogger(__name__)
 NOTIFICATION_TITLE = "Workspace release attention required"
@@ -25,6 +27,7 @@ NOTIFICATION_TITLE = "Workspace release attention required"
 async def check_workspace_release_accountability() -> dict[str, object]:
     async with get_db_context() as db:
         transitioned = await sweep_overdue_workspace_releases(db)
+        solution_ids = await sweep_overdue_solution_deploys(db)
         source_count = int(
             await db.scalar(
                 select(func.count(WorkspaceSourceRelease.id)).where(
@@ -42,9 +45,26 @@ async def check_workspace_release_accountability() -> dict[str, object]:
             )
             or 0
         )
+        solution_count = int(
+            await db.scalar(
+                select(func.count(SolutionDeployObligation.id)).where(
+                    SolutionDeployObligation.disposition == "attention_required"
+                )
+            )
+            or 0
+        )
         await db.commit()
 
-    total = source_count + history_count
+    total = source_count + history_count + solution_count
+    metadata = {
+        "action": "workspace_release_accountability",
+        "source_release_count": source_count,
+        "history_release_count": history_count,
+        "solution_deploy_count": solution_count,
+        "solution_deploy_obligation_ids": solution_ids,
+        "source_release_ids": transitioned["source_release_ids"],
+        "workspace_release_ids": transitioned["workspace_release_ids"],
+    }
     notifications = get_notification_service()
     existing = await notifications.find_admin_notification_by_title(
         title=NOTIFICATION_TITLE,
@@ -57,16 +77,11 @@ async def check_workspace_release_accountability() -> dict[str, object]:
                 category=NotificationCategory.SYSTEM,
                 title=NOTIFICATION_TITLE,
                 description=(
-                    f"{source_count} reviewed source release(s) and "
+                    f"{source_count} reviewed loose source release(s), "
+                    f"{solution_count} Solution deploy(s), and "
                     f"{history_count} Live history projection(s) require attention"
                 ),
-                metadata={
-                    "action": "workspace_release_accountability",
-                    "source_release_count": source_count,
-                    "history_release_count": history_count,
-                    "source_release_ids": transitioned["source_release_ids"],
-                    "workspace_release_ids": transitioned["workspace_release_ids"],
-                },
+                metadata=metadata,
             ),
             for_admins=True,
             initial_status=NotificationStatus.AWAITING_ACTION,
@@ -77,15 +92,21 @@ async def check_workspace_release_accountability() -> dict[str, object]:
             NotificationUpdate(
                 status=NotificationStatus.AWAITING_ACTION,
                 description=(
-                    f"{source_count} reviewed source release(s) and "
+                    f"{source_count} reviewed loose source release(s), "
+                    f"{solution_count} Solution deploy(s), and "
                     f"{history_count} Live history projection(s) require attention"
                 ),
+                metadata=metadata,
             ),
         )
     elif not total and existing is not None:
         await notifications.dismiss_notification(existing.id, user_id="system")
 
-    if transitioned["source_release_ids"] or transitioned["workspace_release_ids"]:
+    if (
+        transitioned["source_release_ids"]
+        or transitioned["workspace_release_ids"]
+        or solution_ids
+    ):
         logger.error(
             "workspace_release_accountability_attention",
             extra={
@@ -93,12 +114,16 @@ async def check_workspace_release_accountability() -> dict[str, object]:
                 "workspace_release_ids": transitioned["workspace_release_ids"],
                 "source_release_count": source_count,
                 "history_release_count": history_count,
+                "solution_deploy_count": solution_count,
+                "solution_deploy_obligation_ids": solution_ids,
             },
         )
     return {
         "source_release_count": source_count,
         "history_release_count": history_count,
+        "solution_deploy_count": solution_count,
         "transitioned": transitioned,
+        "solution_deploy_obligation_ids": solution_ids,
     }
 
 

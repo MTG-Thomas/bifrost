@@ -20,7 +20,7 @@ class _Database:
 
 @pytest.mark.asyncio
 async def test_attention_rows_create_one_admin_alert(monkeypatch) -> None:
-    database = _Database([2, 1])
+    database = _Database([2, 1, 4])
 
     @asynccontextmanager
     async def db_context():
@@ -44,6 +44,11 @@ async def test_attention_rows_create_one_admin_alert(monkeypatch) -> None:
         ),
     )
     monkeypatch.setattr(
+        accountability,
+        "sweep_overdue_solution_deploys",
+        AsyncMock(return_value=["solution-1"]),
+    )
+    monkeypatch.setattr(
         accountability, "get_notification_service", lambda: notifications
     )
 
@@ -51,10 +56,12 @@ async def test_attention_rows_create_one_admin_alert(monkeypatch) -> None:
 
     assert result["source_release_count"] == 2
     assert result["history_release_count"] == 1
+    assert result["solution_deploy_count"] == 4
     notifications.create_notification.assert_awaited_once()
     request = notifications.create_notification.await_args.kwargs["request"]
     assert request.title == accountability.NOTIFICATION_TITLE
     assert request.metadata["source_release_ids"] == ["source-1"]
+    assert request.metadata["solution_deploy_obligation_ids"] == ["solution-1"]
     assert notifications.create_notification.await_args.kwargs["for_admins"] is True
     notifications.dismiss_notification.assert_not_awaited()
     notifications.update_notification.assert_not_awaited()
@@ -62,7 +69,7 @@ async def test_attention_rows_create_one_admin_alert(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_resolved_rows_clear_existing_admin_alert(monkeypatch) -> None:
-    database = _Database([0, 0])
+    database = _Database([0, 0, 0])
 
     @asynccontextmanager
     async def db_context():
@@ -85,6 +92,11 @@ async def test_resolved_rows_clear_existing_admin_alert(monkeypatch) -> None:
                 "workspace_release_ids": [],
             }
         ),
+    )
+    monkeypatch.setattr(
+        accountability,
+        "sweep_overdue_solution_deploys",
+        AsyncMock(return_value=[]),
     )
     monkeypatch.setattr(
         accountability, "get_notification_service", lambda: notifications
@@ -100,7 +112,7 @@ async def test_resolved_rows_clear_existing_admin_alert(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_existing_attention_alert_refreshes_current_counts(monkeypatch) -> None:
-    database = _Database([3, 2])
+    database = _Database([3, 2, 1])
 
     @asynccontextmanager
     async def db_context():
@@ -125,6 +137,11 @@ async def test_existing_attention_alert_refreshes_current_counts(monkeypatch) ->
         ),
     )
     monkeypatch.setattr(
+        accountability,
+        "sweep_overdue_solution_deploys",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
         accountability, "get_notification_service", lambda: notifications
     )
 
@@ -133,5 +150,15 @@ async def test_existing_attention_alert_refreshes_current_counts(monkeypatch) ->
     notifications.update_notification.assert_awaited_once()
     update = notifications.update_notification.await_args.args[1]
     assert update.status.value == "awaiting_action"
-    assert "3 reviewed source release(s)" in update.description
+    assert "3 reviewed loose source release(s)" in update.description
+    assert "1 Solution deploy(s)" in update.description
     assert "2 Live history projection(s)" in update.description
+    assert update.metadata == {
+        "action": "workspace_release_accountability",
+        "source_release_count": 3,
+        "history_release_count": 2,
+        "solution_deploy_count": 1,
+        "solution_deploy_obligation_ids": [],
+        "source_release_ids": [],
+        "workspace_release_ids": [],
+    }
