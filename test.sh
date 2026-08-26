@@ -799,6 +799,7 @@ case "$1" in
     quality) shift; cmd_quality "$@" ;;
     client) shift; cmd_client "$@" ;;
     mcp) shift; cmd_mcp "$@" ;;
+    pre-pr) cmd_pre_pr ;;
     ci) cmd_ci ;;
     -h|--help|help)
         sed -n '2,35p' "$0"
