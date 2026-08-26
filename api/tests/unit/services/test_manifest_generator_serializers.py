@@ -329,7 +329,15 @@ def test_event_and_mcp_serializers_include_nested_children():
                 workflow_id=WORKFLOW_ID,
                 agent_id=None,
                 event_type="ticket.created",
-                filter_expression="$.priority == 'high'",
+                criteria={
+                    "version": 1,
+                    "root": {
+                        "kind": "condition",
+                        "field": "event.body.priority",
+                        "operator": "equals",
+                        "value": "high",
+                    },
+                },
                 input_mapping={"ticket": "$.id"},
                 is_active=True,
             )
