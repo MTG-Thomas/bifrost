@@ -217,6 +217,7 @@ test.describe("Chat attachments and model profiles", () => {
 
 		await page.getByLabel("Chat input").fill("Summarize this file");
 		await page.getByRole("button", { name: "Send message" }).click();
+		const payload = await chatPayload;
 		await expect(page.getByText("Thinking…")).toBeVisible();
 		await page.screenshot({
 			path: "playwright-results/screenshots/chat-thinking.png",
@@ -250,7 +251,6 @@ test.describe("Chat attachments and model profiles", () => {
 			fullPage: true,
 		});
 
-		const payload = await chatPayload;
 		expect(payload.message).toBe("Summarize this file");
 		expect(payload.model_profile_id).toBe("profile-pro");
 		expect(payload.attachment_ids).toEqual([expect.any(String)]);
