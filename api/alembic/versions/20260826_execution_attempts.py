@@ -91,9 +91,67 @@ def upgrade() -> None:
         unique=True,
         postgresql_where=sa.text("lease_token IS NOT NULL AND completed_at IS NULL"),
     )
+    op.create_table(
+        "execution_lifecycle_events",
+        sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("attempt_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("sequence", sa.Integer(), nullable=False),
+        sa.Column("logical_job_type", sa.String(length=32), nullable=False),
+        sa.Column("logical_job_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("organization_id", postgresql.UUID(as_uuid=True), nullable=True),
+        sa.Column("event_type", sa.String(length=32), nullable=False),
+        sa.Column("policy_identifier", sa.String(length=100), nullable=False),
+        sa.Column("workload_class", sa.String(length=64), nullable=False),
+        sa.Column("mechanism", sa.String(length=32), nullable=False),
+        sa.Column("worker_id", sa.String(length=255), nullable=True),
+        sa.Column("reason_code", sa.String(length=100), nullable=True),
+        sa.Column(
+            "occurred_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("NOW()"),
+            nullable=False,
+        ),
+        sa.ForeignKeyConstraint(
+            ["attempt_id"], ["execution_attempts.id"], ondelete="CASCADE"
+        ),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint(
+            "attempt_id",
+            "sequence",
+            name="uq_execution_lifecycle_attempt_sequence",
+        ),
+    )
+    op.create_index(
+        "ix_execution_lifecycle_logical_occurred",
+        "execution_lifecycle_events",
+        ["logical_job_type", "logical_job_id", "occurred_at"],
+    )
+    op.create_index(
+        "ix_execution_lifecycle_org_occurred",
+        "execution_lifecycle_events",
+        ["organization_id", "occurred_at"],
+    )
+    op.create_index(
+        "ix_execution_lifecycle_event_occurred",
+        "execution_lifecycle_events",
+        ["event_type", "occurred_at"],
+    )
 
 
 def downgrade() -> None:
+    op.drop_index(
+        "ix_execution_lifecycle_event_occurred",
+        table_name="execution_lifecycle_events",
+    )
+    op.drop_index(
+        "ix_execution_lifecycle_org_occurred",
+        table_name="execution_lifecycle_events",
+    )
+    op.drop_index(
+        "ix_execution_lifecycle_logical_occurred",
+        table_name="execution_lifecycle_events",
+    )
+    op.drop_table("execution_lifecycle_events")
     op.drop_index("uq_execution_attempt_active_lease", table_name="execution_attempts")
     op.drop_index("ix_execution_attempt_organization", table_name="execution_attempts")
     op.drop_index("ix_execution_attempt_status_started", table_name="execution_attempts")

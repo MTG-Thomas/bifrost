@@ -304,6 +304,16 @@ Admission rejection, runner loss, cancellation, and deferred child work are
 distinct outcomes so operators do not have to infer infrastructure history
 from a final domain status.
 
+Every attempt transition also appends an `execution_lifecycle_events` row in
+the caller's transaction. The common envelope uses the same event names across
+all runners, includes a per-attempt sequence plus policy/workload/mechanism
+dimensions, and deliberately excludes domain payloads. The service emits the
+same low-cardinality dimensions through
+`bifrost.execution.lifecycle.events` and terminal attempt duration through
+`bifrost.execution.attempt.duration`; IDs are present only in structured logs,
+not metric labels. PostgreSQL events remain the authoritative timeline if a
+telemetry exporter is unavailable.
+
 The ledger contains identifiers and bounded diagnostics, never execution
 payloads, results, logs, credentials, or secrets. Tenant-scoped read surfaces
 must authorize against the underlying domain authority; the nullable
@@ -315,7 +325,7 @@ must authorize against the underlying domain authority; the nullable
 | --- | --- |
 | RabbitMQ delivery and publishers | `api/src/jobs/rabbitmq.py` |
 | Common execution policy vocabulary | `api/src/jobs/execution_policy.py` |
-| Durable attempt model and lifecycle service | `api/src/models/orm/execution_attempts.py`, `api/src/services/execution_attempts.py` |
+| Durable attempt and lifecycle models/service | `api/src/models/orm/execution_attempts.py`, `api/src/models/orm/execution_lifecycle_events.py`, `api/src/services/execution_attempts.py` |
 | Workflow publication | `api/src/services/execution/async_executor.py` |
 | Workflow consumer and durable results | `api/src/jobs/consumers/workflow_execution.py` |
 | One-shot process lifecycle | `api/src/services/execution/process_pool.py` |

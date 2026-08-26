@@ -18,7 +18,9 @@ async def test_start_attempt_allocates_next_number_and_policy_snapshot() -> None
     db = AsyncMock()
     current = MagicMock()
     current.scalar_one_or_none.return_value = 2
-    db.execute.side_effect = [MagicMock(), current]
+    event_sequence = MagicMock()
+    event_sequence.scalar_one_or_none.return_value = None
+    db.execute.side_effect = [MagicMock(), current, event_sequence]
 
     logical_id = uuid4()
     policy = broker_execution_policies()["workflow-executions"]
@@ -36,8 +38,8 @@ async def test_start_attempt_allocates_next_number_and_policy_snapshot() -> None
     assert attempt.policy_identifier == policy.identifier
     assert attempt.workload_class == policy.workload_class.value
     assert attempt.mechanism == policy.mechanism.value
-    db.add.assert_called_once_with(attempt)
-    db.flush.assert_awaited_once()
+    assert db.add.call_count == 2
+    assert db.flush.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -45,7 +47,9 @@ async def test_start_attempt_allows_legacy_counter_gap_but_not_regression() -> N
     db = AsyncMock()
     current = MagicMock()
     current.scalar_one_or_none.return_value = 3
-    db.execute.side_effect = [MagicMock(), current]
+    event_sequence = MagicMock()
+    event_sequence.scalar_one_or_none.return_value = None
+    db.execute.side_effect = [MagicMock(), current, event_sequence]
 
     attempt = await start_execution_attempt(
         db,
@@ -84,8 +88,10 @@ async def test_terminal_transition_records_bounded_failure() -> None:
     )
     result = MagicMock()
     result.scalar_one_or_none.return_value = attempt
+    event_sequence = MagicMock()
+    event_sequence.scalar_one_or_none.return_value = 1
     db = AsyncMock()
-    db.execute.return_value = result
+    db.execute.side_effect = [result, event_sequence]
 
     changed = await transition_execution_attempt(
         db,
@@ -100,7 +106,7 @@ async def test_terminal_transition_records_bounded_failure() -> None:
     assert attempt.failure_code == "boom"
     assert len(attempt.failure_message) == 4000
     assert attempt.completed_at is not None
-    db.flush.assert_awaited_once()
+    assert db.flush.await_count == 2
 
 
 @pytest.mark.asyncio

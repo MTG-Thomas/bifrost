@@ -43,6 +43,7 @@ from src.models.orm.config import Config, SystemConfig
 from src.models.orm.events import Event, EventDelivery, EventSource, EventSubscription, WebhookSource
 from src.models.orm.executions import Execution, ExecutionLog
 from src.models.orm.execution_attempts import ExecutionAttempt
+from src.models.orm.execution_lifecycle_events import ExecutionLifecycleEvent
 from src.models.orm.external_mcp import (
     AgentMCPConnection,
     MCPConnection,
@@ -151,6 +152,7 @@ __all__ = [
     # Executions
     "Execution",
     "ExecutionAttempt",
+    "ExecutionLifecycleEvent",
     "ExecutionLog",
     # CLI Sessions
     "CLISession",

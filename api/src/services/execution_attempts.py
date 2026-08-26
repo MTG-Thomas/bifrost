@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
+from opentelemetry import metrics
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.jobs.execution_policy import ExecutionOperationsPolicy
 from src.models.orm.execution_attempts import ExecutionAttempt
+from src.models.orm.execution_lifecycle_events import ExecutionLifecycleEvent
 
+logger = logging.getLogger(__name__)
 
 ACTIVE_ATTEMPT_STATUSES = ("claimed", "running", "waiting")
 TERMINAL_ATTEMPT_STATUSES = (
@@ -20,10 +24,86 @@ TERMINAL_ATTEMPT_STATUSES = (
     "worker_lost",
     "admission_deferred",
 )
+_lifecycle_counter = None
+_attempt_duration = None
+
+
+def _lifecycle_instruments():
+    global _lifecycle_counter, _attempt_duration
+    meter = metrics.get_meter(__name__)
+    if _lifecycle_counter is None:
+        _lifecycle_counter = meter.create_counter(
+            "bifrost.execution.lifecycle.events",
+            unit="1",
+            description="Normalized execution lifecycle transitions.",
+        )
+    if _attempt_duration is None:
+        _attempt_duration = meter.create_histogram(
+            "bifrost.execution.attempt.duration",
+            unit="ms",
+            description="Terminal infrastructure-attempt duration.",
+        )
+    return _lifecycle_counter, _attempt_duration
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+async def _append_lifecycle_event(
+    db: AsyncSession,
+    attempt: ExecutionAttempt,
+    *,
+    event_type: str,
+    reason_code: str | None = None,
+) -> ExecutionLifecycleEvent:
+    sequence = (
+        await db.execute(
+            select(func.max(ExecutionLifecycleEvent.sequence)).where(
+                ExecutionLifecycleEvent.attempt_id == attempt.id
+            )
+        )
+    ).scalar_one_or_none()
+    event = ExecutionLifecycleEvent(
+        attempt_id=attempt.id,
+        sequence=(sequence or 0) + 1,
+        logical_job_type=attempt.logical_job_type,
+        logical_job_id=attempt.logical_job_id,
+        organization_id=attempt.organization_id,
+        event_type=event_type,
+        policy_identifier=attempt.policy_identifier,
+        workload_class=attempt.workload_class,
+        mechanism=attempt.mechanism,
+        worker_id=attempt.worker_id,
+        reason_code=reason_code,
+    )
+    db.add(event)
+    await db.flush()
+    counter, duration = _lifecycle_instruments()
+    attributes = {
+        "event_type": event_type,
+        "logical_job_type": attempt.logical_job_type,
+        "policy_identifier": attempt.policy_identifier,
+        "workload_class": attempt.workload_class,
+        "mechanism": attempt.mechanism,
+    }
+    counter.add(1, attributes)
+    if event_type in TERMINAL_ATTEMPT_STATUSES:
+        elapsed_ms = max(0.0, (_now() - attempt.started_at).total_seconds() * 1000)
+        duration.record(elapsed_ms, attributes)
+    logger.info(
+        "execution_lifecycle_transition",
+        extra={
+            **attributes,
+            "logical_job_id": str(attempt.logical_job_id),
+            "attempt_id": str(attempt.id),
+            "attempt_number": attempt.attempt_number,
+            "event_sequence": event.sequence,
+            "worker_id": attempt.worker_id,
+            "reason_code": reason_code,
+        },
+    )
+    return event
 
 
 async def start_execution_attempt(
@@ -91,6 +171,7 @@ async def start_execution_attempt(
     )
     db.add(attempt)
     await db.flush()
+    await _append_lifecycle_event(db, attempt, event_type=status)
     return attempt
 
 
@@ -147,6 +228,12 @@ async def transition_execution_attempt(
     if status in TERMINAL_ATTEMPT_STATUSES:
         attempt.completed_at = _now()
     await db.flush()
+    await _append_lifecycle_event(
+        db,
+        attempt,
+        event_type=status,
+        reason_code=failure_code,
+    )
     return attempt
 
 
@@ -165,6 +252,33 @@ async def list_execution_attempts(
                     ExecutionAttempt.logical_job_id == logical_job_id,
                 )
                 .order_by(ExecutionAttempt.attempt_number.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+async def list_execution_lifecycle_events(
+    db: AsyncSession,
+    *,
+    logical_job_type: str,
+    logical_job_id: UUID,
+) -> list[ExecutionLifecycleEvent]:
+    """Return the normalized, payload-free timeline for one logical job."""
+
+    return list(
+        (
+            await db.execute(
+                select(ExecutionLifecycleEvent)
+                .where(
+                    ExecutionLifecycleEvent.logical_job_type == logical_job_type,
+                    ExecutionLifecycleEvent.logical_job_id == logical_job_id,
+                )
+                .order_by(
+                    ExecutionLifecycleEvent.occurred_at.asc(),
+                    ExecutionLifecycleEvent.sequence.asc(),
+                )
             )
         )
         .scalars()
