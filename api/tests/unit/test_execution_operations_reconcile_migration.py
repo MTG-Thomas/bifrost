@@ -30,8 +30,8 @@ def test_missing_partial_unique_index_is_reconciled_on_existing_table(
     migration = _load_migration()
     inspector = SimpleNamespace(get_indexes=lambda _table: [])
     create_index = MagicMock()
-    monkeypatch.setattr(migration.sa, "inspect", lambda _bind: inspector)
-    monkeypatch.setattr(migration.op, "get_bind", lambda: object())
+    monkeypatch.setattr(migration.sa, "inspect", MagicMock(return_value=inspector))
+    monkeypatch.setattr(migration.op, "get_bind", MagicMock(return_value=object()))
     monkeypatch.setattr(migration.op, "create_index", create_index)
 
     where = migration.sa.text(
