@@ -26,6 +26,34 @@ TERMINAL_ATTEMPT_STATUSES = (
 )
 _lifecycle_counter = None
 _attempt_duration = None
+REQUIRED_EXECUTION_OPERATIONS_TABLES = (
+    "execution_attempts",
+    "execution_lifecycle_events",
+    "worker_control_commands",
+    "poison_message_dispositions",
+)
+
+
+async def require_execution_operations_schema() -> None:
+    """Fail worker startup before consuming when its required schema is absent."""
+    from src.core.database import get_db_context
+
+    async with get_db_context() as db:
+        rows = (
+            await db.execute(
+                text(
+                    "SELECT required.name, to_regclass('public.' || required.name) "
+                    "FROM unnest(CAST(:names AS text[])) AS required(name)"
+                ),
+                {"names": list(REQUIRED_EXECUTION_OPERATIONS_TABLES)},
+            )
+        ).all()
+    missing = sorted(name for name, relation in rows if relation is None)
+    if missing:
+        raise RuntimeError(
+            "worker schema compatibility check failed; missing tables: "
+            + ", ".join(missing)
+        )
 
 
 def _lifecycle_instruments():
