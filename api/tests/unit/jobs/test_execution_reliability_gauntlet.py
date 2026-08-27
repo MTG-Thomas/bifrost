@@ -51,7 +51,7 @@ def test_gauntlet_has_no_production_activation_surface() -> None:
     assert "replay" not in source.lower()
     assert "discard" not in source.lower()
     assert gauntlet.REPORT_PATH == Path(
-        "/tmp/bifrost/execution-reliability-gauntlet.json"
+        "/bifrost-results/execution-reliability-gauntlet.json"
     )
 
 

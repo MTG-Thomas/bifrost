@@ -29,7 +29,7 @@ from src.jobs.rabbitmq import (
     rabbitmq,
 )
 
-REPORT_PATH = Path("/tmp/bifrost/execution-reliability-gauntlet.json")
+REPORT_PATH = Path("/bifrost-results/execution-reliability-gauntlet.json")
 
 
 @dataclass
@@ -182,12 +182,16 @@ async def _delete_topology(queue_name: str) -> None:
 async def _wait_for(
     predicate: Callable[[], Awaitable[bool]], *, timeout: float = 10
 ) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < deadline:
-        if await predicate():
-            return
-        await asyncio.sleep(0.05)
-    raise TimeoutError("reliability scenario did not converge before its deadline")
+    try:
+        async with asyncio.timeout(timeout):
+            while True:
+                if await predicate():
+                    return
+                await asyncio.sleep(0.05)
+    except TimeoutError:
+        raise TimeoutError(
+            "reliability scenario did not converge before its deadline"
+        ) from None
 
 
 class _HarnessConsumer(BaseConsumer):
