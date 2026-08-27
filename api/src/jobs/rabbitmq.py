@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -410,24 +411,49 @@ class _AbstractConsumer(ABC):
                 reason=str(e),
                 started=started,
                 dependency=e.dependency,
+                error_type=type(e).__name__,
             )
         except PermanentConsumerError as e:
-            await self._dead_letter_and_ack(message, context, reason=str(e), started=started)
+            await self._dead_letter_and_ack(
+                message,
+                context,
+                reason=str(e),
+                error_type=type(e).__name__,
+                started=started,
+            )
         except json.JSONDecodeError as e:
             malformed = self._malformed_context(message)
-            await self._dead_letter_and_ack(message, malformed, reason=f"malformed JSON: {e}", started=started)
-        except asyncio.CancelledError:
+            await self._dead_letter_and_ack(
+                message,
+                malformed,
+                reason=f"malformed JSON: {e}",
+                error_type=type(e).__name__,
+                started=started,
+            )
+        except asyncio.CancelledError as e:
             if context is None:
                 await message.nack(requeue=True)
             else:
-                await self._retry_or_poison(message, context, reason="consumer shutdown", started=started)
+                await self._retry_or_poison(
+                    message,
+                    context,
+                    reason="consumer shutdown",
+                    error_type=type(e).__name__,
+                    started=started,
+                )
             raise
         except Exception as e:
             logger.exception(
                 "Unhandled consumer exception; dead-lettering message",
                 extra=self._log_extra(context, reason=str(e), error_type=type(e).__name__),
             )
-            await self._dead_letter_and_ack(message, context, reason=str(e), started=started)
+            await self._dead_letter_and_ack(
+                message,
+                context,
+                reason=str(e),
+                error_type=type(e).__name__,
+                started=started,
+            )
 
     def _build_context(self, message: IncomingMessage) -> DeliveryContext:
         body = json.loads(message.body.decode())
@@ -478,6 +504,7 @@ class _AbstractConsumer(ABC):
         reason: str,
         started: float,
         dependency: str | None = None,
+        error_type: str | None = None,
     ) -> None:
         if context is None:
             await message.nack(requeue=True)
@@ -487,6 +514,7 @@ class _AbstractConsumer(ABC):
                 message,
                 context,
                 reason=f"retry attempts exhausted: {reason}",
+                error_type=error_type,
                 started=started,
             )
             return
@@ -495,6 +523,7 @@ class _AbstractConsumer(ABC):
                 message,
                 context,
                 reason=f"retry elapsed-time budget exhausted: {reason}",
+                error_type=error_type,
                 started=started,
             )
             return
@@ -526,6 +555,7 @@ class _AbstractConsumer(ABC):
         context: DeliveryContext | None,
         *,
         reason: str,
+        error_type: str | None = None,
         started: float,
     ) -> None:
         if context is None:
@@ -533,7 +563,9 @@ class _AbstractConsumer(ABC):
             return
         try:
             execution_failure_checkpoint(FailurePoint.POISON_PUBLISH)
-            await self._publish_poison(message, context, reason=reason)
+            await self._publish_poison(
+                message, context, reason=reason, error_type=error_type
+            )
             await self._finalize_poison_delivery(context, reason=reason)
         except Exception:
             logger.exception(
@@ -628,7 +660,14 @@ class _AbstractConsumer(ABC):
             routing_key=retry_queue,
         )
 
-    async def _publish_poison(self, message: IncomingMessage, context: DeliveryContext, *, reason: str) -> None:
+    async def _publish_poison(
+        self,
+        message: IncomingMessage,
+        context: DeliveryContext,
+        *,
+        reason: str,
+        error_type: str | None = None,
+    ) -> None:
         if self._channel is None:
             raise RuntimeError("consumer channel is not available")
         context_headers = dict(context.headers)
@@ -644,6 +683,16 @@ class _AbstractConsumer(ABC):
         )
         headers["x-poison-reason"] = reason[:500]
         headers["x-poisoned-at"] = datetime.now(timezone.utc).isoformat()
+        if error_type:
+            headers["x-poison-error-type"] = error_type[:200]
+        provenance = {
+            "x-worker-image-ref": os.environ.get("BIFROST_WORKER_IMAGE_REF"),
+            "x-worker-lane": os.environ.get("BIFROST_WORKER_LANE"),
+            "x-worker-deployment": os.environ.get("BIFROST_KUBERNETES_DEPLOYMENT"),
+        }
+        for key, value in provenance.items():
+            if value:
+                headers[key] = value[:500]
         exchange = await self._channel.declare_exchange(
             self.dead_letter_exchange,
             aio_pika.ExchangeType.DIRECT,
