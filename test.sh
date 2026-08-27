@@ -372,10 +372,13 @@ cmd_all()  { run_pytest tests/ -v "$@"; }
 cmd_reliability() {
     require_stack_up
     local report="$LOG_DIR/execution-reliability-gauntlet.json"
-    chmod 777 "$LOG_DIR" 2>/dev/null || true
+    chmod 1777 "$LOG_DIR" 2>/dev/null || true
     docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner \
         python -m scripts.execution_reliability_gauntlet
-    test -s "$report"
+    if [ ! -s "$report" ]; then
+        echo "Reliability report missing or empty: $report" >&2
+        return 1
+    fi
     echo "Reliability report: $report"
 }
 cmd_coverage() {

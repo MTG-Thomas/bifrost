@@ -72,7 +72,7 @@ async def _prepare_table() -> None:
                 scenario text NOT NULL,
                 idempotency_key text NOT NULL,
                 claims integer NOT NULL DEFAULT 1,
-                effects integer NOT NULL DEFAULT 1,
+                effects integer NOT NULL DEFAULT 0,
                 PRIMARY KEY (run_id, scenario, idempotency_key)
             )
             """
@@ -117,6 +117,25 @@ async def _counts(run_id: str, scenario: str) -> dict[str, int]:
             scenario,
         )
         return dict(row or {})
+    finally:
+        await connection.close()
+
+
+async def _record_effect(run_id: str, scenario: str, key: str) -> None:
+    connection = await _db()
+    try:
+        result = await connection.execute(
+            """
+            UPDATE bifrost_reliability_claims
+            SET effects = effects + 1
+            WHERE run_id = $1 AND scenario = $2 AND idempotency_key = $3
+            """,
+            run_id,
+            scenario,
+            key,
+        )
+        if result != "UPDATE 1":
+            raise RuntimeError("cannot record an effect without a durable claim")
     finally:
         await connection.close()
 
@@ -239,8 +258,10 @@ async def _duplicate_delivery(run_id: str, queue_name: str) -> dict[str, Any]:
     scenario = "duplicate_delivery"
 
     async def handler(body: dict[str, Any]) -> None:
-        if not await _claim(run_id, scenario, body["idempotency_key"]):
+        key = body["idempotency_key"]
+        if not await _claim(run_id, scenario, key):
             raise DuplicateMessage("durable identity already claimed")
+        await _record_effect(run_id, scenario, key)
 
     consumer = _HarnessConsumer(queue_name, handler)
     await consumer.start()
@@ -272,7 +293,9 @@ async def _retry_publication_interruption(
         calls += 1
         if calls < 3:
             raise RetryableConsumerError("synthetic transient dependency")
-        await _claim(run_id, scenario, body["idempotency_key"])
+        key = body["idempotency_key"]
+        if await _claim(run_id, scenario, key):
+            await _record_effect(run_id, scenario, key)
 
     consumer = _HarnessConsumer(queue_name, handler, interrupt_first_retry=True)
     await consumer.start()
@@ -364,8 +387,10 @@ async def _worker_death_after_claim(run_id: str, queue_name: str) -> dict[str, A
             )
 
         async def handler(body: dict[str, Any]) -> None:
-            if not await _claim(run_id, scenario, body["idempotency_key"]):
-                raise DuplicateMessage("recovered durable claim")
+            recovered_key = body["idempotency_key"]
+            if await _claim(run_id, scenario, recovered_key):
+                raise AssertionError("crashed worker did not persist its durable claim")
+            await _record_effect(run_id, scenario, recovered_key)
 
         consumer = _HarnessConsumer(queue_name, handler)
         await consumer.start()
@@ -403,7 +428,9 @@ async def _admission_saturation(run_id: str, queue_name: str) -> dict[str, Any]:
         started.set()
         try:
             await release.wait()
-            await _claim(run_id, scenario, body["idempotency_key"])
+            key = body["idempotency_key"]
+            if await _claim(run_id, scenario, key):
+                await _record_effect(run_id, scenario, key)
         finally:
             active -= 1
 
@@ -438,26 +465,43 @@ async def _graceful_shutdown(run_id: str, queue_name: str) -> dict[str, Any]:
     async def handler(body: dict[str, Any]) -> None:
         started.set()
         await release.wait()
-        await _claim(run_id, scenario, body["idempotency_key"])
+        key = body["idempotency_key"]
+        if await _claim(run_id, scenario, key):
+            await _record_effect(run_id, scenario, key)
 
     consumer = _HarnessConsumer(queue_name, handler)
     await consumer.start()
-    key = f"{run_id}:drain"
-    await publish_message(queue_name, {"idempotency_key": key}, message_id=key)
-    await asyncio.wait_for(started.wait(), 5)
-    drain = asyncio.create_task(consumer.drain(5))
-    await asyncio.sleep(0.1)
-    if drain.done():
-        raise AssertionError("consumer drain did not wait for active work")
-    release.set()
-    await asyncio.wait_for(drain, timeout=6)
-    counts = await _counts(run_id, scenario)
-    snapshot = await _queue_snapshot(queue_name)
-    if counts.get("effects") != 1 or snapshot[queue_name]["ready"] != 0:
-        raise AssertionError(
-            f"graceful drain lost work: counts={counts} queues={snapshot}"
-        )
-    return {"counts": counts, "queues": snapshot}
+    drain: asyncio.Task[None] | None = None
+    try:
+        key = f"{run_id}:drain"
+        await publish_message(queue_name, {"idempotency_key": key}, message_id=key)
+        await asyncio.wait_for(started.wait(), 5)
+        drain = asyncio.create_task(consumer.drain(5))
+        await asyncio.sleep(0.1)
+        if drain.done():
+            raise AssertionError("consumer drain did not wait for active work")
+        release.set()
+        await asyncio.wait_for(drain, timeout=6)
+        counts = await _counts(run_id, scenario)
+        snapshot = await _queue_snapshot(queue_name)
+        if counts.get("effects") != 1 or snapshot[queue_name]["ready"] != 0:
+            raise AssertionError(
+                f"graceful drain lost work: counts={counts} queues={snapshot}"
+            )
+        return {"counts": counts, "queues": snapshot}
+    finally:
+        release.set()
+        if drain is not None:
+            await asyncio.gather(drain, return_exceptions=True)
+        else:
+            await asyncio.gather(consumer.drain(3), return_exceptions=True)
+
+
+def _write_report(report: dict[str, Any]) -> None:
+    REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    REPORT_PATH.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 async def run() -> dict[str, Any]:
@@ -475,7 +519,7 @@ async def run() -> dict[str, Any]:
     )
     before: dict[str, Any] = {}
     after: dict[str, Any] = {}
-    failure: Exception | None = None
+    scenario_failure: Exception | None = None
     try:
         for index, (name, scenario) in enumerate(scenarios):
             queue_name = f"{queue_prefix}-{index}"
@@ -487,7 +531,7 @@ async def run() -> dict[str, Any]:
                     )
                 )
             except Exception as exc:  # noqa: BLE001 - report every scenario failure
-                failure = exc
+                scenario_failure = exc
                 results.append(
                     ScenarioResult(
                         name=name,
@@ -502,17 +546,21 @@ async def run() -> dict[str, Any]:
             after[name] = await _queue_snapshot(queue_name)
             poison = after[name][f"{queue_name}-poison"]["ready"]
             if poison:
-                failure = failure or AssertionError(
+                scenario_failure = scenario_failure or AssertionError(
                     f"{name} unexpectedly produced poison={poison}"
                 )
-            if failure is not None:
+            if scenario_failure is not None:
                 break
-    finally:
-        await rabbitmq.close()
-        for index, _ in enumerate(scenarios):
-            await _delete_topology(f"{queue_prefix}-{index}")
-        await _delete_run(run_id)
-        await _drop_table()
+    except Exception as exc:  # noqa: BLE001 - preserve harness failures in evidence
+        scenario_failure = exc
+        results.append(
+            ScenarioResult(
+                name="gauntlet_harness",
+                status="failed",
+                duration_seconds=0.0,
+                evidence={"error_type": type(exc).__name__, "error": str(exc)[:500]},
+            )
+        )
     report = {
         "schema": "bifrost.execution-reliability-gauntlet/v1",
         "run_id": run_id,
@@ -524,15 +572,51 @@ async def run() -> dict[str, Any]:
         "before": before,
         "after": after,
         "results": [asdict(result) for result in results],
-        "status": "failed" if failure is not None else "passed",
+        "scenario_status": "failed" if scenario_failure is not None else "passed",
+        "cleanup": {"status": "pending", "errors": []},
+        "status": "failed" if scenario_failure is not None else "passed",
     }
-    REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    REPORT_PATH.write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    emission_failure: Exception | None = None
+    try:
+        _write_report(report)
+    except Exception as exc:  # noqa: BLE001 - cleanup must still run
+        emission_failure = exc
+
+    cleanup_errors: list[dict[str, str]] = []
+
+    async def cleanup(label: str, action: Awaitable[None]) -> None:
+        try:
+            await action
+        except Exception as exc:  # noqa: BLE001 - attempt every cleanup step
+            cleanup_errors.append(
+                {
+                    "step": label,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:500],
+                }
+            )
+
+    await cleanup("rabbitmq.close", rabbitmq.close())
+    for index, _ in enumerate(scenarios):
+        queue_name = f"{queue_prefix}-{index}"
+        await cleanup(f"delete_topology:{queue_name}", _delete_topology(queue_name))
+    await cleanup("delete_run", _delete_run(run_id))
+    await cleanup("drop_table", _drop_table())
+
+    report["cleanup"] = {
+        "status": "failed" if cleanup_errors else "passed",
+        "errors": cleanup_errors,
+    }
+    if cleanup_errors or emission_failure is not None:
+        report["status"] = "failed"
+    _write_report(report)
     print(json.dumps(report, indent=2, sort_keys=True))
-    if failure is not None:
-        raise failure
+    if scenario_failure is not None:
+        raise scenario_failure
+    if cleanup_errors:
+        raise RuntimeError(f"reliability cleanup failed: {cleanup_errors}")
+    if emission_failure is not None:
+        raise emission_failure
     return report
 
 

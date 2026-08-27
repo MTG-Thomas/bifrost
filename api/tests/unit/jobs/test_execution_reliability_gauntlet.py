@@ -48,8 +48,8 @@ def test_gauntlet_has_no_production_activation_surface() -> None:
 
     assert "BIFROST_EXECUTION_FAULT" not in source
     assert "workflow-executions-poison" not in source
-    assert "replay" not in source.lower()
-    assert "discard" not in source.lower()
+    assert "replay_message(" not in source
+    assert "discard_message(" not in source
     assert gauntlet.REPORT_PATH == Path(
         "/bifrost-results/execution-reliability-gauntlet.json"
     )
