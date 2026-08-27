@@ -2,6 +2,17 @@ name: Execution Reliability Gauntlet
 
 on:
   workflow_dispatch: {}
+  pull_request:
+    paths:
+      - ".github/workflows/execution-reliability-gauntlet.yml"
+      - "api/scripts/execution_reliability_gauntlet.py"
+      - "api/src/jobs/rabbitmq.py"
+      - "api/src/jobs/consumers/**"
+      - "api/src/services/execution/**"
+      - "api/src/services/execution_admission.py"
+      - "api/tests/unit/jobs/test_execution_reliability_gauntlet.py"
+      - "docker-compose.test.yml"
+      - "test.sh"
   schedule:
     - cron: "23 7 * * 3"
 
