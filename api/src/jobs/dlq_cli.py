@@ -27,6 +27,14 @@ logger = logging.getLogger(__name__)
 MAX_REPLAY_COUNT = 3
 
 
+def _validate_audit_metadata(*, actor: str, reason: str) -> tuple[str, str]:
+    actor = actor.strip()
+    reason = reason.strip()
+    if not actor or not reason:
+        raise ValueError("actor and reason are required for poison-message mutations")
+    return actor, reason
+
+
 def _validate_queue(queue: str, *, replaying: bool = False) -> None:
     policy = broker_execution_policies().get(queue)
     if policy is None:
@@ -55,8 +63,8 @@ async def _record_disposition(
                 message_id=message.message_id,
                 idempotency_key=headers.get("x-idempotency-key"),
                 action=action,
-                actor=(actor.strip() or "unknown")[:255],
-                reason=(reason.strip() or "operator request")[:2000],
+                actor=actor[:255],
+                reason=reason[:2000],
                 retry_count=int(headers.get("x-retry-count") or 0),
                 replay_count=replay_count,
                 body_sha256=hashlib.sha256(message.body).hexdigest(),
@@ -114,10 +122,11 @@ async def replay(
     limit: int,
     dry_run: bool,
     *,
-    actor: str = "local-operator",
-    reason: str = "manual replay",
+    actor: str,
+    reason: str,
 ) -> list[dict[str, Any]]:
     _validate_queue(queue, replaying=True)
+    actor, reason = _validate_audit_metadata(actor=actor, reason=reason)
     rows: list[dict[str, Any]] = []
     connection = await _connect()
     async with connection:
@@ -177,9 +186,10 @@ async def discard(
     reason: str,
     dry_run: bool,
     *,
-    actor: str = "local-operator",
+    actor: str,
 ) -> list[dict[str, Any]]:
     _validate_queue(queue)
+    actor, reason = _validate_audit_metadata(actor=actor, reason=reason)
     rows: list[dict[str, Any]] = []
     connection = await _connect()
     async with connection:

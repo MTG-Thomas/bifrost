@@ -18,7 +18,7 @@ the acknowledged/retry/poison decision.
 | `agent-summarization` | `run_id` | Summary state on the run is authoritative; deterministic failures are recorded on the run rather than retried forever. |
 | `agent-summarization-backfill` | `run_id:backfill_job_id` | Backfill accounting is handled by the backfill tracker; replay still uses the same run/job idempotency key. |
 | `agent-tuning-chat` | `turn_id` | User turns carry a stable `turn_id`; redelivery does not append the same user turn twice and can continue reply generation. |
-| `package-installations` | `operation_id` | Each worker reports package-operation progress in Redis. Delivery remains at-least-once; the ID correlates attempts but does not durably make repeated broadcasts a no-op. |
+| `package-installations` | `run_id` | Each worker reports package-operation progress in Redis. Delivery remains at-least-once; the ID correlates attempts but does not durably make repeated broadcasts a no-op. |
 
 Every publisher sets:
 

@@ -1107,6 +1107,7 @@ class ProcessPoolManager:
                 r = await self._get_redis()
                 pubsub = r.pubsub()
                 await pubsub.subscribe(*channels)
+                next_durable_poll = 0.0
 
                 while not self._shutdown:
                     message = await pubsub.get_message(
@@ -1116,8 +1117,9 @@ class ProcessPoolManager:
                     if message and message["type"] == "message":
                         data = json.loads(message["data"])
                         await self._handle_command(data)
-                    else:
+                    if time.monotonic() >= next_durable_poll:
                         await self._poll_durable_worker_command()
+                        next_durable_poll = time.monotonic() + 1.0
             except Exception as e:
                 logger.error(f"Command listener error: {e}; reconnecting in 1s")
                 await asyncio.sleep(1.0)
@@ -1157,8 +1159,14 @@ class ProcessPoolManager:
             if claimed is None:
                 logger.info("Ignoring completed or concurrently claimed command %s", command_id)
                 return
+            persisted_command = {
+                "command_id": str(claimed.id),
+                "action": claimed.action,
+                "pid": claimed.process_id,
+                "reason": claimed.reason,
+            }
             try:
-                await self._dispatch_worker_command(command)
+                await self._dispatch_worker_command(persisted_command)
             except Exception as exc:
                 async with get_db_context() as db:
                     await finish_worker_control_command(
@@ -1801,8 +1809,8 @@ class ProcessPoolManager:
         available_slots = max(0, max_workers - busy_count)
 
         memory_current, memory_max = get_cgroup_memory()
-        admission_attempts = getattr(self, "_admission_attempts", 0)
-        admission_wait_total = getattr(self, "_admission_wait_seconds_total", 0.0)
+        admission_attempts = self._admission_attempts
+        admission_wait_total = self._admission_wait_seconds_total
         active_executions = [
             p.current_execution for p in self.processes.values() if p.current_execution
         ]
@@ -1855,15 +1863,11 @@ class ProcessPoolManager:
             "memory_current_bytes": memory_current,
             "memory_max_bytes": memory_max,
             "admission": {
-                "attempts": getattr(self, "_admission_attempts", 0),
-                "successes": getattr(self, "_admission_successes", 0),
-                "rejections": dict(getattr(self, "_admission_rejections", {})),
-                "wait_seconds_total": getattr(
-                    self, "_admission_wait_seconds_total", 0.0
-                ),
-                "wait_seconds_max": getattr(
-                    self, "_admission_wait_seconds_max", 0.0
-                ),
+                "attempts": admission_attempts,
+                "successes": self._admission_successes,
+                "rejections": dict(self._admission_rejections),
+                "wait_seconds_total": admission_wait_total,
+                "wait_seconds_max": self._admission_wait_seconds_max,
                 "wait_seconds_average": (
                     admission_wait_total / admission_attempts
                     if admission_attempts

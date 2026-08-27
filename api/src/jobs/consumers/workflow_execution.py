@@ -651,7 +651,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
             )
         pending["execution_attempt_id"] = str(attempt_id)
         try:
-            await self._redis_client.update_pending_execution(
+            updated = await self._redis_client.update_pending_execution(
                 execution_id=execution_id,
                 updates={"execution_attempt_id": str(attempt_id)},
             )
@@ -660,6 +660,11 @@ class WorkflowExecutionConsumer(BaseConsumer):
             raise RetryableConsumerError(
                 f"failed to persist durable execution claim in Redis: {exc}"
             ) from exc
+        if not updated:
+            await self._release_durable_execution_claim(execution_id, attempt_id)
+            raise RetryableConsumerError(
+                f"failed to persist durable execution claim in Redis: {execution_id}"
+            )
         pending_ready_ms = (time.perf_counter() - dispatch_started) * 1000
 
         # Extract context from Redis pending record

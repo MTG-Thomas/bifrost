@@ -138,7 +138,10 @@ async def test_replay_dry_run_describes_and_requeues_without_publish(monkeypatch
     channel = FakeChannel(messages)
     monkeypatch.setattr(dlq_cli, "_connect", AsyncMock(return_value=FakeConnection(channel)))
 
-    rows = await replay("workflow-executions", limit=1, dry_run=True)
+    rows = await replay(
+        "workflow-executions", limit=1, dry_run=True,
+        actor="operator@example.com", reason="verify replay",
+    )
 
     assert rows[0]["message_id"] == "one"
     assert messages[0].nacked is True
@@ -155,7 +158,10 @@ async def test_replay_publishes_with_incremented_replay_headers(monkeypatch):
     record = AsyncMock()
     monkeypatch.setattr(dlq_cli, "_record_disposition", record)
 
-    rows = await replay("workflow-executions", limit=1, dry_run=False)
+    rows = await replay(
+        "workflow-executions", limit=1, dry_run=False,
+        actor="operator@example.com", reason="retry delivery",
+    )
 
     assert rows[0]["message_id"] == "one"
     assert messages[0].acked is True
@@ -173,7 +179,10 @@ async def test_discard_dry_run_requeues_without_ack(monkeypatch):
     channel = FakeChannel(messages)
     monkeypatch.setattr(dlq_cli, "_connect", AsyncMock(return_value=FakeConnection(channel)))
 
-    rows = await discard("workflow-executions", limit=2, reason="bad payload", dry_run=True)
+    rows = await discard(
+        "workflow-executions", limit=2, reason="bad payload", dry_run=True,
+        actor="operator@example.com",
+    )
 
     assert [row["message_id"] for row in rows] == ["one", "two"]
     assert all(message.nacked for message in messages)
