@@ -571,6 +571,7 @@ async def enqueue_code_execution(
         user_name=context.name,
         user_email=context.email,
         form_id=None,
+        sync=sync,
         is_platform_admin=context.is_platform_admin,
         is_provider_org=getattr(context, "is_provider_org", False),
         is_external=getattr(context, "is_external", False),

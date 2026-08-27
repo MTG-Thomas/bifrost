@@ -81,7 +81,14 @@ class UnitConsumer(BaseConsumer):
     ) -> None:
         self.retry_payloads.append((context.body, context.retry_count + 1, reason))
 
-    async def _publish_poison(self, message: Any, context: Any, *, reason: str) -> None:
+    async def _publish_poison(
+        self,
+        message: Any,
+        context: Any,
+        *,
+        reason: str,
+        error_type: str | None = None,
+    ) -> None:
         self.poison_payloads.append((context.body, reason))
 
 

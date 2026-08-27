@@ -280,6 +280,39 @@ async def test_publish_pending_writes_redis_then_publishes():
 
 
 @pytest.mark.asyncio
+async def test_enqueue_code_execution_persists_sync_and_custom_queue():
+    redis = AsyncMock()
+    with (
+        patch(
+            "src.services.execution.async_executor.get_redis_client",
+            return_value=redis,
+        ),
+        patch(
+            "src.services.execution.async_executor.add_to_queue",
+            new=AsyncMock(),
+        ),
+        patch(
+            "src.services.execution.async_executor.publish_message",
+            new=AsyncMock(),
+        ) as publish,
+    ):
+        execution_id = await async_executor.enqueue_code_execution(
+            _context(),
+            "canary.py",
+            "cHJpbnQoJ29rJyk=",
+            {},
+            execution_id="canary-execution",
+            sync=True,
+            queue_name="workflow-executions-deployment-canary",
+        )
+
+    assert execution_id == "canary-execution"
+    assert redis.set_pending_execution.await_args.kwargs["sync"] is True
+    publish.assert_awaited_once()
+    assert publish.await_args.args[0] == "workflow-executions-deployment-canary"
+
+
+@pytest.mark.asyncio
 async def test_publish_pending_emits_enqueue_span(monkeypatch):
     fake_tracer = _FakeTracer()
     monkeypatch.setattr(async_executor, "tracer", fake_tracer)

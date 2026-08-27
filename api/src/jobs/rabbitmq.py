@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -410,15 +411,24 @@ class _AbstractConsumer(ABC):
                 reason=str(e),
                 started=started,
                 dependency=e.dependency,
+                error_type=type(e).__name__,
             )
         except PermanentConsumerError as e:
             await self._dead_letter_and_ack(
-                message, context, reason=str(e), error_type=type(e).__name__, started=started
+                message,
+                context,
+                reason=str(e),
+                error_type=type(e).__name__,
+                started=started,
             )
         except json.JSONDecodeError as e:
             malformed = self._malformed_context(message)
             await self._dead_letter_and_ack(
-                message, malformed, reason=f"malformed JSON: {e}", error_type=type(e).__name__, started=started
+                message,
+                malformed,
+                reason=f"malformed JSON: {e}",
+                error_type=type(e).__name__,
+                started=started,
             )
         except asyncio.CancelledError:
             if context is None:
@@ -432,7 +442,11 @@ class _AbstractConsumer(ABC):
                 extra=self._log_extra(context, reason=str(e), error_type=type(e).__name__),
             )
             await self._dead_letter_and_ack(
-                message, context, reason=str(e), error_type=type(e).__name__, started=started
+                message,
+                context,
+                reason=str(e),
+                error_type=type(e).__name__,
+                started=started,
             )
 
     def _build_context(self, message: IncomingMessage) -> DeliveryContext:
@@ -484,6 +498,7 @@ class _AbstractConsumer(ABC):
         reason: str,
         started: float,
         dependency: str | None = None,
+        error_type: str | None = None,
     ) -> None:
         if context is None:
             await message.nack(requeue=True)
@@ -493,6 +508,7 @@ class _AbstractConsumer(ABC):
                 message,
                 context,
                 reason=f"retry attempts exhausted: {reason}",
+                error_type=error_type,
                 started=started,
             )
             return
@@ -501,6 +517,7 @@ class _AbstractConsumer(ABC):
                 message,
                 context,
                 reason=f"retry elapsed-time budget exhausted: {reason}",
+                error_type=error_type,
                 started=started,
             )
             return

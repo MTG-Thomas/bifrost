@@ -83,15 +83,16 @@ def consumer_factories():
 
 def configured_consumer_names() -> list[str]:
     """Return the explicit worker consumer set, failing closed on typos."""
-    raw = os.environ.get("BIFROST_WORKER_CONSUMERS", "").strip()
-    if not raw:
+    configured = os.environ.get("BIFROST_WORKER_CONSUMERS")
+    if configured is None:
         return list(_CONSUMER_NAMES)
+    raw = configured.strip()
+    if not raw:
+        raise ValueError("BIFROST_WORKER_CONSUMERS must select at least one consumer")
     names = [name.strip() for name in raw.split(",") if name.strip()]
     unknown = sorted(set(names) - set(_CONSUMER_NAMES))
     if unknown:
         raise ValueError(f"Unknown BIFROST_WORKER_CONSUMERS values: {unknown}")
-    if not names:
-        raise ValueError("BIFROST_WORKER_CONSUMERS must select at least one consumer")
     return names
 
 

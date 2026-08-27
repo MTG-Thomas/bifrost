@@ -34,6 +34,9 @@ def make_consumer() -> WorkflowExecutionConsumer:
     with patch.object(WorkflowExecutionConsumer, "__init__", lambda self: None):
         consumer = WorkflowExecutionConsumer()
 
+    consumer._workflow_operations_policy = workflow_execution.broker_execution_policies()[
+        workflow_execution.QUEUE_NAME
+    ]
     consumer._redis_client = AsyncMock()
     consumer._claim_durable_execution = AsyncMock(return_value=uuid4())  # type: ignore[method-assign]
     consumer._release_durable_execution_claim = AsyncMock()  # type: ignore[method-assign]

@@ -14,6 +14,7 @@ from src.services.execution.async_executor import enqueue_code_execution
 
 
 def canary_queue_name() -> str:
+    """Return the configured queue only when it is explicitly canary-scoped."""
     queue_name = os.environ.get("BIFROST_WORKFLOW_QUEUE_NAME", "")
     if not queue_name.endswith("-canary"):
         raise ValueError(
@@ -23,6 +24,7 @@ def canary_queue_name() -> str:
 
 
 async def poison_depth(queue_name: str) -> int:
+    """Read the isolated poison queue depth without consuming any messages."""
     await rabbitmq.init_pools()
     async with rabbitmq.get_connection() as connection:
         channel = await connection.channel()
@@ -35,7 +37,18 @@ async def poison_depth(queue_name: str) -> int:
             await channel.close()
 
 
+def require_successful_canary_result(result: dict | None) -> None:
+    """Fail unless both the execution status and sentinel payload match."""
+    if (
+        result is None
+        or result.get("status") != "Success"
+        or result.get("result") != {"canary": "ok"}
+    ):
+        raise RuntimeError(f"isolated workflow canary failed: {result!r}")
+
+
 async def run_canary() -> None:
+    """Publish one synthetic execution and prove success without poison growth."""
     queue_name = canary_queue_name()
     context = SimpleNamespace(
         org_id=None,
@@ -58,8 +71,7 @@ async def run_canary() -> None:
             queue_name=queue_name,
         )
         result = await get_redis_client().wait_for_result(execution_id, timeout_seconds=90)
-        if result is None or result.get("status") != "Success":
-            raise RuntimeError(f"isolated workflow canary failed: {result!r}")
+        require_successful_canary_result(result)
         poison_after = await poison_depth(queue_name)
         if poison_after != poison_before:
             raise RuntimeError(
