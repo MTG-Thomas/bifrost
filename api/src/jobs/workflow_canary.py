@@ -22,6 +22,19 @@ def canary_queue_name() -> str:
     return queue_name
 
 
+async def poison_depth(queue_name: str) -> int:
+    await rabbitmq.init_pools()
+    async with rabbitmq.get_connection() as connection:
+        channel = await connection.channel()
+        try:
+            queue = await channel.declare_queue(
+                f"{queue_name}-poison", passive=True
+            )
+            return int(queue.declaration_result.message_count)
+        finally:
+            await channel.close()
+
+
 async def run_canary() -> None:
     queue_name = canary_queue_name()
     context = SimpleNamespace(
@@ -35,6 +48,7 @@ async def run_canary() -> None:
     )
     await init_db()
     try:
+        poison_before = await poison_depth(queue_name)
         execution_id = await enqueue_code_execution(
             context,
             script_name="deployment_canary.py",
@@ -46,6 +60,12 @@ async def run_canary() -> None:
         result = await get_redis_client().wait_for_result(execution_id, timeout_seconds=90)
         if result is None or result.get("status") != "Success":
             raise RuntimeError(f"isolated workflow canary failed: {result!r}")
+        poison_after = await poison_depth(queue_name)
+        if poison_after != poison_before:
+            raise RuntimeError(
+                "isolated workflow canary grew poison queue: "
+                f"before={poison_before} after={poison_after}"
+            )
         print(f"isolated workflow canary passed: execution_id={execution_id}")
     finally:
         await rabbitmq.close()
