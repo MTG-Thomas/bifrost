@@ -64,9 +64,14 @@ _CONSUMER_NAMES = (
 def consumer_factories():
     """Build factories lazily so configuration and test patches take effect."""
     def workflow_consumer():
-        queue_name = os.environ.get(
-            "BIFROST_WORKFLOW_QUEUE_NAME", "workflow-executions"
-        )
+        queue_name = os.environ.get("BIFROST_WORKFLOW_QUEUE_NAME", "")
+        if configured_consumer_names() == ["workflow"] and not queue_name.endswith(
+            "-canary"
+        ):
+            raise ValueError(
+                "workflow-only workers require an explicit isolated -canary queue"
+            )
+        queue_name = queue_name or "workflow-executions"
         if queue_name == "workflow-executions":
             return WorkflowExecutionConsumer()
         return WorkflowExecutionConsumer(queue_name=queue_name)
@@ -90,6 +95,8 @@ def configured_consumer_names() -> list[str]:
     if not raw:
         raise ValueError("BIFROST_WORKER_CONSUMERS must select at least one consumer")
     names = [name.strip() for name in raw.split(",") if name.strip()]
+    if not names:
+        raise ValueError("BIFROST_WORKER_CONSUMERS must select at least one consumer")
     unknown = sorted(set(names) - set(_CONSUMER_NAMES))
     if unknown:
         raise ValueError(f"Unknown BIFROST_WORKER_CONSUMERS values: {unknown}")

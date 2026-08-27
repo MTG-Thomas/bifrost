@@ -1,5 +1,6 @@
 """Unit tests for RabbitMQ delivery outcome decisions."""
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -155,6 +156,22 @@ async def test_retryable_error_publishes_retry_then_acks_original() -> None:
     message.ack.assert_awaited_once()
     message.nack.assert_not_awaited()
     assert consumer.poison_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_cancellation_retry_preserves_error_type() -> None:
+    consumer = UnitConsumer()
+    consumer.process_message = AsyncMock(side_effect=asyncio.CancelledError())  # type: ignore[method-assign]
+    consumer._retry_or_poison = AsyncMock()  # type: ignore[method-assign]
+    message = FakeMessage(json.dumps({"ok": True}))
+
+    with pytest.raises(asyncio.CancelledError):
+        await consumer._process_message_with_ack(message)
+
+    call = consumer._retry_or_poison.await_args
+    assert call is not None
+    assert call.kwargs["reason"] == "consumer shutdown"
+    assert call.kwargs["error_type"] == "CancelledError"
 
 
 @pytest.mark.asyncio
@@ -401,6 +418,7 @@ async def test_publish_poison_routes_to_dlx_with_reason_headers(
 ) -> None:
     monkeypatch.setenv("BIFROST_WORKER_IMAGE_REF", "worker@sha256:candidate")
     monkeypatch.setenv("BIFROST_WORKER_LANE", "isolated-canary")
+    monkeypatch.setenv("BIFROST_KUBERNETES_DEPLOYMENT", "bifrost-worker-canary")
     consumer = BasePublishConsumer()
     channel = FakeChannel()
     consumer._channel = channel  # type: ignore[assignment]
@@ -422,6 +440,7 @@ async def test_publish_poison_routes_to_dlx_with_reason_headers(
     assert published.headers["x-poison-error-type"] == "PermanentFailure"
     assert published.headers["x-worker-image-ref"] == "worker@sha256:candidate"
     assert published.headers["x-worker-lane"] == "isolated-canary"
+    assert published.headers["x-worker-deployment"] == "bifrost-worker-canary"
     assert "x-poisoned-at" in published.headers
 
 

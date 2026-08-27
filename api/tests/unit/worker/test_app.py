@@ -52,9 +52,25 @@ def test_configured_consumers_fail_closed_on_typo(monkeypatch: pytest.MonkeyPatc
 def test_configured_consumers_fail_closed_when_blank(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("BIFROST_WORKER_CONSUMERS", "   ")
-    with pytest.raises(ValueError, match="at least one"):
-        worker_app.configured_consumer_names()
+    for value in ("   ", ",,,"):
+        monkeypatch.setenv("BIFROST_WORKER_CONSUMERS", value)
+        with pytest.raises(ValueError, match="at least one"):
+            worker_app.configured_consumer_names()
+
+
+@pytest.mark.parametrize("queue_name", [None, "workflow-executions"])
+def test_workflow_only_consumer_requires_isolated_queue(
+    monkeypatch: pytest.MonkeyPatch,
+    queue_name: str | None,
+) -> None:
+    monkeypatch.setenv("BIFROST_WORKER_CONSUMERS", "workflow")
+    if queue_name is None:
+        monkeypatch.delenv("BIFROST_WORKFLOW_QUEUE_NAME", raising=False)
+    else:
+        monkeypatch.setenv("BIFROST_WORKFLOW_QUEUE_NAME", queue_name)
+
+    with pytest.raises(ValueError, match="isolated -canary"):
+        worker_app.consumer_factories()["workflow"]()
 
 
 @pytest.mark.asyncio

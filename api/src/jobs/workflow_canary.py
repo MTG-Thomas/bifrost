@@ -73,7 +73,7 @@ async def run_canary() -> None:
         result = await get_redis_client().wait_for_result(execution_id, timeout_seconds=90)
         require_successful_canary_result(result)
         poison_after = await poison_depth(queue_name)
-        if poison_after != poison_before:
+        if poison_after > poison_before:
             raise RuntimeError(
                 "isolated workflow canary grew poison queue: "
                 f"before={poison_before} after={poison_after}"

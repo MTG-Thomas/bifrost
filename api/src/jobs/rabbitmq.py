@@ -430,11 +430,17 @@ class _AbstractConsumer(ABC):
                 error_type=type(e).__name__,
                 started=started,
             )
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as e:
             if context is None:
                 await message.nack(requeue=True)
             else:
-                await self._retry_or_poison(message, context, reason="consumer shutdown", started=started)
+                await self._retry_or_poison(
+                    message,
+                    context,
+                    reason="consumer shutdown",
+                    error_type=type(e).__name__,
+                    started=started,
+                )
             raise
         except Exception as e:
             logger.exception(
