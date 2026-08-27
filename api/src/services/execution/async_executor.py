@@ -535,6 +535,7 @@ async def enqueue_code_execution(
     parameters: dict[str, Any],
     execution_id: str | None = None,
     sync: bool = False,
+    queue_name: str = QUEUE_NAME,
 ) -> str:
     """
     Enqueue inline code for async execution.
@@ -587,7 +588,7 @@ async def enqueue_code_execution(
     }
 
     # Enqueue message via RabbitMQ
-    await publish_message(QUEUE_NAME, message)
+    await publish_message(queue_name, message)
 
     logger.info(
         f"Enqueued async code execution: {log_safe(script_name)}",
