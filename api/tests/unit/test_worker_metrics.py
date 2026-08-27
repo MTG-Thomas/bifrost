@@ -6,6 +6,14 @@ from datetime import datetime, timezone
 import pytest
 
 
+def _initialize_admission_metrics(pool) -> None:
+    pool._admission_attempts = 0
+    pool._admission_successes = 0
+    pool._admission_rejections = {}
+    pool._admission_wait_seconds_total = 0.0
+    pool._admission_wait_seconds_max = 0.0
+
+
 class TestHeartbeatCgroupData:
     """Tests for cgroup memory data in heartbeat payload."""
 
@@ -14,6 +22,7 @@ class TestHeartbeatCgroupData:
         from src.services.execution.process_pool import ProcessPoolManager
 
         pool = ProcessPoolManager.__new__(ProcessPoolManager)
+        _initialize_admission_metrics(pool)
         pool.worker_id = "test-worker"
         pool.processes = {}
         pool.max_workers = 10
@@ -37,6 +46,7 @@ class TestHeartbeatCgroupData:
         from src.services.execution.process_pool import ProcessPoolManager
 
         pool = ProcessPoolManager.__new__(ProcessPoolManager)
+        _initialize_admission_metrics(pool)
         pool.worker_id = "test-worker"
         pool.processes = {}
         pool.max_workers = 10
@@ -60,6 +70,7 @@ class TestHeartbeatCgroupData:
         from src.services.execution.process_pool import ProcessPoolManager
 
         pool = ProcessPoolManager.__new__(ProcessPoolManager)
+        _initialize_admission_metrics(pool)
         pool.worker_id = "test-worker"
         pool.processes = {}
         pool.max_workers = 10
@@ -83,6 +94,7 @@ class TestHeartbeatCgroupData:
         from src.services.execution.process_pool import ProcessPoolManager
 
         pool = ProcessPoolManager.__new__(ProcessPoolManager)
+        _initialize_admission_metrics(pool)
         pool.worker_id = "test-worker"
         pool.processes = {}
         pool.max_workers = 10
@@ -121,6 +133,7 @@ class TestHeartbeatCgroupData:
         from src.services.execution.process_pool import ProcessPoolManager, ProcessState
 
         pool = ProcessPoolManager.__new__(ProcessPoolManager)
+        _initialize_admission_metrics(pool)
         pool.worker_id = "test-worker"
         pool._started_at = datetime.now(timezone.utc)
         pool._requirements_installed = 0
@@ -162,6 +175,7 @@ class TestHeartbeatCgroupData:
         from src.services.execution.process_pool import ProcessPoolManager, ProcessState
 
         pool = ProcessPoolManager.__new__(ProcessPoolManager)
+        _initialize_admission_metrics(pool)
         pool.worker_id = "test-worker"
         pool._started_at = datetime.now(timezone.utc)
         pool._requirements_installed = 0
