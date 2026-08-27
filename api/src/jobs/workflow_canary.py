@@ -6,10 +6,14 @@ import asyncio
 import base64
 import os
 from types import SimpleNamespace
+from uuid import UUID
 
-from src.core.database import close_db, init_db
+from sqlalchemy import select
+
+from src.core.database import close_db, get_db_context, init_db
 from src.core.redis_client import get_redis_client
 from src.jobs.rabbitmq import rabbitmq
+from src.models.orm.users import User
 from src.services.execution.async_executor import enqueue_code_execution
 
 
@@ -47,20 +51,39 @@ def require_successful_canary_result(result: dict | None) -> None:
         raise RuntimeError(f"isolated workflow canary failed: {result!r}")
 
 
-async def run_canary() -> None:
-    """Publish one synthetic execution and prove success without poison growth."""
-    queue_name = canary_queue_name()
-    context = SimpleNamespace(
+def canary_context(user: User) -> SimpleNamespace:
+    """Build an auditable execution context from a persisted administrator."""
+    return SimpleNamespace(
         org_id=None,
-        user_id="deployment-canary",
-        name="Deployment Canary",
-        email="deployment-canary@localhost",
+        user_id=str(UUID(str(user.id))),
+        name=user.name or "Deployment Canary",
+        email=user.email,
         is_platform_admin=True,
         is_provider_org=False,
         is_external=False,
     )
+
+
+async def resolve_canary_context() -> SimpleNamespace:
+    """Resolve a stable, FK-backed administrator for canary execution telemetry."""
+    async with get_db_context() as db:
+        user = await db.scalar(
+            select(User)
+            .where(User.is_active.is_(True), User.is_superuser.is_(True))
+            .order_by(User.created_at.asc(), User.id.asc())
+            .limit(1)
+        )
+    if user is None:
+        raise RuntimeError("isolated workflow canary requires an active superuser")
+    return canary_context(user)
+
+
+async def run_canary() -> None:
+    """Publish one synthetic execution and prove success without poison growth."""
+    queue_name = canary_queue_name()
     await init_db()
     try:
+        context = await resolve_canary_context()
         poison_before = await poison_depth(queue_name)
         execution_id = await enqueue_code_execution(
             context,
