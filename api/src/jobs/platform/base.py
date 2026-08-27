@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from src.jobs.execution_policy import ExecutionOperationsPolicy
+
 
 @dataclass(frozen=True)
 class PlatformJobPolicy:
@@ -103,4 +105,10 @@ class PlatformJobDefinition:
     payload_model: type[BaseModel]
     handler: PlatformJobHandler
     policy: PlatformJobPolicy
+    operations_policy: ExecutionOperationsPolicy
     encrypt_payload: bool = False
+
+    def __post_init__(self) -> None:
+        from src.jobs.execution_policy import validate_platform_job_definition
+
+        validate_platform_job_definition(self)

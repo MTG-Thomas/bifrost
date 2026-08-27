@@ -352,7 +352,11 @@ run_pytest() {
 
     docker compose -f "$COMPOSE_FILE" --profile test run "${build_args[@]}" --rm test-runner \
         pytest "$@" --durations=25 --junitxml="$LOG_DIR/test-results.xml" 2>&1 | tee "$LOG_DIR/test-runner.log"
-    return "${PIPESTATUS[0]}"
+    runner_status="${PIPESTATUS[0]}"
+    trap - INT TERM
+    cleanup_pytest_runner
+    exec {runner_lock_fd}>&-
+    return "$runner_status"
 }
 
 # `unit` is the fast every-PR lane: it deselects `@pytest.mark.slow` tests
@@ -603,6 +607,7 @@ build_local_api_candidate() {
         .
     docker run --rm \
         --env "EXPECTED_VERSION=$version" \
+        --env "BIFROST_SECRET_KEY=local-production-candidate-smoke-key" \
         --entrypoint python \
         "$image_tag" \
         -c "import os; from shared.version import get_version; from src.main import app; assert app is not None; assert get_version() == os.environ['EXPECTED_VERSION']"
@@ -799,6 +804,7 @@ case "$1" in
     quality) shift; cmd_quality "$@" ;;
     client) shift; cmd_client "$@" ;;
     mcp) shift; cmd_mcp "$@" ;;
+    pre-pr) cmd_pre_pr ;;
     ci) cmd_ci ;;
     -h|--help|help)
         sed -n '2,35p' "$0"

@@ -18,3 +18,13 @@ def test_all_alembic_revision_ids_fit_version_column() -> None:
     )
 
     assert oversized == []
+
+
+def test_alembic_migrations_have_one_head() -> None:
+    """Every deploy must have one unambiguous upgrade target."""
+    api_root = Path(__file__).resolve().parents[2]
+    config = Config(api_root / "alembic.ini")
+    config.set_main_option("script_location", str(api_root / "alembic"))
+    script = ScriptDirectory.from_config(config)
+
+    assert len(script.get_heads()) == 1

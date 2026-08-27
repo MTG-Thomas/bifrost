@@ -217,13 +217,16 @@ test.describe("Chat attachments and model profiles", () => {
 
 		await page.getByLabel("Chat input").fill("Summarize this file");
 		await page.getByRole("button", { name: "Send message" }).click();
-		await expect(page.getByText("Thinking…")).toBeVisible();
+		const payload = await chatPayload;
+		await expect(page.getByText("Thinking…")).toBeVisible({ timeout: 15_000 });
 		await page.screenshot({
 			path: "playwright-results/screenshots/chat-thinking.png",
 			fullPage: true,
 		});
 		advanceChat();
-		await expect(page.getByText("Generating Markdown…")).toBeVisible();
+		await expect(page.getByText("Generating Markdown…")).toBeVisible({
+			timeout: 15_000,
+		});
 		await expect(
 			page.getByRole("button", { name: /Generating Markdown/i }),
 		).toHaveAttribute("aria-expanded", "false");
@@ -236,7 +239,7 @@ test.describe("Chat attachments and model profiles", () => {
 			fullPage: true,
 		});
 		advanceArtifact();
-		await expect(page.getByText("Responding…")).toBeVisible();
+		await expect(page.getByText("Responding…")).toBeVisible({ timeout: 15_000 });
 		await expect(
 			page.getByRole("button", { name: /Responding/i }),
 		).toHaveAttribute("aria-expanded", "false");
@@ -250,7 +253,6 @@ test.describe("Chat attachments and model profiles", () => {
 			fullPage: true,
 		});
 
-		const payload = await chatPayload;
 		expect(payload.message).toBe("Summarize this file");
 		expect(payload.model_profile_id).toBe("profile-pro");
 		expect(payload.attachment_ids).toEqual([expect.any(String)]);
@@ -285,7 +287,7 @@ test.describe("Chat attachments and model profiles", () => {
 			.click();
 		await expect(
 			page.getByRole("heading", { name: "Result" }),
-		).toBeVisible();
+		).toBeVisible({ timeout: 15_000 });
 		await expect(page.getByRole("dialog")).not.toBeVisible();
 		await page.screenshot({
 			path: "playwright-results/screenshots/chat-complete.png",

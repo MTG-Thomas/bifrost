@@ -65,8 +65,7 @@ def consumer():
         patch("src.jobs.consumers.agent_run.BaseConsumer.__init__", return_value=None),
     ):
         mock_settings.return_value = MagicMock(max_concurrency=2)
-        c = AgentRunConsumer()
-        return c
+        return AgentRunConsumer()
 
 
 @pytest.mark.asyncio
@@ -112,14 +111,14 @@ async def test_agent_not_found_returns_early(consumer):
         {"org_id": str(uuid4()), "input": {"message": "hello"}}
     )
 
-    queued_run = MagicMock(status="queued")
+    running_run = MagicMock(status="running")
 
     # DB session where the durable run exists but the agent no longer does.
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = None
 
     mock_session = AsyncMock()
-    mock_session.get.return_value = queued_run
+    mock_session.get.return_value = running_run
     mock_session.execute.return_value = mock_result
 
     mock_session_ctx = AsyncMock()
@@ -127,12 +126,19 @@ async def test_agent_not_found_returns_early(consumer):
     mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
 
     consumer._session_factory = MagicMock(return_value=mock_session_ctx)
+    consumer._claim_durable_run = AsyncMock(return_value=uuid4())
 
     # get_redis is called multiple times (initial context read, then inside finally block)
     # We need it to work for both calls
-    with patch(
-        "src.jobs.consumers.agent_run.get_redis",
-        return_value=FakeRedisCtx(redis_mock),
+    with (
+        patch(
+            "src.jobs.consumers.agent_run.get_redis",
+            return_value=FakeRedisCtx(redis_mock),
+        ),
+        patch(
+            "src.jobs.consumers.agent_run.transition_execution_attempt",
+            new_callable=AsyncMock,
+        ) as transition_attempt,
     ):
         await consumer.process_message(
             {
@@ -142,11 +148,12 @@ async def test_agent_not_found_returns_early(consumer):
             }
         )
 
-    # Verify the agent query was executed
-    assert mock_session.execute.await_count == 2
-    assert queued_run.status == "failed"
-    assert queued_run.error == "Agent no longer exists"
-    assert mock_session.commit.await_count == 2
+    # Verify the agent query and durable attempt transition were executed.
+    mock_session.execute.assert_called_once()
+    assert running_run.status == "failed"
+    assert running_run.error == "Agent no longer exists"
+    mock_session.commit.assert_awaited_once()
+    transition_attempt.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -158,7 +165,6 @@ async def test_agent_not_found_preserves_terminal_run(consumer):
         {"org_id": str(uuid4()), "input": {"message": "hello"}}
     )
 
-    claim_run = MagicMock(status="queued")
     terminal_run = MagicMock(
         status="timeout",
         output={"text": "scheduler result"},
@@ -168,12 +174,13 @@ async def test_agent_not_found_preserves_terminal_run(consumer):
     missing_agent_result.scalar_one_or_none.return_value = None
 
     mock_session = AsyncMock()
-    mock_session.get.side_effect = [claim_run, terminal_run]
-    mock_session.execute.side_effect = [MagicMock(), missing_agent_result]
+    mock_session.get.return_value = terminal_run
+    mock_session.execute.return_value = missing_agent_result
     mock_session_ctx = AsyncMock()
     mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
     consumer._session_factory = MagicMock(return_value=mock_session_ctx)
+    consumer._claim_durable_run = AsyncMock(return_value=uuid4())
 
     with (
         patch(
@@ -184,6 +191,10 @@ async def test_agent_not_found_preserves_terminal_run(consumer):
             "src.jobs.consumers.agent_run._publish_sync_result",
             AsyncMock(),
         ) as sync_mock,
+        patch(
+            "src.jobs.consumers.agent_run.transition_execution_attempt",
+            AsyncMock(),
+        ) as transition_attempt,
     ):
         await consumer.process_message(
             {
@@ -197,6 +208,7 @@ async def test_agent_not_found_preserves_terminal_run(consumer):
     assert terminal_run.status == "timeout"
     assert terminal_run.error == "scheduler terminalized the run"
     mock_session.commit.assert_awaited_once()
+    transition_attempt.assert_awaited_once()
     sync_mock.assert_awaited_once_with(
         run_id,
         {
@@ -218,13 +230,20 @@ async def test_pre_cancel_updates_existing_queued_run(consumer):
     mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
     consumer._session_factory = MagicMock(return_value=mock_session_ctx)
+    consumer._claim_durable_run = AsyncMock(return_value=uuid4())
 
     redis_mock = AsyncMock()
     redis_mock.get.return_value = json.dumps({"cancelled": True})
 
-    with patch(
-        "src.jobs.consumers.agent_run.get_redis",
-        return_value=FakeRedisCtx(redis_mock),
+    with (
+        patch(
+            "src.jobs.consumers.agent_run.get_redis",
+            return_value=FakeRedisCtx(redis_mock),
+        ),
+        patch(
+            "src.jobs.consumers.agent_run.transition_execution_attempt",
+            AsyncMock(),
+        ) as transition_attempt,
     ):
         await consumer.process_message(
             {
@@ -237,9 +256,10 @@ async def test_pre_cancel_updates_existing_queued_run(consumer):
     assert queued_run.status == "cancelled"
     assert queued_run.completed_at is not None
     mock_session.add.assert_not_called()
-    mock_session.execute.assert_awaited_once()
-    assert mock_session.get.await_count == 2
-    assert mock_session.commit.await_count == 2
+    mock_session.execute.assert_not_awaited()
+    assert mock_session.get.await_count == 1
+    assert mock_session.commit.await_count == 1
+    transition_attempt.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -263,6 +283,7 @@ async def test_late_terminalized_run_is_not_overwritten(
     await db_session.commit()
 
     consumer._session_factory = async_session_factory
+    consumer._claim_durable_run = AgentRunConsumer._claim_durable_run.__get__(consumer)
 
     redis_mock = AsyncMock()
     context_key = f"bifrost:agent_run:{run_id}:context"

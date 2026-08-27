@@ -1,7 +1,7 @@
 """Replace inert event filters with structured criteria and decision evidence.
 
 Revision ID: 20260827_event_criteria
-Revises: 20260826_solution_obligations
+Revises: 20260826_poison_dispositions
 """
 
 from collections.abc import Sequence
@@ -11,7 +11,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "20260827_event_criteria"
-down_revision: str | Sequence[str] = "20260826_solution_obligations"
+down_revision: str | Sequence[str] = "20260826_poison_dispositions"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

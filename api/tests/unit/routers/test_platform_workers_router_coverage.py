@@ -1,6 +1,7 @@
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -133,6 +134,19 @@ async def test_list_pools_merges_registration_and_heartbeat_runtime_fields():
                 "requirements_total": 8,
                 "memory_current_bytes": 10,
                 "memory_max_bytes": 100,
+                "available_slots": 4,
+                "saturation_ratio": 0.2,
+                "memory_utilization": 0.1,
+                "estimated_drain_seconds": 12,
+                "health_reasons": ["requirements_incomplete"],
+                "admission": {
+                    "attempts": 5,
+                    "successes": 4,
+                    "rejections": {"memory_pressure": 1},
+                    "wait_seconds_total": 2,
+                    "wait_seconds_max": 1,
+                    "wait_seconds_average": 0.4,
+                },
             }
         ),
         "bifrost:pool:worker-b:heartbeat": "{bad-json",
@@ -152,6 +166,9 @@ async def test_list_pools_merges_registration_and_heartbeat_runtime_fields():
     assert first.configured_capacity == 5
     assert first.max_workers == 6
     assert first.requirements_installed == 7
+    assert first.available_slots == 4
+    assert first.admission.rejections == {"memory_pressure": 1}
+    assert first.health_reasons == ["requirements_incomplete"]
     assert result.pools[1].worker_id == "worker-b"
 
 
@@ -172,6 +189,9 @@ async def test_get_pool_details_parses_processes_and_raises_for_missing_pool():
             {
                 "timestamp": "now",
                 "configured_capacity": 2,
+                "available_slots": 0,
+                "saturation_ratio": 1,
+                "health_reasons": ["capacity_saturated"],
                 "runtime": "python",
                 "processes": [
                     {
@@ -197,6 +217,8 @@ async def test_get_pool_details_parses_processes_and_raises_for_missing_pool():
     assert result.processes[0].process_id == "process-1"
     assert result.processes[0].current_execution_id == "exec-1"
     assert result.processes[0].is_alive is True
+    assert result.available_slots == 0
+    assert result.health_reasons == ["capacity_saturated"]
 
     with patch.object(workers, "_get_redis", AsyncMock(return_value=_FakeRedis())):
         with pytest.raises(HTTPException) as exc:
@@ -212,7 +234,21 @@ async def test_recycle_process_and_all_publish_commands():
         "bifrost:pool:worker-a:heartbeat": json.dumps({"pool_size": 3})
     }
 
-    with patch.object(workers, "_get_redis", AsyncMock(return_value=redis)):
+    db = AsyncMock()
+    db_context = AsyncMock()
+    db_context.__aenter__.return_value = db
+    command_ids = [uuid4(), uuid4()]
+    create_command = AsyncMock(
+        side_effect=[SimpleNamespace(id=value) for value in command_ids]
+    )
+    with patch.object(
+        workers, "_get_redis", AsyncMock(return_value=redis)
+    ), patch.object(
+        workers, "get_db_context", return_value=db_context
+    ), patch(
+        "src.services.worker_control_commands.create_worker_control_command",
+        create_command,
+    ):
         process_result = await workers.recycle_process(
             "worker-a",
             123,

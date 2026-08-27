@@ -35,7 +35,7 @@ def make_consumer() -> WorkflowExecutionConsumer:
         consumer = WorkflowExecutionConsumer()
 
     consumer._redis_client = AsyncMock()
-    consumer._claim_durable_execution = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    consumer._claim_durable_execution = AsyncMock(return_value=uuid4())  # type: ignore[method-assign]
     consumer._release_durable_execution_claim = AsyncMock()  # type: ignore[method-assign]
     consumer._fail_missing_pending_execution = AsyncMock(return_value=None)  # type: ignore[method-assign]
     return consumer
@@ -511,13 +511,21 @@ async def test_durable_execution_claim_serializes_with_publisher(
         yield db
 
     execution_id = str(uuid4())
+    attempt = SimpleNamespace(id=uuid4())
     with patch(
         "src.core.database.get_db_context",
         side_effect=db_context,
+    ), patch(
+        "src.jobs.consumers.workflow_execution.start_execution_attempt",
+        new=AsyncMock(return_value=attempt),
     ):
-        result = await consumer._claim_durable_execution(execution_id)
+        result = await consumer._claim_durable_execution(
+            execution_id,
+            organization_id=None,
+            message_id=None,
+        )
 
-    assert result is claimable
+    assert (result is not None) is claimable
     assert "bifrost:workflow-execution:" in str(db.execute.await_args.args[0])
     if claimable:
         assert row.status == ExecutionStatus.RUNNING
@@ -657,13 +665,38 @@ async def test_process_message_retries_pool_admission_memory_pressure_without_de
             )
 
     consumer._redis_client.delete_pending_execution.assert_not_called()
-    consumer._release_durable_execution_claim.assert_awaited_once_with(execution_id)  # type: ignore[attr-defined]
+    consumer._release_durable_execution_claim.assert_awaited_once()  # type: ignore[attr-defined]
+    assert consumer._release_durable_execution_claim.await_args.args[0] == execution_id  # type: ignore[attr-defined]
     create_execution.assert_awaited_once()
     update_execution.assert_not_awaited()
     consumer._pool.route_execution.assert_awaited_once()
     publish_execution_update.assert_awaited_once()
     assert publish_execution_update.await_args is not None
     assert publish_execution_update.await_args.args[:2] == (execution_id, "Running")
+
+
+@pytest.mark.asyncio
+async def test_process_message_releases_claim_when_redis_claim_persistence_fails() -> None:
+    consumer = make_consumer()
+    execution_id = str(uuid4())
+    attempt_id = uuid4()
+    consumer._claim_durable_execution.return_value = attempt_id  # type: ignore[attr-defined]
+    consumer._redis_client.get_pending_execution.return_value = pending_context()
+    consumer._redis_client.update_pending_execution.side_effect = RedisConnectionError(
+        "redis unavailable"
+    )
+
+    with patch(
+        "src.services.execution.queue_tracker.remove_from_queue",
+        new_callable=AsyncMock,
+    ):
+        with pytest.raises(RetryableConsumerError, match="persist durable execution claim"):
+            await consumer.process_message({"execution_id": execution_id})
+
+    consumer._release_durable_execution_claim.assert_awaited_once_with(  # type: ignore[attr-defined]
+        execution_id,
+        attempt_id,
+    )
 
 
 @pytest.mark.asyncio
@@ -789,15 +822,21 @@ async def test_release_execution_claim_preserves_concurrent_terminal_state(
     async def db_context():
         yield db
 
-    with patch("src.core.database.get_db_context", side_effect=db_context):
-        await consumer._release_durable_execution_claim(str(uuid4()))
+    with patch(
+        "src.core.database.get_db_context", side_effect=db_context
+    ), patch(
+        "src.jobs.consumers.workflow_execution.transition_execution_attempt",
+        new=AsyncMock(),
+    ):
+        await consumer._release_durable_execution_claim(str(uuid4()), uuid4())
 
     if released:
         assert row.status == ExecutionStatus.PENDING
         db.commit.assert_awaited_once()
     else:
         assert row.status == ExecutionStatus(status)
-        db.commit.assert_not_awaited()
+        # The attempt is terminalized even if a concurrent cancellation won.
+        db.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -809,6 +848,7 @@ async def test_process_message_acknowledges_recorded_setup_failure_as_domain_han
     consumer._redis_client.get_pending_execution.return_value = pending_context()
     consumer._redis_client.delete_pending_execution = AsyncMock()
     consumer._redis_client.push_result = AsyncMock()
+    consumer._finish_attempt = AsyncMock()  # type: ignore[method-assign]
 
     with (
         patch(
@@ -846,6 +886,7 @@ async def test_process_message_acknowledges_recorded_setup_failure_as_domain_han
         error_type="ValueError",
         duration_ms=pytest.approx(0, abs=1000),
     )
+    consumer._finish_attempt.assert_awaited_once()
 
 
 @pytest.mark.asyncio

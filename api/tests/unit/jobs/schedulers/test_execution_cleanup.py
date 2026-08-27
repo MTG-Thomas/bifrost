@@ -327,6 +327,11 @@ class _QueryResult:
         assert self._tuple_rows
         return self._rows
 
+    def scalar_one_or_none(self):
+        assert not self._tuple_rows
+        assert len(self._rows) <= 1
+        return self._rows[0] if self._rows else None
+
 
 class _CleanupSession:
     def __init__(self, results):
@@ -372,6 +377,7 @@ async def test_cleanup_sweeps_overdue_scheduled_and_null_start_running_rows() ->
             _QueryResult([scheduled]),
             _QueryResult([]),
             _QueryResult([(running, 1800)], tuple_rows=True),
+            _QueryResult([]),
             _QueryResult([]),
         ]
     )

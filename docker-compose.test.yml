@@ -396,6 +396,7 @@ services:
       - ./api/fuzz:/app/fuzz:ro
       - ./api/scripts:/app/scripts:ro  # Scripts for migration utilities
       - ./api/tests:/app/tests:ro
+      - ./docs/architecture/execution-operations.md:/app/docs/architecture/execution-operations.md:ro
       - ./scripts:/repo/scripts:ro
       - ./api/alembic:/app/alembic:ro
       - ./api/alembic.ini:/app/alembic.ini:ro
@@ -497,6 +498,18 @@ services:
         condition: service_healthy
     profiles:
       - test
+
+  client-check-runner:
+    image: bifrost-test-client-check:latest
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+      target: ci
+      args:
+        VITE_BIFROST_VERSION: test
+    security_opt: ["no-new-privileges:true"]
+    profiles:
+      - client-check
 
   # =============================================================================
   # Client E2E Testing Services (started with --profile client)
