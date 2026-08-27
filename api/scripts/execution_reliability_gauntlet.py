@@ -7,7 +7,6 @@ environment and database name are unmistakably test-scoped.
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import json
 import multiprocessing
@@ -29,6 +28,8 @@ from src.jobs.rabbitmq import (
     publish_message,
     rabbitmq,
 )
+
+REPORT_PATH = Path("/tmp/bifrost/execution-reliability-gauntlet.json")
 
 
 @dataclass
@@ -172,6 +173,7 @@ async def _delete_topology(queue_name: str) -> None:
         try:
             await channel.exchange_delete(f"{queue_name}-dlx", if_unused=False)
         except aio_pika.exceptions.ChannelClosed:
+            # A missing exchange closes the passive cleanup channel; cleanup is done.
             pass
     finally:
         await connection.close()
@@ -444,7 +446,7 @@ async def _graceful_shutdown(run_id: str, queue_name: str) -> dict[str, Any]:
     if drain.done():
         raise AssertionError("consumer drain did not wait for active work")
     release.set()
-    await drain
+    await asyncio.wait_for(drain, timeout=6)
     counts = await _counts(run_id, scenario)
     snapshot = await _queue_snapshot(queue_name)
     if counts.get("effects") != 1 or snapshot[queue_name]["ready"] != 0:
@@ -454,7 +456,7 @@ async def _graceful_shutdown(run_id: str, queue_name: str) -> dict[str, Any]:
     return {"counts": counts, "queues": snapshot}
 
 
-async def run(output: Path) -> dict[str, Any]:
+async def run() -> dict[str, Any]:
     run_id = uuid4().hex
     queue_prefix = f"bifrost-reliability-{run_id}"
     _require_safe_environment(queue_prefix)
@@ -520,8 +522,8 @@ async def run(output: Path) -> dict[str, Any]:
         "results": [asdict(result) for result in results],
         "status": "failed" if failure is not None else "passed",
     }
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(
+    REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    REPORT_PATH.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     print(json.dumps(report, indent=2, sort_keys=True))
@@ -531,10 +533,7 @@ async def run(output: Path) -> dict[str, Any]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args()
-    asyncio.run(run(args.output))
+    asyncio.run(run())
 
 
 if __name__ == "__main__":

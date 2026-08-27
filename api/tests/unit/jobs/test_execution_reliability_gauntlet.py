@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 
 import pytest
 
@@ -49,6 +50,9 @@ def test_gauntlet_has_no_production_activation_surface() -> None:
     assert "workflow-executions-poison" not in source
     assert "replay" not in source.lower()
     assert "discard" not in source.lower()
+    assert gauntlet.REPORT_PATH == Path(
+        "/tmp/bifrost/execution-reliability-gauntlet.json"
+    )
 
 
 def test_gauntlet_declares_all_high_risk_scenarios() -> None:

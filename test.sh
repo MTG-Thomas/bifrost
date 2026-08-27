@@ -374,7 +374,7 @@ cmd_reliability() {
     local report="$LOG_DIR/execution-reliability-gauntlet.json"
     chmod 777 "$LOG_DIR" 2>/dev/null || true
     docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner \
-        python -m scripts.execution_reliability_gauntlet --output /tmp/bifrost/execution-reliability-gauntlet.json
+        python -m scripts.execution_reliability_gauntlet
     test -s "$report"
     echo "Reliability report: $report"
 }
