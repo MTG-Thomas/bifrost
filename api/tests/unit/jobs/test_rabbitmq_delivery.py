@@ -389,14 +389,20 @@ async def test_retry_jitter_is_stable_and_dependency_circuit_advances_stage() ->
 
 
 @pytest.mark.asyncio
-async def test_publish_poison_routes_to_dlx_with_reason_headers() -> None:
+async def test_publish_poison_routes_to_dlx_with_reason_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BIFROST_WORKER_IMAGE_REF", "worker@sha256:candidate")
+    monkeypatch.setenv("BIFROST_WORKER_LANE", "isolated-canary")
     consumer = BasePublishConsumer()
     channel = FakeChannel()
     consumer._channel = channel  # type: ignore[assignment]
     message = FakeMessage(json.dumps({"ok": True}), headers={"x-retry-count": 2})
     context = consumer._build_context(message)
 
-    await consumer._publish_poison(message, context, reason="bad forever")
+    await consumer._publish_poison(
+        message, context, reason="bad forever", error_type="PermanentFailure"
+    )
 
     channel.declare_exchange.assert_awaited_once()
     channel.poison_exchange.publish.assert_awaited_once()
@@ -406,6 +412,9 @@ async def test_publish_poison_routes_to_dlx_with_reason_headers() -> None:
     assert poison_call.kwargs == {"routing_key": "unit-queue"}
     assert published.headers["x-retry-count"] == 2
     assert published.headers["x-poison-reason"] == "bad forever"
+    assert published.headers["x-poison-error-type"] == "PermanentFailure"
+    assert published.headers["x-worker-image-ref"] == "worker@sha256:candidate"
+    assert published.headers["x-worker-lane"] == "isolated-canary"
     assert "x-poisoned-at" in published.headers
 
 

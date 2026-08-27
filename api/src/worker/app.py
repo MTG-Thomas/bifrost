@@ -51,6 +51,49 @@ logging.getLogger("src.jobs.consumers.workflow_execution").setLevel(logging.DEBU
 
 logger = logging.getLogger(__name__)
 
+_CONSUMER_NAMES = (
+    "workflow",
+    "package-install",
+    "agent-run",
+    "summarize",
+    "summarize-backfill",
+    "tune-chat",
+)
+
+
+def consumer_factories():
+    """Build factories lazily so configuration and test patches take effect."""
+    def workflow_consumer():
+        queue_name = os.environ.get(
+            "BIFROST_WORKFLOW_QUEUE_NAME", "workflow-executions"
+        )
+        if queue_name == "workflow-executions":
+            return WorkflowExecutionConsumer()
+        return WorkflowExecutionConsumer(queue_name=queue_name)
+
+    return {
+        "workflow": workflow_consumer,
+        "package-install": PackageInstallConsumer,
+        "agent-run": AgentRunConsumer,
+        "summarize": SummarizeConsumer,
+        "summarize-backfill": SummarizeBackfillConsumer,
+        "tune-chat": TuneChatConsumer,
+    }
+
+
+def configured_consumer_names() -> list[str]:
+    """Return the explicit worker consumer set, failing closed on typos."""
+    raw = os.environ.get("BIFROST_WORKER_CONSUMERS", "").strip()
+    if not raw:
+        return list(_CONSUMER_NAMES)
+    names = [name.strip() for name in raw.split(",") if name.strip()]
+    unknown = sorted(set(names) - set(_CONSUMER_NAMES))
+    if unknown:
+        raise ValueError(f"Unknown BIFROST_WORKER_CONSUMERS values: {unknown}")
+    if not names:
+        raise ValueError("BIFROST_WORKER_CONSUMERS must select at least one consumer")
+    return names
+
 
 class Worker:
     """
@@ -142,14 +185,8 @@ class Worker:
     async def _start_consumers(self) -> None:
         """Start all RabbitMQ consumers."""
         # Create consumer instances
-        self._consumers = [
-            WorkflowExecutionConsumer(),
-            PackageInstallConsumer(),
-            AgentRunConsumer(),
-            SummarizeConsumer(),
-            SummarizeBackfillConsumer(),
-            TuneChatConsumer(),
-        ]
+        factories = consumer_factories()
+        self._consumers = [factories[name]() for name in configured_consumer_names()]
 
         # Start each consumer
         for consumer in self._consumers:

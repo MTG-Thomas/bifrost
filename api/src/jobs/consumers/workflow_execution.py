@@ -22,6 +22,7 @@ Execution Model:
 """
 
 import asyncio
+from dataclasses import replace
 import logging
 import os
 import socket
@@ -85,15 +86,19 @@ class WorkflowExecutionConsumer(BaseConsumer):
     Full execution context is read from Redis pending execution.
     """
 
-    def __init__(self):
+    def __init__(self, *, queue_name: str = QUEUE_NAME):
         from src.config import get_settings
         from src.services.execution.process_pool import get_process_pool
 
         settings = get_settings()
+        policy = broker_execution_policies()[QUEUE_NAME]
+        if queue_name != QUEUE_NAME:
+            policy = replace(policy, identifier=queue_name)
+        self._workflow_operations_policy = policy
         super().__init__(
-            queue_name=QUEUE_NAME,
+            queue_name=queue_name,
             prefetch_count=workflow_prefetch_count(settings),
-            operations_policy=broker_execution_policies()[QUEUE_NAME],
+            operations_policy=policy,
         )
         self._redis_client = get_redis_client()
 
@@ -1351,9 +1356,9 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 logical_job_type="workflow_execution",
                 logical_job_id=execution_uuid,
                 organization_id=organization_id,
-                policy=broker_execution_policies()[QUEUE_NAME],
+                policy=self._workflow_operations_policy,
                 status="running",
-                queue_name=QUEUE_NAME,
+                queue_name=self.queue_name,
                 message_id=message_id,
                 worker_id=f"{socket.gethostname()}:{os.getpid()}",
                 process_id=os.getpid(),

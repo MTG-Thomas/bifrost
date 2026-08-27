@@ -33,6 +33,47 @@ def settings() -> SimpleNamespace:
     return SimpleNamespace(environment="test")
 
 
+def test_configured_consumers_default_to_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BIFROST_WORKER_CONSUMERS", raising=False)
+    assert worker_app.configured_consumer_names() == list(worker_app._CONSUMER_NAMES)
+
+
+def test_configured_consumers_allow_isolated_workflow(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BIFROST_WORKER_CONSUMERS", "workflow")
+    assert worker_app.configured_consumer_names() == ["workflow"]
+
+
+def test_configured_consumers_fail_closed_on_typo(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BIFROST_WORKER_CONSUMERS", "workflow,typo")
+    with pytest.raises(ValueError, match="typo"):
+        worker_app.configured_consumer_names()
+
+
+@pytest.mark.asyncio
+async def test_start_consumers_isolates_workflow_canary_queue(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: SimpleNamespace,
+) -> None:
+    monkeypatch.setattr(worker_app, "get_settings", lambda: settings)
+    monkeypatch.setenv("BIFROST_WORKER_CONSUMERS", "workflow")
+    monkeypatch.setenv("BIFROST_WORKFLOW_QUEUE_NAME", "workflow-executions-canary")
+    created: list[FakeConsumer] = []
+
+    def workflow_factory(*, queue_name: str) -> FakeConsumer:
+        consumer = FakeConsumer(queue_name)
+        created.append(consumer)
+        return consumer
+
+    monkeypatch.setattr(worker_app, "WorkflowExecutionConsumer", workflow_factory)
+
+    worker = worker_app.Worker()
+    await worker._start_consumers()
+
+    assert [consumer.queue_name for consumer in created] == [
+        "workflow-executions-canary"
+    ]
+
+
 @pytest.mark.asyncio
 async def test_start_initializes_db_starts_consumers_and_waits_for_shutdown(
     monkeypatch: pytest.MonkeyPatch,
