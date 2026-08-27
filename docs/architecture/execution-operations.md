@@ -411,6 +411,32 @@ restore the inert default. There is intentionally no setting, environment
 variable, REST route, or CLI switch that can arm failure injection in a running
 deployment.
 
+## Execution reliability gauntlet
+
+`./test.sh reliability` complements the deterministic unit checkpoints with a
+disposable real-service failure matrix. It runs only when
+`BIFROST_ENVIRONMENT=testing`, requires a PostgreSQL database whose name ends in
+`_test`, and creates RabbitMQ queues beneath a unique
+`bifrost-reliability-<run-id>` prefix. It cannot target registered production
+queues and has no replay or discard operation.
+
+The gauntlet exercises five high-risk boundaries against real RabbitMQ, Redis,
+and PostgreSQL:
+
+1. duplicate delivery is fenced by one durable idempotency identity;
+2. a failed retry publication requeues the original before a delayed retry;
+3. abrupt worker death after a durable claim redelivers without repeating the
+   durable effect;
+4. prefetch-based admission keeps a saturated consumer at bounded concurrency;
+5. graceful drain waits for active work and acknowledges it before closing.
+
+Each scenario captures queue state before and after, reconciles durable claim
+and effect counts, rejects unexpected poison, and writes
+`execution-reliability-gauntlet.json`. Cleanup deletes only the run's generated
+queues and Redis marker, then drops the disposable PostgreSQL table. The
+scheduled/manual `Execution Reliability Gauntlet` workflow uploads the report
+for review.
+
 The ledger contains identifiers and bounded diagnostics, never execution
 payloads, results, logs, credentials, or secrets. Tenant-scoped read surfaces
 must authorize against the underlying domain authority; the nullable

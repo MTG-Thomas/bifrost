@@ -13,6 +13,7 @@
 #   ./test.sh e2e-smoke                 PR-gating backend e2e smoke tests.
 #   ./test.sh e2e                       Backend e2e tests.
 #   ./test.sh all                       All backend tests, including slow tests.
+#   ./test.sh reliability               Real-service execution reliability gauntlet.
 #   ./test.sh tests/path/... [args]     Pass through to pytest.
 #
 # Quality checks:
@@ -368,6 +369,15 @@ cmd_unit() { run_pytest tests/ --ignore=tests/e2e/ -m "not slow" -v "$@"; }
 cmd_unit_all() { run_pytest tests/ --ignore=tests/e2e/ -v "$@"; }
 cmd_e2e()  { run_pytest tests/e2e/ -v "$@"; }
 cmd_all()  { run_pytest tests/ -v "$@"; }
+cmd_reliability() {
+    require_stack_up
+    local report="$LOG_DIR/execution-reliability-gauntlet.json"
+    chmod 777 "$LOG_DIR" 2>/dev/null || true
+    docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner \
+        python -m scripts.execution_reliability_gauntlet --output /tmp/bifrost/execution-reliability-gauntlet.json
+    test -s "$report"
+    echo "Reliability report: $report"
+}
 cmd_coverage() {
     local target="${1:-coverage.xml}"
     local basename_target
@@ -801,6 +811,7 @@ case "$1" in
     e2e-smoke) shift; cmd_e2e_smoke "$@" ;;
     e2e) shift; cmd_e2e "$@" ;;
     all) shift; cmd_all "$@" ;;
+    reliability) shift; cmd_reliability "$@" ;;
     quality) shift; cmd_quality "$@" ;;
     client) shift; cmd_client "$@" ;;
     mcp) shift; cmd_mcp "$@" ;;
