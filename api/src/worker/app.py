@@ -93,6 +93,11 @@ class Worker:
             from sqlalchemy.orm import configure_mappers
 
             configure_mappers()
+            from src.services.execution_attempts import (
+                require_execution_operations_schema,
+            )
+
+            await require_execution_operations_schema()
             logger.info("Database connection established")
 
             # Initialize and start RabbitMQ consumers

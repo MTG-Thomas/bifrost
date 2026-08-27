@@ -1,5 +1,6 @@
 """Focused contracts for the shared durable execution-attempt ledger."""
 
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -9,9 +10,33 @@ import pytest
 
 from src.jobs.execution_policy import broker_execution_policies
 from src.services.execution_attempts import (
+    REQUIRED_EXECUTION_OPERATIONS_TABLES,
+    require_execution_operations_schema,
     start_execution_attempt,
     transition_execution_attempt,
 )
+
+
+@pytest.mark.asyncio
+async def test_worker_schema_check_fails_before_consuming_missing_tables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = AsyncMock()
+    result = MagicMock()
+    result.all.return_value = [
+        (name, name if name != "execution_attempts" else None)
+        for name in REQUIRED_EXECUTION_OPERATIONS_TABLES
+    ]
+    db.execute.return_value = result
+
+    @asynccontextmanager
+    async def db_context():
+        yield db
+
+    monkeypatch.setattr("src.core.database.get_db_context", db_context)
+
+    with pytest.raises(RuntimeError, match="missing tables: execution_attempts"):
+        await require_execution_operations_schema()
 
 
 @pytest.mark.asyncio
