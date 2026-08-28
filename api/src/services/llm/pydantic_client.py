@@ -141,9 +141,12 @@ class PydanticAIClient(BaseLLMClient):
 
     def _model_settings(self, max_tokens: int | None) -> ModelSettings:
         resolved_max_tokens = request_max_tokens(self.config, max_tokens)
-        if resolved_max_tokens is None:
-            return ModelSettings()
-        return ModelSettings(max_tokens=resolved_max_tokens)
+        settings = ModelSettings()
+        if resolved_max_tokens is not None:
+            settings["max_tokens"] = resolved_max_tokens
+        if self.provider_name == "openai":
+            settings["openai_store"] = False
+        return settings
 
     @staticmethod
     def _request_parameters(
