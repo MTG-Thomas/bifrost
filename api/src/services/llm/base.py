@@ -112,7 +112,6 @@ class LLMConfig:
     model: str
     api_key: str
     endpoint: str | None = None
-    api_transport: Literal["auto", "chat_completions", "responses"] = "auto"
     # Optional parameters
     extra_params: dict[str, Any] = field(default_factory=dict)
 

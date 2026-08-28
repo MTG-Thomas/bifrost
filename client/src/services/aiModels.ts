@@ -5,8 +5,6 @@ export type AIProviderKind =
 	components["schemas"]["AIProviderConnectionResponse"]["provider"];
 export type AIModelAssignmentKey =
 	components["schemas"]["AIModelAssignmentResponse"]["assignment_key"];
-export type OpenAITransport =
-	components["schemas"]["AIModelProfileResponse"]["api_transport"];
 export type ModelCapabilities = components["schemas"]["ModelCapabilities"];
 export type AIProviderConnection =
 	components["schemas"]["AIProviderConnectionResponse"];

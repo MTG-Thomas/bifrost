@@ -217,7 +217,6 @@ class AIModelService:
             model=profile.model,
             api_key=api_key,
             endpoint=connection.endpoint,
-            api_transport=profile.api_transport,
         )
 
     async def list_chat_profiles(self) -> tuple[list[AIModelProfile], UUID | None]:
@@ -454,7 +453,6 @@ class AIModelService:
         name: str,
         connection_id: UUID,
         model: str,
-        api_transport: str = "auto",
         capabilities: ModelCapabilities | None,
         enabled_for_chat: bool,
     ) -> AIModelProfile:
@@ -473,7 +471,6 @@ class AIModelService:
             name=trimmed_name,
             connection_id=connection_id,
             model=trimmed_model,
-            api_transport=api_transport,
             capabilities=capabilities.model_dump(mode="json") if capabilities else None,
             enabled_for_chat=enabled_for_chat or is_first_profile,
         )
@@ -506,7 +503,6 @@ class AIModelService:
         name: str | None = None,
         connection_id: UUID | None = None,
         model: str | None = None,
-        api_transport: str | None = None,
         capabilities: ModelCapabilities | None = None,
         capabilities_provided: bool = False,
         enabled_for_chat: bool | None = None,
@@ -526,8 +522,6 @@ class AIModelService:
             if not trimmed_model:
                 raise ValueError("Model id is required")
             profile.model = trimmed_model
-        if api_transport is not None:
-            profile.api_transport = api_transport
         if capabilities_provided:
             profile.capabilities = (
                 capabilities.model_dump(mode="json") if capabilities else None

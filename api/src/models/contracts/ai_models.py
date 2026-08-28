@@ -10,7 +10,6 @@ from src.models.contracts.artifacts import ModelCapabilities
 from src.models.contracts.llm import LLMModelInfo
 
 AIProviderKind = Literal["openai", "anthropic", "google", "openrouter", "openai_compatible"]
-OpenAITransport = Literal["auto", "chat_completions", "responses"]
 AIModelAssignmentKey = Literal[
     "primary",
     "summarization",
@@ -59,7 +58,6 @@ class AIModelProfileCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     connection_id: UUID
     model: str = Field(..., min_length=1, max_length=200)
-    api_transport: OpenAITransport = "auto"
     capabilities: ModelCapabilities | None = None
     enabled_for_chat: bool = False
 
@@ -68,7 +66,6 @@ class AIModelProfileUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     connection_id: UUID | None = None
     model: str | None = Field(default=None, min_length=1, max_length=200)
-    api_transport: OpenAITransport | None = None
     capabilities: ModelCapabilities | None = None
     enabled_for_chat: bool | None = None
 
@@ -91,7 +88,6 @@ class AIModelProfileResponse(BaseModel):
     name: str
     connection_id: UUID
     model: str
-    api_transport: OpenAITransport
     capabilities: ModelCapabilities | None = None
     enabled_for_chat: bool
     connection: AIProviderConnectionSummary
