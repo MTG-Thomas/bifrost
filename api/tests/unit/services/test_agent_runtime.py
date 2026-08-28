@@ -182,7 +182,37 @@ def test_openai_transport_selects_responses_for_gpt5_auto() -> None:
         endpoint="https://foundry.example.test/openai/v1",
     )
 
+    model = create_agent_model(config)
+
+    assert isinstance(model, OpenAIResponsesModel)
+    assert model.settings.get("openai_store") is False
+
+
+def test_openai_transport_selects_explicit_responses() -> None:
+    from pydantic_ai.models.openai import OpenAIResponsesModel
+
+    config = LLMConfig(
+        provider="openai",
+        model="legacy-model",
+        api_key="test-key",
+        endpoint="https://foundry.example.test/openai/v1",
+        api_transport="responses",
+    )
+
     assert isinstance(create_agent_model(config), OpenAIResponsesModel)
+
+
+def test_openai_transport_auto_preserves_legacy_chat_completions() -> None:
+    from pydantic_ai.models.openai import OpenAIChatModel
+
+    config = LLMConfig(
+        provider="openai",
+        model="gpt-4o-mini",
+        api_key="test-key",
+        endpoint="https://foundry.example.test/openai/v1",
+    )
+
+    assert isinstance(create_agent_model(config), OpenAIChatModel)
 
 
 def test_openai_transport_preserves_explicit_chat_completions() -> None:

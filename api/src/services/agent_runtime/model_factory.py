@@ -156,7 +156,11 @@ def create_agent_model(config: LLMConfig, *, model: str | None = None) -> Model:
             and model_name.startswith(("gpt-5", "o1", "o3", "o4"))
         )
         if use_responses:
-            return OpenAIResponsesModel(model_name, provider=provider)
+            return OpenAIResponsesModel(
+                model_name,
+                provider=provider,
+                settings={"openai_store": False},
+            )
         return OpenAIChatModel(model_name, provider=provider)
 
     if config.provider == "anthropic":

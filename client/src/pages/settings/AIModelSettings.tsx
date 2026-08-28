@@ -170,6 +170,10 @@ function providerLabel(provider: AIProviderKind): string {
 	);
 }
 
+function supportsOpenAITransport(provider?: AIProviderKind): boolean {
+	return provider === "openai" || provider === "openai_compatible";
+}
+
 function profileLine(profile: AIModelProfile): string {
 	return `${profile.connection.name} · ${profile.model}`;
 }
@@ -262,6 +266,9 @@ export function AIModelSettings() {
 	});
 
 	const providers = providersQuery.data ?? [];
+	const profileCreateProvider = providers.find(
+		(provider) => provider.id === profileConnectionId,
+	);
 	const profiles = useMemo(
 		() => profilesQuery.data ?? [],
 		[profilesQuery.data],
@@ -504,7 +511,13 @@ export function AIModelSettings() {
 				name: edit.name.trim(),
 				connection_id: edit.connectionId,
 				model: edit.model.trim(),
-				api_transport: edit.apiTransport,
+				...(supportsOpenAITransport(
+					providers.find(
+						(provider) => provider.id === edit.connectionId,
+					)?.provider,
+				)
+					? { api_transport: edit.apiTransport }
+					: {}),
 			}),
 		onSuccess: () => {
 			setProfileEdit(null);
@@ -1328,37 +1341,41 @@ export function AIModelSettings() {
 								onValueChange={setProfileModel}
 							/>
 						</div>
-						<div className="space-y-2">
-							<Label htmlFor="ai-profile-transport">
-								OpenAI API
-							</Label>
-							<Select
-								value={profileTransport}
-								onValueChange={(value) =>
-									setProfileTransport(
-										value as OpenAITransport,
-									)
-								}
-							>
-								<SelectTrigger id="ai-profile-transport">
-									<SelectValue />
-								</SelectTrigger>
-								<SelectContent>
-									{OPENAI_TRANSPORTS.map((transport) => (
-										<SelectItem
-											key={transport.value}
-											value={transport.value}
-										>
-											{transport.label}
-										</SelectItem>
-									))}
-								</SelectContent>
-							</Select>
-							<p className="text-xs text-muted-foreground">
-								Auto uses Responses for GPT-5 and reasoning
-								model families.
-							</p>
-						</div>
+						{supportsOpenAITransport(
+							profileCreateProvider?.provider,
+						) && (
+							<div className="space-y-2">
+								<Label htmlFor="ai-profile-transport">
+									OpenAI API
+								</Label>
+								<Select
+									value={profileTransport}
+									onValueChange={(value) =>
+										setProfileTransport(
+											value as OpenAITransport,
+										)
+									}
+								>
+									<SelectTrigger id="ai-profile-transport">
+										<SelectValue />
+									</SelectTrigger>
+									<SelectContent>
+										{OPENAI_TRANSPORTS.map((transport) => (
+											<SelectItem
+												key={transport.value}
+												value={transport.value}
+											>
+												{transport.label}
+											</SelectItem>
+										))}
+									</SelectContent>
+								</Select>
+								<p className="text-xs text-muted-foreground">
+									Auto uses Responses for GPT-5 and reasoning
+									model families.
+								</p>
+							</div>
+						)}
 						<label className="flex items-center justify-between gap-4 rounded-lg border px-3 py-2.5 text-sm">
 							<span>
 								<span className="flex items-center gap-2">
@@ -1399,7 +1416,11 @@ export function AIModelSettings() {
 									name: profileName.trim(),
 									connection_id: profileConnectionId,
 									model: profileModel.trim(),
-									api_transport: profileTransport,
+									...(supportsOpenAITransport(
+										profileCreateProvider?.provider,
+									)
+										? { api_transport: profileTransport }
+										: {}),
 									capabilities: null,
 									enabled_for_chat: profileChatEnabled,
 								})
@@ -1758,35 +1779,45 @@ export function AIModelSettings() {
 									})
 								}
 							/>
-							<div className="space-y-2">
-								<Label htmlFor="edit-profile-transport">
-									OpenAI API
-								</Label>
-								<Select
-									value={profileEdit.apiTransport}
-									onValueChange={(value) =>
-										setProfileEdit({
-											...profileEdit,
-											apiTransport:
-												value as OpenAITransport,
-										})
-									}
-								>
-									<SelectTrigger id="edit-profile-transport">
-										<SelectValue />
-									</SelectTrigger>
-									<SelectContent>
-										{OPENAI_TRANSPORTS.map((transport) => (
-											<SelectItem
-												key={transport.value}
-												value={transport.value}
-											>
-												{transport.label}
-											</SelectItem>
-										))}
-									</SelectContent>
-								</Select>
-							</div>
+							{supportsOpenAITransport(
+								providers.find(
+									(provider) =>
+										provider.id ===
+										profileEdit.connectionId,
+								)?.provider,
+							) && (
+								<div className="space-y-2">
+									<Label htmlFor="edit-profile-transport">
+										OpenAI API
+									</Label>
+									<Select
+										value={profileEdit.apiTransport}
+										onValueChange={(value) =>
+											setProfileEdit({
+												...profileEdit,
+												apiTransport:
+													value as OpenAITransport,
+											})
+										}
+									>
+										<SelectTrigger id="edit-profile-transport">
+											<SelectValue />
+										</SelectTrigger>
+										<SelectContent>
+											{OPENAI_TRANSPORTS.map(
+												(transport) => (
+													<SelectItem
+														key={transport.value}
+														value={transport.value}
+													>
+														{transport.label}
+													</SelectItem>
+												),
+											)}
+										</SelectContent>
+									</Select>
+								</div>
+							)}
 						</div>
 					)}
 					<DialogFooter>
