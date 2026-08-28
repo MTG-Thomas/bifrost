@@ -172,6 +172,24 @@ def test_create_agent_model_supports_every_configured_provider(
         assert provider_client.max_retries == 0
 
 
+def test_openai_uses_pydantic_default_model() -> None:
+    from pydantic_ai.models.openai import OpenAIResponsesModel
+
+    config = LLMConfig(
+        provider="openai",
+        model="gpt-5.6-luna",
+        api_key="test-key",
+        endpoint="https://foundry.example.test/openai/v1",
+    )
+
+    model = create_agent_model(config)
+
+    assert isinstance(model, OpenAIResponsesModel)
+    assert agent_model_settings(config, max_tokens=None, session_id="run-1").get(
+        "openai_store"
+    ) is False
+
+
 def test_create_agent_model_uses_native_openrouter_adapter() -> None:
     from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 
@@ -215,7 +233,9 @@ def test_runtime_uses_provider_output_defaults_except_when_api_requires_limit() 
     openai = LLMConfig(provider="openai", model="gpt-5", api_key="test-key")
     anthropic = LLMConfig(provider="anthropic", model="claude-sonnet", api_key="test-key")
 
-    assert agent_model_settings(openai, max_tokens=None, session_id="run-123") == {}
+    assert agent_model_settings(openai, max_tokens=None, session_id="run-123") == {
+        "openai_store": False,
+    }
     assert agent_model_settings(anthropic, max_tokens=None, session_id="run-123") == {
         "max_tokens": 16_384,
     }
