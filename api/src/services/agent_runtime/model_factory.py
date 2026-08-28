@@ -141,7 +141,7 @@ def create_agent_model(config: LLMConfig, *, model: str | None = None) -> Model:
             )
 
         from openai import AsyncOpenAI
-        from pydantic_ai.models.openai import OpenAIChatModel
+        from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
         from pydantic_ai.providers.openai import OpenAIProvider
 
         client = AsyncOpenAI(
@@ -151,6 +151,16 @@ def create_agent_model(config: LLMConfig, *, model: str | None = None) -> Model:
             max_retries=0,
         )
         provider = OpenAIProvider(openai_client=client)
+        use_responses = config.api_transport == "responses" or (
+            config.api_transport == "auto"
+            and model_name.startswith(("gpt-5", "o1", "o3", "o4"))
+        )
+        if use_responses:
+            return OpenAIResponsesModel(
+                model_name,
+                provider=provider,
+                settings={"openai_store": False},
+            )
         return OpenAIChatModel(model_name, provider=provider)
 
     if config.provider == "anthropic":

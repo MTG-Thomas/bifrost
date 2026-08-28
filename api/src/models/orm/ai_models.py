@@ -64,6 +64,9 @@ class AIModelProfile(Base):
         nullable=False,
     )
     model: Mapped[str] = mapped_column(String(200), nullable=False)
+    api_transport: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="auto", server_default="auto"
+    )
     capabilities: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     enabled_for_chat: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(
@@ -83,6 +86,10 @@ class AIModelProfile(Base):
     agents: Mapped[list["Agent"]] = relationship(back_populates="llm_profile", lazy="selectin")
 
     __table_args__ = (
+        CheckConstraint(
+            "api_transport IN ('auto', 'chat_completions', 'responses')",
+            name="ck_ai_model_profiles_api_transport",
+        ),
         Index("uq_ai_model_profiles_name_ci", text("lower(name)"), unique=True),
         Index("ix_ai_model_profiles_connection_id", "connection_id"),
         Index("ix_ai_model_profiles_enabled_for_chat", "enabled_for_chat"),
