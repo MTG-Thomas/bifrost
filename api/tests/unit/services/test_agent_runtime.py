@@ -593,6 +593,57 @@ async def test_legacy_complete_uses_stream_transport_for_large_output_limits() -
 
 
 @pytest.mark.asyncio
+async def test_direct_openai_complete_and_stream_disable_storage() -> None:
+    response = ModelResponse(
+        parts=[TextPart("hello")],
+        usage=RequestUsage(input_tokens=12, output_tokens=3),
+        model_name="test-model",
+        provider_name="openai",
+        finish_reason="stop",
+    )
+
+    class FakeStream:
+        def __aiter__(self):
+            async def events():
+                if False:
+                    yield None
+
+            return events()
+
+        def get(self):
+            return response
+
+    class FakeStreamContext:
+        async def __aenter__(self):
+            return FakeStream()
+
+        async def __aexit__(self, *args):
+            return False
+
+    client = PydanticAIClient(
+        LLMConfig(provider="openai", model="test-model", api_key="test-key")
+    )
+    with patch(
+        "src.services.llm.pydantic_client.create_agent_model",
+        return_value=MagicMock(),
+    ), patch(
+        "src.services.llm.pydantic_client.model_request_stream",
+        side_effect=[FakeStreamContext(), FakeStreamContext()],
+    ) as request_stream:
+        await client.complete([LLMMessage(role="user", content="hello")])
+        _ = [
+            chunk
+            async for chunk in client.stream(
+                [LLMMessage(role="user", content="hello")]
+            )
+        ]
+
+    assert request_stream.call_count == 2
+    for call in request_stream.call_args_list:
+        assert call.kwargs["model_settings"]["openai_store"] is False
+
+
+@pytest.mark.asyncio
 async def test_toolset_preserves_stored_json_schema_and_emits_lifecycle_events() -> None:
     calls: list[tuple[str, dict]] = []
     events = []
