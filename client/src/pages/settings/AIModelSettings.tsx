@@ -69,6 +69,7 @@ import {
 	type AIModelAssignment,
 	type AIModelProfile,
 	type AIProviderKind,
+	type OpenAITransport,
 } from "@/services/aiModels";
 
 const PROVIDER_QUERY_KEY = ["ai", "provider-connections"] as const;
@@ -157,6 +158,12 @@ const ASSIGNMENTS: {
 	},
 ];
 
+const OPENAI_TRANSPORTS: { value: OpenAITransport; label: string }[] = [
+	{ value: "auto", label: "Auto" },
+	{ value: "responses", label: "Responses API" },
+	{ value: "chat_completions", label: "Chat Completions" },
+];
+
 function providerLabel(provider: AIProviderKind): string {
 	return (
 		PROVIDERS.find((option) => option.value === provider)?.label ?? provider
@@ -217,6 +224,8 @@ export function AIModelSettings() {
 	const [profileName, setProfileName] = useState("");
 	const [profileConnectionId, setProfileConnectionId] = useState("");
 	const [profileModel, setProfileModel] = useState("");
+	const [profileTransport, setProfileTransport] =
+		useState<OpenAITransport>("auto");
 	const [profileChatEnabled, setProfileChatEnabled] = useState(false);
 	const [profileSelectionMode, setProfileSelectionMode] = useState(false);
 	const [selectedProfileIds, setSelectedProfileIds] = useState<Set<string>>(
@@ -236,6 +245,7 @@ export function AIModelSettings() {
 		name: string;
 		connectionId: string;
 		model: string;
+		apiTransport: OpenAITransport;
 	} | null>(null);
 
 	const providersQuery = useQuery({
@@ -252,7 +262,10 @@ export function AIModelSettings() {
 	});
 
 	const providers = providersQuery.data ?? [];
-	const profiles = useMemo(() => profilesQuery.data ?? [], [profilesQuery.data]);
+	const profiles = useMemo(
+		() => profilesQuery.data ?? [],
+		[profilesQuery.data],
+	);
 	const assignmentsByKey = useMemo(
 		() =>
 			new Map(
@@ -297,6 +310,7 @@ export function AIModelSettings() {
 		setProfileName("");
 		setProfileConnectionId("");
 		setProfileModel("");
+		setProfileTransport("auto");
 		setProfileChatEnabled(false);
 	};
 
@@ -490,6 +504,7 @@ export function AIModelSettings() {
 				name: edit.name.trim(),
 				connection_id: edit.connectionId,
 				model: edit.model.trim(),
+				api_transport: edit.apiTransport,
 			}),
 		onSuccess: () => {
 			setProfileEdit(null);
@@ -959,6 +974,8 @@ export function AIModelSettings() {
 													connectionId:
 														profile.connection_id,
 													model: profile.model,
+													apiTransport:
+														profile.api_transport,
 												})
 											}
 										>
@@ -1311,6 +1328,37 @@ export function AIModelSettings() {
 								onValueChange={setProfileModel}
 							/>
 						</div>
+						<div className="space-y-2">
+							<Label htmlFor="ai-profile-transport">
+								OpenAI API
+							</Label>
+							<Select
+								value={profileTransport}
+								onValueChange={(value) =>
+									setProfileTransport(
+										value as OpenAITransport,
+									)
+								}
+							>
+								<SelectTrigger id="ai-profile-transport">
+									<SelectValue />
+								</SelectTrigger>
+								<SelectContent>
+									{OPENAI_TRANSPORTS.map((transport) => (
+										<SelectItem
+											key={transport.value}
+											value={transport.value}
+										>
+											{transport.label}
+										</SelectItem>
+									))}
+								</SelectContent>
+							</Select>
+							<p className="text-xs text-muted-foreground">
+								Auto uses Responses for GPT-5 and reasoning
+								model families.
+							</p>
+						</div>
 						<label className="flex items-center justify-between gap-4 rounded-lg border px-3 py-2.5 text-sm">
 							<span>
 								<span className="flex items-center gap-2">
@@ -1351,6 +1399,7 @@ export function AIModelSettings() {
 									name: profileName.trim(),
 									connection_id: profileConnectionId,
 									model: profileModel.trim(),
+									api_transport: profileTransport,
 									capabilities: null,
 									enabled_for_chat: profileChatEnabled,
 								})
@@ -1709,6 +1758,35 @@ export function AIModelSettings() {
 									})
 								}
 							/>
+							<div className="space-y-2">
+								<Label htmlFor="edit-profile-transport">
+									OpenAI API
+								</Label>
+								<Select
+									value={profileEdit.apiTransport}
+									onValueChange={(value) =>
+										setProfileEdit({
+											...profileEdit,
+											apiTransport:
+												value as OpenAITransport,
+										})
+									}
+								>
+									<SelectTrigger id="edit-profile-transport">
+										<SelectValue />
+									</SelectTrigger>
+									<SelectContent>
+										{OPENAI_TRANSPORTS.map((transport) => (
+											<SelectItem
+												key={transport.value}
+												value={transport.value}
+											>
+												{transport.label}
+											</SelectItem>
+										))}
+									</SelectContent>
+								</Select>
+							</div>
 						</div>
 					)}
 					<DialogFooter>

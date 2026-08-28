@@ -11492,6 +11492,8 @@ export interface components {
             connection_id: string;
             /** Model */
             model: string;
+            /** @default auto */
+            api_transport?: "auto" | "chat_completions" | "responses";
             capabilities?: components["schemas"]["ModelCapabilities"] | null;
             /**
              * Enabled For Chat
@@ -11535,6 +11537,8 @@ export interface components {
             connection_id: string;
             /** Model */
             model: string;
+            /** Api Transport */
+            api_transport: "auto" | "chat_completions" | "responses";
             capabilities?: components["schemas"]["ModelCapabilities"] | null;
             /** Enabled For Chat */
             enabled_for_chat: boolean;
@@ -11565,6 +11569,8 @@ export interface components {
             connection_id?: string | null;
             /** Model */
             model?: string | null;
+            /** Api Transport */
+            api_transport?: ("auto" | "chat_completions" | "responses") | null;
             capabilities?: components["schemas"]["ModelCapabilities"] | null;
             /** Enabled For Chat */
             enabled_for_chat?: boolean | null;

@@ -66,6 +66,25 @@ async def test_first_profile_bootstraps_every_assignment(db_session):
 
 
 @pytest.mark.asyncio
+async def test_profile_transport_reaches_runtime_config(db_session):
+    service = AIModelService(db_session)
+    connection = await _connection(service)
+    profile = await service.create_profile(
+        name="Responses Profile",
+        connection_id=connection.id,
+        model="gpt-5.6-luna",
+        api_transport="responses",
+        capabilities=None,
+        enabled_for_chat=False,
+    )
+
+    config = await service.resolve_config(profile_id=profile.id)
+
+    assert profile.api_transport == "responses"
+    assert config.api_transport == "responses"
+
+
+@pytest.mark.asyncio
 async def test_create_connection_requires_key_and_defaults_openrouter_endpoint(
     db_session,
 ):

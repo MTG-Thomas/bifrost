@@ -172,6 +172,33 @@ def test_create_agent_model_supports_every_configured_provider(
         assert provider_client.max_retries == 0
 
 
+def test_openai_transport_selects_responses_for_gpt5_auto() -> None:
+    from pydantic_ai.models.openai import OpenAIResponsesModel
+
+    config = LLMConfig(
+        provider="openai",
+        model="gpt-5.6-luna",
+        api_key="test-key",
+        endpoint="https://foundry.example.test/openai/v1",
+    )
+
+    assert isinstance(create_agent_model(config), OpenAIResponsesModel)
+
+
+def test_openai_transport_preserves_explicit_chat_completions() -> None:
+    from pydantic_ai.models.openai import OpenAIChatModel
+
+    config = LLMConfig(
+        provider="openai",
+        model="gpt-5.6-luna",
+        api_key="test-key",
+        endpoint="https://foundry.example.test/openai/v1",
+        api_transport="chat_completions",
+    )
+
+    assert isinstance(create_agent_model(config), OpenAIChatModel)
+
+
 def test_create_agent_model_uses_native_openrouter_adapter() -> None:
     from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 
