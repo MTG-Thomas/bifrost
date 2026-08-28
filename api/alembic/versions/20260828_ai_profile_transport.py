@@ -1,7 +1,7 @@
 """Add OpenAI transport selection to AI model profiles.
 
 Revision ID: 20260828_ai_transport
-Revises: 20260826_solution_obligations
+Revises: 20260827_ops_reconcile
 """
 
 from collections.abc import Sequence
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260828_ai_transport"
-down_revision: str | None = "20260826_solution_obligations"
+down_revision: str | None = "20260827_ops_reconcile"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
