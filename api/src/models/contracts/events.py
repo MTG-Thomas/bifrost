@@ -26,6 +26,10 @@ class WebhookAdapterInfo(BaseModel):
         default=None,
         description="Integration name required for this adapter (e.g., 'Microsoft')",
     )
+    requires_organization: bool = Field(
+        default=False,
+        description="Whether this adapter requires an organization-scoped tenant mapping",
+    )
     config_schema: dict[str, Any] = Field(
         default_factory=dict,
         description="JSON Schema for adapter configuration",
@@ -258,6 +262,10 @@ class WebhookSourceResponse(BaseModel):
     external_id: str | None = Field(
         default=None,
         description="External subscription ID (from external service)",
+    )
+    provider_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Non-secret provider details for operations and display",
     )
     expires_at: datetime | None = Field(
         default=None,
@@ -631,6 +639,10 @@ class DynamicValuesRequest(BaseModel):
     integration_id: UUID | None = Field(
         default=None,
         description="Integration ID for OAuth-based operations",
+    )
+    organization_id: UUID | None = Field(
+        default=None,
+        description="Organization whose integration mapping supplies tenant context",
     )
     current_config: dict[str, Any] = Field(
         default_factory=dict,
