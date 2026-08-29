@@ -42,6 +42,7 @@ from src.services.workspace_promotions import (
     _is_executable_python_path,
     _manifest_id,
     _promotion_risk_class,
+    _promotion_risk_class_for_paths,
     _registration_exposure,
     _repo_v1_release_id,
     _reconcile_effects,
@@ -289,6 +290,40 @@ def test_shared_source_file_uses_highest_registration_risk() -> None:
     ]
 
     assert _promotion_risk_class(["bifrost.read"], registrations) == "R2"
+
+
+def test_declared_cohort_risk_ignores_inherited_registration_exposure() -> None:
+    registrations = [
+        {
+            "path": "workflows/changed.py",
+            "access_level": "role_based",
+            "endpoint_enabled": False,
+            "public_endpoint": False,
+            "api_key_enabled": False,
+        },
+        {
+            "path": "workflows/inherited.py",
+            "access_level": "authenticated",
+            "endpoint_enabled": True,
+            "public_endpoint": True,
+            "api_key_enabled": False,
+        },
+    ]
+
+    assert (
+        _promotion_risk_class_for_paths(
+            ["integration.read:ninjaone"],
+            registrations,
+            ["workflows/changed.py"],
+        )
+        == "R1"
+    )
+    assert (
+        _promotion_risk_class_for_paths(
+            ["integration.read:ninjaone"], registrations, None
+        )
+        == "R2"
+    )
 
 
 @pytest.mark.asyncio

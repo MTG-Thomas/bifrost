@@ -9,9 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
-from bifrost.commands import promote
 from bifrost import cli
+from bifrost.commands import promote
 from bifrost.workspace_release_authorization import activation_challenge
 
 
@@ -97,7 +96,7 @@ def test_legacy_promote_spelling_is_a_reviewed_preview_alias(
     monkeypatch.setattr(promote, "raise_for_status_with_detail", lambda _response: None)
 
     assert promote.handle_promote([str(path), "-w", "demo", "--preview"]) == 0
-    assert captured["endpoint"] == promote.PROMOTION_PREVIEW_ENDPOINT
+    assert captured["endpoint"] == promote.PROMOTION_PREVIEW_JOB_ENDPOINT
     assert captured["payload"]["schema_version"] == promote.REVIEWED_PROMOTION_SCHEMA
     assert len(captured["payload"]["protected_source"]["commit_sha"]) == 40
 
@@ -137,7 +136,7 @@ def test_promote_submits_exact_bundle_and_has_no_activation_option(
 
     assert promote.handle_promote(["preview", str(path), "-w", "demo"]) == 0
 
-    assert captured["endpoint"] == "/api/workspace-promotions/preview"
+    assert captured["endpoint"] == "/api/workspace-promotions/preview-jobs"
     assert captured["payload"]["target"] == "production"
     assert captured["payload"]["entry"] == {
         "path": "features/demo.py",
@@ -1000,6 +999,7 @@ def test_preview_surfaces_dma_registration_only_intent(capsys) -> None:
         payload,
         repository="example/workspace",
         expected_closure_id="sha256:" + "6" * 64,
+        verbose=True,
     )
 
     output = capsys.readouterr().out
@@ -1011,3 +1011,303 @@ def test_preview_surfaces_dma_registration_only_intent(capsys) -> None:
         "endpoint=True public=True api_key=False"
     ) in output
     assert "Ready to activate: yes" in output
+
+
+def test_preview_resumes_durable_job_and_defaults_to_concise_output(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    path = _workspace(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(promote, "refresh_protected_main", lambda _root: None)
+    requested = []
+
+    class Response:
+        @staticmethod
+        def json():
+            return {
+                "status": "succeeded",
+                "result": {
+                    "candidate_id": "sha256:" + "a" * 64,
+                    "risk_class": "R0",
+                    "disposition": "eligible",
+                    "ready_to_activate": True,
+                    "registration": {
+                        "intent": [{"action": "update", "path": "features/demo.py"}]
+                    },
+                    "closure": [{"path": "features/demo.py", "sha256": "b" * 64}],
+                    "diagnostics": [
+                        {"severity": "warning", "code": "legacy", "message": "old"}
+                    ],
+                },
+            }
+
+    class Client:
+        def get_sync(self, endpoint):
+            requested.append(endpoint)
+            return Response()
+
+        def post_sync(self, *_args, **_kwargs):
+            raise AssertionError("resume must not submit another preview")
+
+    monkeypatch.setattr(promote.BifrostClient, "get_instance", lambda **_kw: Client())
+    monkeypatch.setattr(promote, "raise_for_status_with_detail", lambda _response: None)
+
+    assert (
+        promote.handle_promote(
+            ["preview", str(path), "-w", "demo", "--resume-job-id", "job-1"]
+        )
+        == 0
+    )
+    assert requested == ["/api/platform-jobs/job-1"]
+    output = capsys.readouterr().out
+    assert "Registration changes: update=1" in output
+    assert "Reviewed closure: 1 files" in output
+    assert "features/demo.py" not in output
+    assert "[ANALYSIS/warning]" not in output
+
+
+def test_release_orchestrates_canary_cas_and_verified_history(
+    monkeypatch, capsys
+) -> None:
+    artifact_id = "11111111-1111-1111-1111-111111111111"
+    release_row_id = "22222222-2222-2222-2222-222222222222"
+    candidate_id = "sha256:" + "a" * 64
+    release_id = "sha256:" + "b" * 64
+    base_id = "repo-v1:" + "c" * 64
+    prepared_id = "sha256:" + "d" * 64
+    challenge = _authorization_challenge(
+        artifact_id, candidate_id, release_id, prepared_id
+    )
+    preview = {
+        "artifact_id": artifact_id,
+        "candidate_id": candidate_id,
+        "release_id": release_id,
+        "base_release_id": base_id,
+        "risk_class": "R0",
+        "ready_to_activate": False,
+        "disposition": "eligible",
+        "closure": [],
+    }
+    prepared = {
+        "release_row_id": release_row_id,
+        "artifact_id": artifact_id,
+        "candidate_id": candidate_id,
+        "release_id": release_id,
+        "prepared_evidence_id": prepared_id,
+        "risk_class": "R0",
+        "computed_effects": ["bifrost.read"],
+        "computed_effects_id": challenge["computed_effects_id"],
+        "protected_source": challenge["protected_source"],
+        "effect_execution": "reviewed_canary_required",
+        "activation_authorization": challenge,
+    }
+    calls = []
+
+    class Response:
+        def __init__(self, body):
+            self.body = body
+
+        def json(self):
+            return self.body
+
+    class Client:
+        def get_sync(self, endpoint):
+            calls.append(("GET", endpoint))
+            if endpoint.endswith("/live"):
+                live_reads = sum(item == ("GET", endpoint) for item in calls)
+                if live_reads <= 2:
+                    return Response({"active_release": None})
+                return Response(
+                    {
+                        "active_release": {
+                            "release_row_id": release_row_id,
+                            "release_id": release_id,
+                        }
+                    }
+                )
+            if endpoint.endswith(release_row_id):
+                if sum(item == ("GET", endpoint) for item in calls) == 1:
+                    return Response(
+                        {"runtime": {"activation_authorization": challenge}}
+                    )
+                return Response(
+                    {
+                        "release_row_id": release_row_id,
+                        "is_live": True,
+                        "runtime": {"state": "coherent"},
+                        "history": {
+                            "state": "locked",
+                            "runtime_history_verified": True,
+                        },
+                    }
+                )
+            return Response({"status": "succeeded", "result": prepared})
+
+        def post_sync(self, endpoint, **kwargs):
+            calls.append(("POST", endpoint))
+            if endpoint.endswith("/prepare"):
+                return Response({"job_id": "prepare-job"})
+            if endpoint.endswith("/canary"):
+                return Response(
+                    {"artifact_id": artifact_id, "execution_id": "canary-execution"}
+                )
+            if endpoint.endswith("/activate"):
+                assert kwargs["json"]["expected_base_release_id"] == base_id
+                assert kwargs["json"]["expected_active_release_id"] is None
+                assert kwargs["json"]["authorization"]["kind"] == "reviewed_canary"
+                return Response({"release_row_id": release_row_id, "is_live": True})
+            raise AssertionError(endpoint)
+
+    options = SimpleNamespace(
+        expected_base_release_id=None,
+        canary=True,
+        acknowledge_risk=None,
+        params="{}",
+        timeout_seconds=10,
+        json=False,
+        verbose=False,
+    )
+    monkeypatch.setattr(promote.BifrostClient, "get_instance", lambda **_kw: Client())
+    monkeypatch.setattr(promote, "raise_for_status_with_detail", lambda _response: None)
+    monkeypatch.setattr(
+        promote,
+        "_preview_result",
+        lambda _options: (
+            preview,
+            {
+                "protected_source": {"commit_sha": "1" * 40, "tree_sha": "2" * 40},
+                "snapshot": {"snapshot_id": "sha256:" + "e" * 64, "closure": []},
+            },
+            "example/workspace",
+            "sha256:" + "f" * 64,
+            "preview-job",
+        ),
+    )
+
+    assert promote._handle_release(options) == 0
+    assert "Live and signed-history readback: verified" in capsys.readouterr().out
+
+
+def test_prepare_resume_does_not_submit_again(monkeypatch, capsys) -> None:
+    artifact_id = "11111111-1111-1111-1111-111111111111"
+    candidate_id = "sha256:" + "a" * 64
+    release_id = "sha256:" + "b" * 64
+    prepared_id = "sha256:" + "c" * 64
+    challenge = _authorization_challenge(
+        artifact_id, candidate_id, release_id, prepared_id
+    )
+
+    class Response:
+        @staticmethod
+        def json():
+            return {
+                "status": "succeeded",
+                "result": {
+                    "release_row_id": "22222222-2222-2222-2222-222222222222",
+                    "artifact_id": artifact_id,
+                    "candidate_id": candidate_id,
+                    "release_id": release_id,
+                    "prepared_evidence_id": prepared_id,
+                    "risk_class": "R0",
+                    "computed_effects": ["bifrost.read"],
+                    "computed_effects_id": challenge["computed_effects_id"],
+                    "protected_source": challenge["protected_source"],
+                    "effect_execution": "reviewed_canary_required",
+                    "activation_authorization": challenge,
+                },
+            }
+
+    class Client:
+        def get_sync(self, endpoint):
+            assert endpoint == "/api/platform-jobs/prepare-job"
+            return Response()
+
+        def post_sync(self, *_args, **_kwargs):
+            raise AssertionError("resume must not submit another prepare")
+
+    monkeypatch.setattr(promote.BifrostClient, "get_instance", lambda **_kw: Client())
+    monkeypatch.setattr(promote, "raise_for_status_with_detail", lambda _response: None)
+    assert (
+        promote.handle_promote(
+            [
+                "prepare",
+                artifact_id,
+                "--candidate-id",
+                candidate_id,
+                "--resume-job-id",
+                "prepare-job",
+            ]
+        )
+        == 0
+    )
+    assert "Prepared release row:" in capsys.readouterr().out
+
+
+def test_release_refuses_live_pointer_drift_before_activation(monkeypatch) -> None:
+    original = "sha256:" + "1" * 64
+    changed = "sha256:" + "2" * 64
+    reads = iter(
+        [
+            {"release_id": original},
+            {"release_id": changed},
+        ]
+    )
+    monkeypatch.setattr(promote, "_read_live", lambda _client: next(reads))
+    monkeypatch.setattr(
+        promote,
+        "_preview_result",
+        lambda _options: (
+            {
+                "artifact_id": "11111111-1111-1111-1111-111111111111",
+                "candidate_id": "sha256:" + "a" * 64,
+                "release_id": "sha256:" + "b" * 64,
+                "base_release_id": original,
+                "risk_class": "R1",
+            },
+            {},
+            "repo",
+            "closure",
+            "preview-job",
+        ),
+    )
+    prepared = {
+        "release_row_id": "22222222-2222-2222-2222-222222222222",
+        "release_id": "sha256:" + "b" * 64,
+        "prepared_evidence_id": "sha256:" + "c" * 64,
+    }
+    monkeypatch.setattr(
+        promote, "_prepare_for_release", lambda *_args, **_kwargs: ("job", prepared)
+    )
+    challenge = _authorization_challenge(
+        "11111111-1111-1111-1111-111111111111",
+        "sha256:" + "a" * 64,
+        "sha256:" + "b" * 64,
+        "sha256:" + "c" * 64,
+        risk_class="R1",
+    )
+
+    class Response:
+        @staticmethod
+        def json():
+            return {"runtime": {"activation_authorization": challenge}}
+
+    class Client:
+        def get_sync(self, _endpoint):
+            return Response()
+
+        def post_sync(self, *_args, **_kwargs):
+            raise AssertionError("drift must prevent activation")
+
+    monkeypatch.setattr(promote.BifrostClient, "get_instance", lambda **_kw: Client())
+    monkeypatch.setattr(promote, "raise_for_status_with_detail", lambda _response: None)
+    options = SimpleNamespace(
+        expected_base_release_id=None,
+        canary=False,
+        acknowledge_risk="R1",
+        params="{}",
+        timeout_seconds=10,
+        json=False,
+        verbose=False,
+    )
+    with pytest.raises(promote.PromotionBundleError, match="changed after preview"):
+        promote._handle_release(options)

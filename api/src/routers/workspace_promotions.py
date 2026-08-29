@@ -1,5 +1,7 @@
 """Immutable rapid Workspace artifact, preparation, and canary HTTP surface."""
 
+import hashlib
+import json
 import logging
 from typing import Annotated
 from uuid import UUID
@@ -11,17 +13,26 @@ from src.config import get_settings
 from src.core.auth import Context, CurrentSuperuser, bearer_scheme
 from src.core.constants import SYSTEM_USER_UUID
 from src.core.db_deps import DbSession
+from src.jobs.platform.workspace_promotion_preview import (
+    WORKSPACE_PROMOTION_PREVIEW_DEFINITION,
+    WorkspacePromotionPreviewPayload,
+)
+from src.jobs.platform.workspace_release_prepare import (
+    WORKSPACE_RELEASE_PREPARE_DEFINITION,
+    WorkspaceReleasePreparePayload,
+)
+from src.models.contracts.platform_jobs import PlatformJobAccepted
 from src.models.contracts.workspace_promotions import (
     SolutionDeployObligationListResponse,
     SolutionDeployObligationResponse,
+    WorkspaceLiveStatusResponse,
+    WorkspacePromotionArtifactResponse,
     WorkspacePromotionCanaryAccepted,
     WorkspacePromotionCanaryRequest,
-    WorkspacePromotionPreviewRequest,
-    WorkspacePromotionPreviewResponse,
-    WorkspacePromotionArtifactResponse,
     WorkspacePromotionDraftRequest,
     WorkspacePromotionDraftResponse,
-    WorkspaceLiveStatusResponse,
+    WorkspacePromotionPreviewRequest,
+    WorkspacePromotionPreviewResponse,
     WorkspaceReleaseActivateRequest,
     WorkspaceReleasePrepareRequest,
     WorkspaceReleaseStatusResponse,
@@ -30,42 +41,38 @@ from src.models.contracts.workspace_promotions import (
     WorkspaceSourceReleaseListResponse,
     WorkspaceSourceReleaseResponse,
 )
-from src.models.contracts.platform_jobs import PlatformJobAccepted
-from src.jobs.platform.workspace_release_prepare import (
-    WORKSPACE_RELEASE_PREPARE_DEFINITION,
-    WorkspaceReleasePreparePayload,
-)
-from src.services.platform_jobs import (
-    enqueue_platform_job,
-    ensure_platform_job_notification,
-    publish_platform_job_update,
-)
-from src.services.workspace_draft_canary import (
-    WorkspaceDraftCanaryError,
-    WorkspaceDraftCanaryService,
-)
-from src.services.workspace_release_activation import (
-    WorkspaceReleaseActivationError,
-    WorkspaceReleaseActivationService,
-)
-from src.services.workspace_promotions import (
-    WorkspacePromotionInvalid,
-    WorkspacePromotionPreviewService,
-)
-from src.services.workspace_source_releases import (
-    WorkspaceSourceReleaseConflict,
-    WorkspaceSourceReleaseService,
-)
-from src.services.solution_deploy_obligations import (
-    SolutionDeployObligationConflict,
-    SolutionDeployObligationService,
-)
 from src.services.github_actions_oidc import (
     GitHubActionsOIDCError,
     WorkspaceSourceReleaseProducer,
     authenticate_workspace_source_release_producer,
     workspace_source_release_producer_configured,
     workspace_source_release_tracking_expected,
+)
+from src.services.platform_jobs import (
+    enqueue_platform_job,
+    ensure_platform_job_notification,
+    publish_platform_job_update,
+)
+from src.services.solution_deploy_obligations import (
+    SolutionDeployObligationConflict,
+    SolutionDeployObligationService,
+)
+from src.services.workspace_draft_canary import (
+    WorkspaceDraftCanaryError,
+    WorkspaceDraftCanaryService,
+)
+from src.services.workspace_promotions import (
+    WorkspacePromotionInvalid,
+    WorkspacePromotionPreviewService,
+    build_workspace_promotion_preview_service,
+)
+from src.services.workspace_release_activation import (
+    WorkspaceReleaseActivationError,
+    WorkspaceReleaseActivationService,
+)
+from src.services.workspace_source_releases import (
+    WorkspaceSourceReleaseConflict,
+    WorkspaceSourceReleaseService,
 )
 
 router = APIRouter(
@@ -104,27 +111,7 @@ async def _github_source_release_producer(
 async def _service(
     db: DbSession, organization_id: UUID
 ) -> WorkspacePromotionPreviewService:
-    from src.services.github_config import get_github_config
-    from src.services.platform_commit_writer import GitHubAppCommitWriter
-
-    settings = get_settings()
-    config = await get_github_config(db, organization_id)
-    writer = None
-    if config and config.repo_url and settings.github_app_commit_writer_configured:
-        if (
-            settings.github_app_id is None
-            or settings.github_app_installation_id is None
-            or settings.github_app_private_key is None
-        ):
-            raise RuntimeError("GitHub App commit writer configuration is incomplete")
-        writer = GitHubAppCommitWriter(
-            repo_url=config.repo_url,
-            branch=config.branch,
-            app_id=settings.github_app_id,
-            installation_id=settings.github_app_installation_id,
-            private_key=settings.github_app_private_key.get_secret_value(),
-        )
-    return WorkspacePromotionPreviewService(db, organization_id, commit_writer=writer)
+    return await build_workspace_promotion_preview_service(db, organization_id)
 
 
 @router.post("/preview", response_model=WorkspacePromotionPreviewResponse)
@@ -152,6 +139,74 @@ async def preview_workspace_promotion(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         ) from exc
+
+
+@router.post(
+    "/preview-jobs",
+    response_model=PlatformJobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def enqueue_workspace_promotion_preview(
+    request: WorkspacePromotionPreviewRequest,
+    response: Response,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+) -> PlatformJobAccepted:
+    settings = get_settings()
+    if not settings.workspace_rapid_promotion_preview_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="rapid Workspace promotion preview is not enabled",
+        )
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    request_json = request.model_dump(mode="json")
+    dedupe_key = hashlib.sha256(
+        json.dumps(request_json, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    job, reused = await enqueue_platform_job(
+        db,
+        WORKSPACE_PROMOTION_PREVIEW_DEFINITION,
+        WorkspacePromotionPreviewPayload(request=request),
+        dedupe_key=dedupe_key,
+        resource_lock_key=f"workspace-promotion-preview:{ctx.org_id}",
+        organization_id=ctx.org_id,
+        requested_by_user_id=user.user_id,
+        requested_by_email=user.email,
+        requested_by_name=user.name or user.email or "Unknown",
+        resource_type="workspace_promotion_preview",
+        resource_id=request.snapshot.snapshot_id,
+        title="Building immutable Workspace promotion preview",
+        action_url=None,
+    )
+    if reused and job.requested_by_user_id != str(user.user_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Workspace promotion preview is already in progress",
+        )
+    if job.notification_id is None:
+        try:
+            await ensure_platform_job_notification(db, job)
+        except Exception:
+            logger.warning(
+                "Workspace promotion preview queued without notification",
+                extra={"platform_job_id": str(job.id)},
+                exc_info=True,
+            )
+    await db.commit()
+    await db.refresh(job)
+    await publish_platform_job_update(job)
+    response.headers["Location"] = f"/api/platform-jobs/{job.id}"
+    return PlatformJobAccepted(
+        job_id=job.id,
+        notification_id=job.notification_id,
+        status=job.status,
+        reused=reused,
+    )
 
 
 @router.post(

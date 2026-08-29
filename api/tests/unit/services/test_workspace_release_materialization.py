@@ -57,6 +57,7 @@ def _artifact(
     computed_effects=None,
     include_affected_target=False,
     registration_state=None,
+    include_risk_paths=True,
 ):
     computed_effects = computed_effects or ["bifrost.read"]
     base_files = {"modules/base.py": b"VALUE = 41\n"}
@@ -138,6 +139,8 @@ def _artifact(
         "registration_intent_fingerprint": "sha256:" + "1" * 64,
         "protected_source": {"commit_sha": "2" * 40, "tree_sha": "3" * 40},
     }
+    if include_risk_paths:
+        release_payload["risk_paths"] = []
     release_id = workspace_release_id(release_payload)
     manifest = {
         "schema_version": "bifrost.workspace-release-artifact/v1",
@@ -246,13 +249,21 @@ def test_prepare_reconstructs_release_identity_from_nested_registration() -> Non
     WorkspaceReleaseMaterializer._validate_manifest(artifact, artifact.manifest)
 
 
+def test_prepare_preserves_legacy_artifact_risk_invariant() -> None:
+    artifact, _base, _closure = _artifact(uuid4(), include_risk_paths=False)
+
+    assert "risk_paths" not in artifact.manifest
+    WorkspaceReleaseMaterializer._validate_manifest(artifact, artifact.manifest)
+
+
 def test_prepare_reconstructs_declared_cohort_identity() -> None:
-    artifact, _base, _closure = _artifact(uuid4(), risk_class="R2")
+    artifact, _base, _closure = _artifact(uuid4(), risk_class="R0")
     manifest = artifact.manifest
     entry = manifest["entry"]
     closure_hashes = {item["path"]: item["sha256"] for item in manifest["closure"]}
     cohort_paths = [entry["path"]]
     manifest["cohort_paths"] = cohort_paths
+    manifest["risk_paths"] = cohort_paths
     manifest["source_release_id"] = str(uuid4())
     manifest["source_release_paths"] = closure_hashes
     artifact.closure_id = workspace_cohort_closure_id(
@@ -276,6 +287,7 @@ def test_prepare_reconstructs_declared_cohort_identity() -> None:
             "entry",
             "validation_targets",
             "risk_class",
+            "risk_paths",
             "computed_effects",
             "protected_source",
             "source_release_id",
@@ -291,6 +303,20 @@ def test_prepare_reconstructs_declared_cohort_identity() -> None:
     artifact.candidate_id = _canonical_candidate(manifest)
 
     WorkspaceReleaseMaterializer._validate_manifest(artifact, manifest)
+
+
+def test_prepare_rejects_risk_scope_identity_tampering() -> None:
+    artifact, _base, _closure = _artifact(uuid4())
+    artifact.manifest["risk_paths"] = [artifact.entry_path]
+    artifact.candidate_id = _canonical_candidate(artifact.manifest)
+
+    with pytest.raises(
+        WorkspaceReleasePreparationError,
+        match="release_id is invalid",
+    ):
+        WorkspaceReleaseMaterializer._validate_manifest(
+            artifact, artifact.manifest
+        )
 
 
 def test_prepare_rejects_missing_nested_registration_identity_cleanly() -> None:
