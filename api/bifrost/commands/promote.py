@@ -1089,7 +1089,9 @@ def _preview_result(
 ) -> tuple[dict[str, Any], dict[str, Any], str, str, str]:
     payload, _bundle, repository, expected_closure_id = _preview_payload(options)
     client = BifrostClient.get_instance(require_auth=True)
-    job_id = options.resume_job_id
+    job_id = getattr(options, "resume_preview_job_id", None) or getattr(
+        options, "resume_job_id", None
+    )
     if job_id is None:
         response = client.post_sync(PROMOTION_PREVIEW_JOB_ENDPOINT, json=payload)
         raise_for_status_with_detail(response)

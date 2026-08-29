@@ -1198,6 +1198,52 @@ def test_release_resume_flags_are_phase_specific() -> None:
     assert not hasattr(options, "resume_job_id")
 
 
+def test_release_options_start_durable_preview_without_legacy_resume_field(
+    monkeypatch,
+) -> None:
+    options = promote._parser().parse_args(
+        ["release", "features/demo.py", "-w", "demo", "--canary"]
+    )
+    payload = {
+        "snapshot": {"snapshot_id": "sha256:" + "0" * 64},
+        "protected_source": {"commit": "a" * 40},
+    }
+    posted = []
+
+    class Response:
+        def json(self):
+            return {"job_id": "preview-job"}
+
+    class Client:
+        def post_sync(self, endpoint, *, json):
+            posted.append((endpoint, json))
+            return Response()
+
+    monkeypatch.setattr(
+        promote,
+        "_preview_payload",
+        lambda _options: (payload, {}, "example/workspace", "sha256:" + "1" * 64),
+    )
+    monkeypatch.setattr(promote.BifrostClient, "get_instance", lambda **_kw: Client())
+    monkeypatch.setattr(promote, "raise_for_status_with_detail", lambda _response: None)
+    monkeypatch.setattr(
+        promote,
+        "_poll_platform_job",
+        lambda *_args, **_kwargs: {
+            "result": {
+                "snapshot_id": payload["snapshot"]["snapshot_id"],
+                "protected_source": payload["protected_source"],
+                "closure_id": "sha256:" + "1" * 64,
+            }
+        },
+    )
+
+    result, *_ = promote._preview_result(options)
+
+    assert result["snapshot_id"] == payload["snapshot"]["snapshot_id"]
+    assert posted == [(promote.PROMOTION_PREVIEW_JOB_ENDPOINT, payload)]
+
+
 def test_release_canary_waits_for_terminal_success(monkeypatch) -> None:
     reads = iter(
         [
