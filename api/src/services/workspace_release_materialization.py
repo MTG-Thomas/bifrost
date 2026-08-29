@@ -47,7 +47,7 @@ from src.services.workspace_promotions import (
     PROMOTION_BUNDLE_SCHEMA_V2,
     _canonical_candidate,
     _is_executable_python_path,
-    _promotion_risk_class,
+    _promotion_risk_class_for_paths,
     overlay_governed_base,
     read_generation_stable_executable_snapshot,
 )
@@ -508,6 +508,8 @@ class WorkspaceReleaseMaterializer:
         release_payload["registration_intent_fingerprint"] = (
             registration_intent_fingerprint
         )
+        if "risk_paths" in manifest:
+            release_payload["risk_paths"] = manifest["risk_paths"]
         if cohort_paths:
             release_payload.update(
                 {
@@ -563,6 +565,9 @@ class WorkspaceReleaseMaterializer:
             )
         effects = manifest.get("computed_effects")
         effective_registrations = manifest.get("effective_registrations")
+        has_risk_paths = "risk_paths" in manifest
+        risk_paths = manifest.get("risk_paths", [])
+        cohort_paths = manifest.get("cohort_paths", [])
         if (
             artifact.risk_class not in {"R0", "R1", "R2"}
             or manifest.get("risk_class") != artifact.risk_class
@@ -571,10 +576,26 @@ class WorkspaceReleaseMaterializer:
             or any(not isinstance(effect, str) or not effect for effect in effects)
             or effects != sorted(set(effects))
             or not isinstance(effective_registrations, dict)
+            or (has_risk_paths and not isinstance(risk_paths, list))
+            or (has_risk_paths and risk_paths != sorted(set(risk_paths)))
+            or (
+                has_risk_paths
+                and any(not isinstance(path, str) for path in risk_paths)
+            )
+            or (has_risk_paths and bool(cohort_paths) and risk_paths != cohort_paths)
+            or (has_risk_paths and not cohort_paths and risk_paths)
             or (
                 "R2"
-                if cohort_paths
-                else _promotion_risk_class(effects, effective_registrations.values())
+                if cohort_paths and not has_risk_paths
+                else _promotion_risk_class_for_paths(
+                    effects,
+                    (
+                        effective_registrations.values()
+                        if isinstance(effective_registrations, dict)
+                        else []
+                    ),
+                    risk_paths if cohort_paths and has_risk_paths else None,
+                )
             )
             != artifact.risk_class
         ):

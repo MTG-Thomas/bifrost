@@ -141,6 +141,7 @@ The registered definitions at this baseline are:
 | `workspace.reimport` | 60m | 2 | 1 | 512 MiB | Serialized Workspace mutation |
 | `workspace.git` | 60m | 2 | 1 | 512 MiB | Serialized git operation |
 | `agent.summary_backfill` | 15m | 2 | shared | 128 MiB | Encrypted payload; may wait on RabbitMQ child fan-out |
+| `workspace.promotion.preview` | 15m | 2 | 2 | 512 MiB | Immutable promotion preview |
 | `workspace.release.prepare` | 15m | 2 | 2 | 512 MiB | Immutable release preparation |
 | `workspace.release.lock` | 15m | 2 | 1 | 256 MiB | Serialized release lock |
 | `chat.video_generation` | 30m | 1 | shared | 512 MiB | Encrypted payload, no runner-loss retry, running cancellation allowed |

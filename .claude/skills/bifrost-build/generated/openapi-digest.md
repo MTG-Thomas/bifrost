@@ -577,6 +577,7 @@
 | POST | `/api/workspace-promotions/drafts` |
 | GET | `/api/workspace-promotions/live` |
 | POST | `/api/workspace-promotions/preview` |
+| POST | `/api/workspace-promotions/preview-jobs` |
 | GET | `/api/workspace-promotions/releases/{release_id}` |
 | POST | `/api/workspace-promotions/releases/{release_id}/activate` |
 | GET | `/api/workspace-promotions/solution-deploy-obligations` |

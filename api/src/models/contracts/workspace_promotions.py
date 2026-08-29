@@ -187,6 +187,7 @@ class WorkspacePromotionPreviewResponse(BaseModel):
     effective_registrations: dict[str, dict]
     snapshot_id: str
     risk_class: Literal["R0", "R1", "R2"]
+    risk_paths: list[str] = Field(default_factory=list)
     policy_version: str
     closure: list[PromotionClosureMember]
     validation_targets: list[PromotionValidationTarget]
@@ -235,6 +236,7 @@ class WorkspacePromotionArtifactResponse(BaseModel):
     closure: list[PromotionClosureMember]
     validation_targets: list[PromotionValidationTarget]
     risk_class: Literal["R0", "R1", "R2"]
+    risk_paths: list[str] = Field(default_factory=list)
     policy_version: str
     registration: PromotionRegistrationEvidence
     protected_source: PromotionSourceEvidence

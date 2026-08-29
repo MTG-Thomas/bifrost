@@ -256,7 +256,9 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Reviewed promotion gained an optional declared multi-root cohort and
     # additive source-release evidence (2026-08-24). Single-root v11 clients
     # retain their existing request and response behavior.
-    "c6acf6947aa3f4f08cfdfc72816e3166c7df33fe71056472acfc937b0e56fc45"
+    # Promotion responses gained optional risk_paths (2026-08-29). ADDITIVE:
+    # old clients ignore it and retain their existing risk-class handling.
+    "9aa08854f3f37f03139643d568cd032e21a6b70be49d44179c25943cc5517dfa"
 )
 
 
