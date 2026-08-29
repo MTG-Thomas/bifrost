@@ -482,14 +482,25 @@ def test_reviewed_preview_uses_git_blob_not_dirty_worktree(
     class Response:
         is_success = True
 
-        @staticmethod
-        def json():
-            return {"candidate_id": "sha256:" + "a" * 64, "closure": []}
+        def __init__(self, body):
+            self.body = body
+
+        def json(self):
+            return self.body
 
     class Client:
         def post_sync(self, _endpoint, **kwargs):
             captured["payload"] = kwargs["json"]
-            return Response()
+            return Response({"job_id": "preview-job", "status": "queued"})
+
+        def get_sync(self, _endpoint):
+            return Response(
+                _completed_preview_job(
+                    captured["payload"],
+                    candidate_id="sha256:" + "a" * 64,
+                    closure=[],
+                )
+            )
 
     monkeypatch.setattr(
         promote.BifrostClient, "get_instance", lambda **_kwargs: Client()
