@@ -31,6 +31,17 @@ def _request() -> WorkspacePromotionPreviewRequest:
     )
 
 
+def test_preview_job_dedupe_is_stable_within_org_and_distinct_across_orgs() -> None:
+    request = _request()
+    first_org = uuid4()
+    second_org = uuid4()
+
+    first = workspace_promotions._preview_job_dedupe_key(first_org, request)
+
+    assert first == workspace_promotions._preview_job_dedupe_key(first_org, request)
+    assert first != workspace_promotions._preview_job_dedupe_key(second_org, request)
+
+
 @pytest.mark.asyncio
 async def test_preview_job_route_returns_durable_location(monkeypatch) -> None:
     job_id = uuid4()

@@ -95,17 +95,20 @@ def _common_source_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--json", action="store_true", help="Emit machine JSON")
 
 
-def _operator_arguments(parser: argparse.ArgumentParser) -> None:
+def _operator_arguments(
+    parser: argparse.ArgumentParser, *, include_resume: bool = True
+) -> None:
     parser.add_argument(
         "--timeout-seconds",
         type=float,
         default=PREPARE_POLL_TIMEOUT_SECONDS,
         help="Maximum time to follow each durable platform job",
     )
-    parser.add_argument(
-        "--resume-job-id",
-        help="Resume an already-submitted durable preview job instead of submitting",
-    )
+    if include_resume:
+        parser.add_argument(
+            "--resume-job-id",
+            help="Resume an already-submitted durable preview job instead of submitting",
+        )
     parser.add_argument(
         "--verbose", action="store_true", help="Show full closure and diagnostics"
     )
@@ -163,7 +166,15 @@ def _parser() -> argparse.ArgumentParser:
     release.add_argument("--include-declared-changes", action="store_true")
     release.add_argument("--supersedes-candidate-id")
     release.add_argument("--expected-base-release-id")
-    _operator_arguments(release)
+    _operator_arguments(release, include_resume=False)
+    release.add_argument(
+        "--resume-preview-job-id",
+        help="Resume this durable preview job",
+    )
+    release.add_argument(
+        "--resume-prepare-job-id",
+        help="Resume this durable prepare job after preview verification",
+    )
     authorization = release.add_mutually_exclusive_group(required=True)
     authorization.add_argument(
         "--canary",
@@ -589,6 +600,7 @@ def _poll_platform_job(
     *,
     operation: str,
     timeout_seconds: float,
+    resume_option: str,
 ) -> dict[str, Any]:
     if timeout_seconds <= 0:
         raise PromotionBundleError("--timeout-seconds must be greater than zero")
@@ -627,7 +639,7 @@ def _poll_platform_job(
         if time.monotonic() - started >= timeout_seconds:
             raise PromotionBundleError(
                 f"{operation} is still running after {int(timeout_seconds)} seconds "
-                f"(job {job_id}); resume with --resume-job-id {job_id}"
+                f"(job {job_id}); resume with {resume_option} {job_id}"
             )
         time.sleep(PREPARE_POLL_INTERVAL_SECONDS)
 
@@ -643,6 +655,7 @@ def _poll_prepare_job(
         job_id,
         operation="release preparation",
         timeout_seconds=timeout_seconds,
+        resume_option="--resume-job-id",
     )
 
 
@@ -709,7 +722,9 @@ def _prepare_result(
 
 def _handle_prepare(options: argparse.Namespace) -> int:
     client = BifrostClient.get_instance(require_auth=True)
-    job_id = options.resume_job_id
+    job_id = getattr(options, "resume_preview_job_id", None) or getattr(
+        options, "resume_job_id", None
+    )
     if job_id is None:
         response = client.post_sync(
             PROMOTION_PREPARE_ENDPOINT.format(artifact_id=options.artifact_id),
@@ -1079,9 +1094,6 @@ def _preview_result(
         response = client.post_sync(PROMOTION_PREVIEW_JOB_ENDPOINT, json=payload)
         raise_for_status_with_detail(response)
         accepted = response.json()
-        # Compatibility with a server that has not yet enabled durable preview jobs.
-        if isinstance(accepted, dict) and not accepted.get("job_id"):
-            return accepted, payload, repository, expected_closure_id, "synchronous"
         if not isinstance(accepted, dict) or not accepted.get("job_id"):
             raise PromotionBundleError(
                 "preview did not return a durable platform job ID"
@@ -1093,10 +1105,21 @@ def _preview_result(
         job_id,
         operation="promotion preview",
         timeout_seconds=options.timeout_seconds,
+        resume_option="--resume-preview-job-id"
+        if options.command == "release"
+        else "--resume-job-id",
     )
     result = completed.get("result")
     if not isinstance(result, dict):
         raise PromotionBundleError("promotion preview returned invalid data")
+    if result.get("snapshot_id") != payload["snapshot"]["snapshot_id"]:
+        raise PromotionBundleError("resumed preview belongs to a different snapshot")
+    if result.get("protected_source") != payload["protected_source"]:
+        raise PromotionBundleError(
+            "resumed preview belongs to different protected source"
+        )
+    if result.get("closure_id") != expected_closure_id:
+        raise PromotionBundleError("resumed preview belongs to a different closure")
     return result, payload, repository, expected_closure_id, job_id
 
 
@@ -1105,8 +1128,7 @@ def _handle_preview(options: argparse.Namespace) -> int:
     if options.json:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
-        if job_id != "synchronous":
-            print(f"Preview job: {job_id}")
+        print(f"Preview job: {job_id}")
         _render_preview(
             result,
             payload,
@@ -1135,25 +1157,40 @@ def _prepare_for_release(
     artifact_id: str,
     candidate_id: str,
     timeout_seconds: float,
+    resume_job_id: str | None = None,
 ) -> tuple[str, Mapping[str, Any]]:
-    response = client.post_sync(
-        PROMOTION_PREPARE_ENDPOINT.format(artifact_id=artifact_id),
-        json={"candidate_id": candidate_id},
+    job_id = resume_job_id
+    if job_id is None:
+        response = client.post_sync(
+            PROMOTION_PREPARE_ENDPOINT.format(artifact_id=artifact_id),
+            json={"candidate_id": candidate_id},
+        )
+        raise_for_status_with_detail(response)
+        accepted = response.json()
+        if not isinstance(accepted, dict) or not accepted.get("job_id"):
+            raise PromotionBundleError(
+                "prepare did not return a durable platform job ID"
+            )
+        job_id = str(accepted["job_id"])
+        print(f"Preparation job accepted: {job_id}", file=sys.stderr)
+    completed = _poll_platform_job(
+        client,
+        job_id,
+        operation="release preparation",
+        timeout_seconds=timeout_seconds,
+        resume_option="--resume-prepare-job-id",
     )
-    raise_for_status_with_detail(response)
-    accepted = response.json()
-    if not isinstance(accepted, dict) or not accepted.get("job_id"):
-        raise PromotionBundleError("prepare did not return a durable platform job ID")
-    job_id = str(accepted["job_id"])
-    print(f"Preparation job accepted: {job_id}", file=sys.stderr)
-    completed = _poll_prepare_job(client, job_id, timeout_seconds=timeout_seconds)
     return job_id, _prepare_result(
         completed, artifact_id=artifact_id, candidate_id=candidate_id
     )
 
 
 def _canary_for_release(
-    client: BifrostClient, *, artifact_id: str, parameters_json: str
+    client: BifrostClient,
+    *,
+    artifact_id: str,
+    parameters_json: str,
+    timeout_seconds: float,
 ) -> str:
     try:
         parameters = json.loads(parameters_json)
@@ -1173,7 +1210,38 @@ def _canary_for_release(
         raise PromotionBundleError("canary did not return an execution ID")
     if str(body.get("artifact_id")) != artifact_id:
         raise PromotionBundleError("canary response belongs to a different artifact")
-    return str(body["execution_id"])
+    execution_id = str(body["execution_id"])
+    started = time.monotonic()
+    while True:
+        status_response = client.get_sync(f"/api/executions/{execution_id}")
+        raise_for_status_with_detail(status_response)
+        execution = status_response.json()
+        if (
+            not isinstance(execution, dict)
+            or str(execution.get("execution_id")) != execution_id
+        ):
+            raise PromotionBundleError("canary status belongs to a different execution")
+        status_value = str(execution.get("status") or "")
+        if status_value == "Success":
+            return execution_id
+        if status_value in {
+            "Failed",
+            "Cancelled",
+            "Timeout",
+            "Stuck",
+            "CompletedWithErrors",
+        }:
+            detail = execution.get("error_message")
+            raise PromotionBundleError(
+                f"reviewed canary {status_value.lower()} (execution {execution_id})"
+                + (f": {detail}" if detail else "")
+            )
+        if time.monotonic() - started >= timeout_seconds:
+            raise PromotionBundleError(
+                f"reviewed canary is still running after {int(timeout_seconds)} seconds "
+                f"(execution {execution_id})"
+            )
+        time.sleep(PREPARE_POLL_INTERVAL_SECONDS)
 
 
 def _verify_release_history(
@@ -1256,10 +1324,14 @@ def _handle_release(options: argparse.Namespace) -> int:
         artifact_id=artifact_id,
         candidate_id=candidate_id,
         timeout_seconds=options.timeout_seconds,
+        resume_job_id=getattr(options, "resume_prepare_job_id", None),
     )
     canary_execution_id = (
         _canary_for_release(
-            client, artifact_id=artifact_id, parameters_json=options.params
+            client,
+            artifact_id=artifact_id,
+            parameters_json=options.params,
+            timeout_seconds=options.timeout_seconds,
         )
         if options.canary
         else None

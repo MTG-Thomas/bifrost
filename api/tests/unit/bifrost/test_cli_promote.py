@@ -69,6 +69,25 @@ def _workspace(tmp_path: Path) -> Path:
     return path
 
 
+def _completed_preview_job(payload: dict, **result: object) -> dict:
+    files = {item["path"]: item["sha256"] for item in payload["snapshot"]["closure"]}
+    cohort = payload.get("cohort_paths") or []
+    closure_id = (
+        promote.workspace_cohort_closure_id(payload["entry"], files, cohort)
+        if cohort
+        else promote.workspace_closure_id(payload["entry"], files)
+    )
+    return {
+        "status": "succeeded",
+        "result": {
+            "snapshot_id": payload["snapshot"]["snapshot_id"],
+            "protected_source": payload["protected_source"],
+            "closure_id": closure_id,
+            **result,
+        },
+    }
+
+
 def test_legacy_promote_spelling_is_a_reviewed_preview_alias(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -88,7 +107,16 @@ def test_legacy_promote_spelling_is_a_reviewed_preview_alias(
         def post_sync(self, endpoint, **kwargs):
             captured["endpoint"] = endpoint
             captured["payload"] = kwargs["json"]
-            return Response()
+            return SimpleNamespace(json=lambda: {"job_id": "preview-job"})
+
+        def get_sync(self, _endpoint):
+            return SimpleNamespace(
+                json=lambda: _completed_preview_job(
+                    captured["payload"],
+                    candidate_id="sha256:" + "a" * 64,
+                    closure=[],
+                )
+            )
 
     monkeypatch.setattr(
         promote.BifrostClient, "get_instance", lambda **_kwargs: Client()
@@ -125,7 +153,14 @@ def test_promote_submits_exact_bundle_and_has_no_activation_option(
         def post_sync(self, endpoint, **kwargs):
             captured["endpoint"] = endpoint
             captured["payload"] = kwargs["json"]
-            return Response()
+            return SimpleNamespace(json=lambda: {"job_id": "preview-job"})
+
+        def get_sync(self, _endpoint):
+            return SimpleNamespace(
+                json=lambda: _completed_preview_job(
+                    captured["payload"], **Response().json()
+                )
+            )
 
     monkeypatch.setattr(
         promote.BifrostClient,
@@ -198,7 +233,16 @@ def test_preview_can_include_all_reviewed_executable_changes(
     class Client:
         def post_sync(self, endpoint, **kwargs):
             captured["payload"] = kwargs["json"]
-            return Response()
+            return SimpleNamespace(json=lambda: {"job_id": "preview-job"})
+
+        def get_sync(self, _endpoint):
+            return SimpleNamespace(
+                json=lambda: _completed_preview_job(
+                    captured["payload"],
+                    candidate_id="sha256:" + "a" * 64,
+                    closure=[],
+                )
+            )
 
     monkeypatch.setattr(
         promote.BifrostClient, "get_instance", lambda **_kwargs: Client()
@@ -281,7 +325,16 @@ def test_declared_helper_change_uses_unchanged_workflow_anchor(
     class Client:
         def post_sync(self, _endpoint, **kwargs):
             captured["payload"] = kwargs["json"]
-            return Response()
+            return SimpleNamespace(json=lambda: {"job_id": "preview-job"})
+
+        def get_sync(self, _endpoint):
+            return SimpleNamespace(
+                json=lambda: _completed_preview_job(
+                    captured["payload"],
+                    candidate_id="sha256:" + "a" * 64,
+                    closure=[],
+                )
+            )
 
     monkeypatch.setattr(
         promote.BifrostClient, "get_instance", lambda **_kwargs: Client()
@@ -1020,6 +1073,18 @@ def test_preview_resumes_durable_job_and_defaults_to_concise_output(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(promote, "refresh_protected_main", lambda _root: None)
     requested = []
+    expected_payload, _bundle, _repository, expected_closure_id = (
+        promote._preview_payload(
+            SimpleNamespace(
+                path=str(path),
+                workflow="demo",
+                include_declared_changes=False,
+                run_evidence=None,
+                supersedes_candidate_id=None,
+                expected_base_release_id=None,
+            )
+        )
+    )
 
     class Response:
         @staticmethod
@@ -1027,6 +1092,9 @@ def test_preview_resumes_durable_job_and_defaults_to_concise_output(
             return {
                 "status": "succeeded",
                 "result": {
+                    "snapshot_id": expected_payload["snapshot"]["snapshot_id"],
+                    "protected_source": expected_payload["protected_source"],
+                    "closure_id": expected_closure_id,
                     "candidate_id": "sha256:" + "a" * 64,
                     "risk_class": "R0",
                     "disposition": "eligible",
@@ -1064,6 +1132,97 @@ def test_preview_resumes_durable_job_and_defaults_to_concise_output(
     assert "Reviewed closure: 1 files" in output
     assert "features/demo.py" not in output
     assert "[ANALYSIS/warning]" not in output
+
+
+def test_resumed_preview_rejects_different_immutable_snapshot(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    path = _workspace(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(promote, "refresh_protected_main", lambda _root: None)
+
+    class Response:
+        @staticmethod
+        def json():
+            return {
+                "status": "succeeded",
+                "result": {
+                    "snapshot_id": "sha256:" + "0" * 64,
+                    "protected_source": {},
+                    "closure_id": "sha256:" + "1" * 64,
+                },
+            }
+
+    class Client:
+        def get_sync(self, _endpoint):
+            return Response()
+
+    monkeypatch.setattr(promote.BifrostClient, "get_instance", lambda **_kw: Client())
+    monkeypatch.setattr(promote, "raise_for_status_with_detail", lambda _response: None)
+    assert (
+        promote.handle_promote(
+            ["preview", str(path), "-w", "demo", "--resume-job-id", "old-job"]
+        )
+        == 1
+    )
+    assert "different snapshot" in capsys.readouterr().err
+
+
+def test_release_resume_flags_are_phase_specific() -> None:
+    options = promote._parser().parse_args(
+        [
+            "release",
+            "features/demo.py",
+            "-w",
+            "demo",
+            "--canary",
+            "--resume-preview-job-id",
+            "preview-job",
+            "--resume-prepare-job-id",
+            "prepare-job",
+        ]
+    )
+    assert options.resume_preview_job_id == "preview-job"
+    assert options.resume_prepare_job_id == "prepare-job"
+    assert not hasattr(options, "resume_job_id")
+
+
+def test_release_canary_waits_for_terminal_success(monkeypatch) -> None:
+    reads = iter(
+        [
+            {"execution_id": "execution-1", "status": "Running"},
+            {"execution_id": "execution-1", "status": "Success"},
+        ]
+    )
+
+    class Response:
+        def __init__(self, body):
+            self.body = body
+
+        def json(self):
+            return self.body
+
+    class Client:
+        def post_sync(self, _endpoint, **_kwargs):
+            return Response(
+                {"artifact_id": "artifact-1", "execution_id": "execution-1"}
+            )
+
+        def get_sync(self, endpoint):
+            assert endpoint == "/api/executions/execution-1"
+            return Response(next(reads))
+
+    monkeypatch.setattr(promote, "raise_for_status_with_detail", lambda _response: None)
+    monkeypatch.setattr(promote.time, "sleep", lambda _seconds: None)
+    assert (
+        promote._canary_for_release(
+            Client(),
+            artifact_id="artifact-1",
+            parameters_json="{}",
+            timeout_seconds=10,
+        )
+        == "execution-1"
+    )
 
 
 def test_release_orchestrates_canary_cas_and_verified_history(
@@ -1113,6 +1272,10 @@ def test_release_orchestrates_canary_cas_and_verified_history(
     class Client:
         def get_sync(self, endpoint):
             calls.append(("GET", endpoint))
+            if endpoint.endswith("/executions/canary-execution"):
+                return Response(
+                    {"execution_id": "canary-execution", "status": "Success"}
+                )
             if endpoint.endswith("/live"):
                 live_reads = sum(item == ("GET", endpoint) for item in calls)
                 if live_reads <= 2:

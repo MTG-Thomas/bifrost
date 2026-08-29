@@ -79,6 +79,16 @@ router = APIRouter(
     prefix="/api/workspace-promotions",
     tags=["Workspace rapid promotion"],
 )
+
+
+def _preview_job_dedupe_key(
+    organization_id: UUID, request: WorkspacePromotionPreviewRequest
+) -> str:
+    request_json = request.model_dump(mode="json")
+    canonical = json.dumps(request_json, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(f"{organization_id}:{canonical}".encode()).hexdigest()
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -164,10 +174,7 @@ async def enqueue_workspace_promotion_preview(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="an organization context is required",
         )
-    request_json = request.model_dump(mode="json")
-    dedupe_key = hashlib.sha256(
-        json.dumps(request_json, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    dedupe_key = _preview_job_dedupe_key(ctx.org_id, request)
     job, reused = await enqueue_platform_job(
         db,
         WORKSPACE_PROMOTION_PREVIEW_DEFINITION,
