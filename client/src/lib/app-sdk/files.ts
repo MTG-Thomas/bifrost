@@ -43,6 +43,16 @@ export interface SignedUrlResult {
 
 type FileUploadContent = string | Blob | Uint8Array | ArrayBuffer;
 
+let defaultScope: string | null = null;
+
+export function setDefaultFileScope(scope: string | null): () => void {
+	const previous = defaultScope;
+	defaultScope = scope;
+	return () => {
+		defaultScope = previous;
+	};
+}
+
 function getCsrfToken(): string {
 	const match = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/);
 	return match ? decodeURIComponent(match[1]) : "";
@@ -52,7 +62,7 @@ function requestDefaults(options: FileOptions = {}) {
 	return {
 		location: options.location ?? "workspace",
 		mode: options.mode ?? "cloud",
-		scope: options.scope ?? null,
+		scope: options.scope ?? defaultScope,
 	};
 }
 
@@ -61,7 +71,7 @@ function signedDefaults(options: SignedUrlOptions = {}) {
 		method: options.method ?? "PUT",
 		content_type: options.contentType ?? "application/octet-stream",
 		location: options.location ?? "workspace",
-		scope: options.scope ?? null,
+		scope: options.scope ?? defaultScope,
 		expires_in: options.expiresIn ?? 600,
 	};
 }
@@ -70,7 +80,10 @@ async function errorText(response: Response): Promise<string> {
 	const text = await response.text().catch(() => "");
 	if (!text) return response.statusText;
 	try {
-		const body = JSON.parse(text) as { detail?: unknown; message?: unknown };
+		const body = JSON.parse(text) as {
+			detail?: unknown;
+			message?: unknown;
+		};
 		const detail = body.detail ?? body.message;
 		if (typeof detail === "string") return detail;
 		if (detail !== undefined) return JSON.stringify(detail);
@@ -138,7 +151,9 @@ async function http<T>(
 	}
 	if (response.status === 204) return null;
 	if (!response.ok) {
-		throw new Error(`files: ${response.status} ${await errorText(response)}`);
+		throw new Error(
+			`files: ${response.status} ${await errorText(response)}`,
+		);
 	}
 	return (await response.json()) as T;
 }

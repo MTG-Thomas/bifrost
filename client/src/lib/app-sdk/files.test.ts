@@ -4,12 +4,14 @@ import {
 	FileNotFoundError,
 	FilePolicyError,
 	files,
+	setDefaultFileScope,
 	setBifrostTransport,
 } from "./files";
 
 let restoreTransport: (() => void) | null = null;
 
 afterEach(() => {
+	setDefaultFileScope(null);
 	restoreTransport?.();
 	restoreTransport = null;
 	vi.unstubAllGlobals();
@@ -27,6 +29,15 @@ function okNoContent() {
 }
 
 describe("files web SDK", () => {
+	it("uses the provider's runtime organization when scope is omitted", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(okJson({ content: "hello", binary: false }));
+		vi.stubGlobal("fetch", fetchMock);
+		setDefaultFileScope("runtime-org");
+
+		await files.read("docs/readme.txt");
+
+		expect(JSON.parse(fetchMock.mock.calls[0][1].body).scope).toBe("runtime-org");
+	});
 	it("read posts to /api/files/read with workspace defaults", async () => {
 		const fetchMock = vi
 			.fn()
@@ -165,6 +176,25 @@ describe("files web SDK", () => {
 		expect(result.expiresIn).toBe(604800);
 		expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
 			expires_in: 604800,
+		});
+	});
+
+	it("signedUrl combines the provider organization with custom expiration", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			okJson({
+				url: "https://s3/x",
+				path: "_repo/x",
+				expires_in: 3600,
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		setDefaultFileScope("runtime-org");
+
+		await files.signedUrl("x.txt", { method: "GET", expiresIn: 3600 });
+
+		expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+			scope: "runtime-org",
+			expires_in: 3600,
 		});
 	});
 
