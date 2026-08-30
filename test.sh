@@ -13,6 +13,7 @@
 #   ./test.sh e2e-smoke                 PR-gating backend e2e smoke tests.
 #   ./test.sh e2e                       Backend e2e tests.
 #   ./test.sh all                       All backend tests, including slow tests.
+#   ./test.sh reliability               Real-service execution reliability gauntlet.
 #   ./test.sh tests/path/... [args]     Pass through to pytest.
 #
 # Quality checks:
@@ -352,7 +353,11 @@ run_pytest() {
 
     docker compose -f "$COMPOSE_FILE" --profile test run "${build_args[@]}" --rm test-runner \
         pytest "$@" --durations=25 --junitxml="$LOG_DIR/test-results.xml" 2>&1 | tee "$LOG_DIR/test-runner.log"
-    return "${PIPESTATUS[0]}"
+    runner_status="${PIPESTATUS[0]}"
+    trap - INT TERM
+    cleanup_pytest_runner
+    exec {runner_lock_fd}>&-
+    return "$runner_status"
 }
 
 # `unit` is the fast every-PR lane: it deselects `@pytest.mark.slow` tests
@@ -364,6 +369,18 @@ cmd_unit() { run_pytest tests/ --ignore=tests/e2e/ -m "not slow" -v "$@"; }
 cmd_unit_all() { run_pytest tests/ --ignore=tests/e2e/ -v "$@"; }
 cmd_e2e()  { run_pytest tests/e2e/ -v "$@"; }
 cmd_all()  { run_pytest tests/ -v "$@"; }
+cmd_reliability() {
+    require_stack_up
+    local report="$LOG_DIR/execution-reliability-gauntlet.json"
+    chmod 1777 "$LOG_DIR" 2>/dev/null || true
+    docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner \
+        python -m scripts.execution_reliability_gauntlet
+    if [ ! -s "$report" ]; then
+        echo "Reliability report missing or empty: $report" >&2
+        return 1
+    fi
+    echo "Reliability report: $report"
+}
 cmd_coverage() {
     local target="${1:-coverage.xml}"
     local basename_target
@@ -603,6 +620,7 @@ build_local_api_candidate() {
         .
     docker run --rm \
         --env "EXPECTED_VERSION=$version" \
+        --env "BIFROST_SECRET_KEY=local-production-candidate-smoke-key" \
         --entrypoint python \
         "$image_tag" \
         -c "import os; from shared.version import get_version; from src.main import app; assert app is not None; assert get_version() == os.environ['EXPECTED_VERSION']"
@@ -796,9 +814,11 @@ case "$1" in
     e2e-smoke) shift; cmd_e2e_smoke "$@" ;;
     e2e) shift; cmd_e2e "$@" ;;
     all) shift; cmd_all "$@" ;;
+    reliability) shift; cmd_reliability "$@" ;;
     quality) shift; cmd_quality "$@" ;;
     client) shift; cmd_client "$@" ;;
     mcp) shift; cmd_mcp "$@" ;;
+    pre-pr) cmd_pre_pr ;;
     ci) cmd_ci ;;
     -h|--help|help)
         sed -n '2,35p' "$0"

@@ -6,7 +6,7 @@
 # Uses BUILDPLATFORM to run on native architecture (no QEMU emulation)
 # =============================================================================
 # node:20-slim
-FROM --platform=$BUILDPLATFORM node:26-slim@sha256:deae974a69e140f44f434ab29cb519fb5f8fe250fd364b8ca446bd0761acdc6a AS base
+FROM --platform=$BUILDPLATFORM node:26-slim@sha256:4ebb5ace66f15a24c14c492e01a8beeed4fddf970a856109f5126e703e5fe503 AS base
 
 WORKDIR /app
 
@@ -33,11 +33,17 @@ RUN npm run build \
     && find dist -type d -exec chmod 755 {} + \
     && find dist -type f -exec chmod 644 {} +
 
+# Local/CI verification target: production build plus the same Node checks
+# required by the merge gate.
+FROM builder AS ci
+
+CMD ["sh", "-c", "npm run tsc && npm run lint && npm test"]
+
 # =============================================================================
 # Stage 3: Production with nginx
 # =============================================================================
 # nginx:alpine
-FROM nginx:alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752 AS production
+FROM nginx:alpine@sha256:db35bfc6b2951e7f8a72db5db120288c127ffaeeb4a6d4b95a26fead017d5913 AS production
 
 # Copy built assets from builder
 COPY --from=builder /app/dist /usr/share/nginx/html

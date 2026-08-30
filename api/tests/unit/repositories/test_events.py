@@ -298,4 +298,7 @@ async def test_delivery_retry_and_stuck_queries_select_actionable_records() -> N
     assert "event_deliveries.next_retry_at IS NOT NULL" in retry_sql
     assert "event_deliveries.next_retry_at <= :next_retry_at_1" in retry_sql
     assert "event_deliveries.status IN (__[POSTCOMPILE_status_" in stuck_sql
-    assert "event_deliveries.created_at <" in stuck_sql
+    assert (
+        "coalesce(event_deliveries.attempt_started_at, "
+        "event_deliveries.created_at) <"
+    ) in stuck_sql

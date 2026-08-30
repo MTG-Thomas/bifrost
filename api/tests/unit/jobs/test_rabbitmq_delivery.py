@@ -1,6 +1,8 @@
 """Unit tests for RabbitMQ delivery outcome decisions."""
 
+import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -15,6 +17,10 @@ from src.jobs.rabbitmq import (
     _publish_once,
     infer_idempotency_key,
     rabbitmq,
+)
+from src.services.execution.fault_injection import (
+    FailurePoint,
+    inject_execution_failures,
 )
 
 
@@ -66,10 +72,24 @@ class UnitConsumer(BaseConsumer):
         if self.outcome == "unexpected":
             raise RuntimeError("surprising failure")
 
-    async def _publish_retry(self, message: Any, context: Any, *, reason: str) -> None:
+    async def _publish_retry(
+        self,
+        message: Any,
+        context: Any,
+        *,
+        reason: str,
+        dependency: str | None = None,
+    ) -> None:
         self.retry_payloads.append((context.body, context.retry_count + 1, reason))
 
-    async def _publish_poison(self, message: Any, context: Any, *, reason: str) -> None:
+    async def _publish_poison(
+        self,
+        message: Any,
+        context: Any,
+        *,
+        reason: str,
+        error_type: str | None = None,
+    ) -> None:
         self.poison_payloads.append((context.body, reason))
 
 
@@ -139,12 +159,40 @@ async def test_retryable_error_publishes_retry_then_acks_original() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancellation_retry_preserves_error_type() -> None:
+    consumer = UnitConsumer()
+    consumer.process_message = AsyncMock(side_effect=asyncio.CancelledError())  # type: ignore[method-assign]
+    consumer._retry_or_poison = AsyncMock()  # type: ignore[method-assign]
+    message = FakeMessage(json.dumps({"ok": True}))
+
+    with pytest.raises(asyncio.CancelledError):
+        await consumer._process_message_with_ack(message)
+
+    call = consumer._retry_or_poison.await_args
+    assert call is not None
+    assert call.kwargs["reason"] == "consumer shutdown"
+    assert call.kwargs["error_type"] == "CancelledError"
+
+
+@pytest.mark.asyncio
 async def test_retry_publish_failure_requeues_original() -> None:
     consumer = UnitConsumer("retry")
     consumer._publish_retry = AsyncMock(side_effect=RuntimeError("broker down"))  # type: ignore[method-assign]
     message = FakeMessage(json.dumps({"ok": True}))
 
     await consumer._process_message_with_ack(message)
+
+    message.ack.assert_not_awaited()
+    message.nack.assert_awaited_once_with(requeue=True)
+
+
+@pytest.mark.asyncio
+async def test_injected_retry_publish_failure_requeues_original() -> None:
+    consumer = UnitConsumer("retry")
+    message = FakeMessage(json.dumps({"ok": True}))
+
+    with inject_execution_failures({FailurePoint.RETRY_PUBLISH: 1}):
+        await consumer._process_message_with_ack(message)
 
     message.ack.assert_not_awaited()
     message.nack.assert_awaited_once_with(requeue=True)
@@ -167,6 +215,25 @@ async def test_max_retry_exhaustion_publishes_poison_then_acks_original() -> Non
 
 
 @pytest.mark.asyncio
+async def test_elapsed_retry_budget_poison_messages_even_before_count_limit() -> None:
+    consumer = UnitConsumer("retry")
+    consumer.retry_budget_seconds = 60
+    message = FakeMessage(
+        json.dumps({"ok": True}),
+        headers={
+            "x-enqueued-at": (
+                datetime.now(timezone.utc) - timedelta(minutes=2)
+            ).isoformat()
+        },
+    )
+
+    await consumer._process_message_with_ack(message)
+
+    assert "elapsed-time budget exhausted" in consumer.poison_payloads[0][1]
+    message.ack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_permanent_error_publishes_poison_then_acks_original() -> None:
     consumer = UnitConsumer("permanent")
     message = FakeMessage(json.dumps({"ok": True}))
@@ -176,6 +243,39 @@ async def test_permanent_error_publishes_poison_then_acks_original() -> None:
     assert consumer.poison_payloads == [({"ok": True}, "bad state")]
     message.ack.assert_awaited_once()
     message.nack.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_poison_is_finalized_before_original_is_acked() -> None:
+    consumer = UnitConsumer("permanent")
+    message = FakeMessage(json.dumps({"ok": True}))
+    decisions: list[str] = []
+    consumer._publish_poison = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda *_args, **_kwargs: decisions.append("published")
+    )
+    consumer._finalize_poison_delivery = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda *_args, **_kwargs: decisions.append("finalized")
+    )
+    message.ack.side_effect = lambda: decisions.append("acked")
+
+    await consumer._process_message_with_ack(message)
+
+    assert decisions == ["published", "finalized", "acked"]
+
+
+@pytest.mark.asyncio
+async def test_poison_finalization_failure_requeues_original() -> None:
+    consumer = UnitConsumer("permanent")
+    consumer._finalize_poison_delivery = AsyncMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("durable state unavailable")
+    )
+    message = FakeMessage(json.dumps({"ok": True}))
+
+    await consumer._process_message_with_ack(message)
+
+    assert consumer.poison_payloads == [({"ok": True}, "bad state")]
+    message.ack.assert_not_awaited()
+    message.nack.assert_awaited_once_with(requeue=True)
 
 
 @pytest.mark.asyncio
@@ -228,6 +328,18 @@ async def test_poison_publish_failure_requeues_original() -> None:
 
 
 @pytest.mark.asyncio
+async def test_injected_poison_publish_failure_requeues_original() -> None:
+    consumer = UnitConsumer("permanent")
+    message = FakeMessage(json.dumps({"ok": True}))
+
+    with inject_execution_failures({FailurePoint.POISON_PUBLISH: 1}):
+        await consumer._process_message_with_ack(message)
+
+    message.ack.assert_not_awaited()
+    message.nack.assert_awaited_once_with(requeue=True)
+
+
+@pytest.mark.asyncio
 async def test_retry_without_context_requeues_original() -> None:
     consumer = UnitConsumer()
     message = FakeMessage(json.dumps({"ok": True}))
@@ -270,17 +382,52 @@ async def test_publish_retry_routes_to_delayed_queue_with_retry_headers() -> Non
     assert published.headers["x-origin-queue"] == "unit-queue"
     assert published.headers["x-idempotency-key"] == "msg-1"
     assert published.headers["x-last-error"] == "try later"
+    assert published.headers["x-retry-delay-seconds"] == 10
 
 
 @pytest.mark.asyncio
-async def test_publish_poison_routes_to_dlx_with_reason_headers() -> None:
+async def test_retry_jitter_is_stable_and_dependency_circuit_advances_stage() -> None:
+    consumer = BasePublishConsumer()
+    consumer.retry_jitter_ratio = 0.2
+    consumer._dependency_failures["provider"] = 3
+    channel = FakeChannel()
+    consumer._channel = channel  # type: ignore[assignment]
+    message = FakeMessage(json.dumps({"execution_id": "exec-1"}))
+    context = consumer._build_context(message)
+
+    first = consumer._retry_queue(context, 1)
+    assert consumer._retry_queue(context, 1) == first
+    await consumer._publish_retry(
+        message,
+        context,
+        reason="provider unavailable",
+        dependency="provider",
+    )
+
+    retry_call = channel.default_exchange.publish.await_args
+    assert retry_call is not None
+    published = retry_call.args[0]
+    assert "retry-2-" in retry_call.kwargs["routing_key"]
+    assert published.headers["x-dependency-circuit-open"] is True
+    assert published.headers["x-failed-dependency"] == "provider"
+
+
+@pytest.mark.asyncio
+async def test_publish_poison_routes_to_dlx_with_reason_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BIFROST_WORKER_IMAGE_REF", "worker@sha256:candidate")
+    monkeypatch.setenv("BIFROST_WORKER_LANE", "isolated-canary")
+    monkeypatch.setenv("BIFROST_KUBERNETES_DEPLOYMENT", "bifrost-worker-canary")
     consumer = BasePublishConsumer()
     channel = FakeChannel()
     consumer._channel = channel  # type: ignore[assignment]
     message = FakeMessage(json.dumps({"ok": True}), headers={"x-retry-count": 2})
     context = consumer._build_context(message)
 
-    await consumer._publish_poison(message, context, reason="bad forever")
+    await consumer._publish_poison(
+        message, context, reason="bad forever", error_type="PermanentFailure"
+    )
 
     channel.declare_exchange.assert_awaited_once()
     channel.poison_exchange.publish.assert_awaited_once()
@@ -290,6 +437,10 @@ async def test_publish_poison_routes_to_dlx_with_reason_headers() -> None:
     assert poison_call.kwargs == {"routing_key": "unit-queue"}
     assert published.headers["x-retry-count"] == 2
     assert published.headers["x-poison-reason"] == "bad forever"
+    assert published.headers["x-poison-error-type"] == "PermanentFailure"
+    assert published.headers["x-worker-image-ref"] == "worker@sha256:candidate"
+    assert published.headers["x-worker-lane"] == "isolated-canary"
+    assert published.headers["x-worker-deployment"] == "bifrost-worker-canary"
     assert "x-poisoned-at" in published.headers
 
 

@@ -248,12 +248,17 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Agent create/update replaced llm_model with llm_profile_id and the SDK AI
     # surface adopted reusable model profiles (2026-08-24). BREAKING: the
     # compatible CLI ships behind the unreleased 1.2.3 minimum-version floor.
+    # Event subscriptions replaced the inert filter_expression string with the
+    # structured criteria v1 contract (2026-08-26). BREAKING: the matching CLI
+    # implementation ships in that same unreleased 1.2.3-gated release.
     # Additive attachment, artifact, model-profile, logo, usage-cache, and
     # platform-job memory fields are included in the same fingerprint refresh.
     # Reviewed promotion gained an optional declared multi-root cohort and
     # additive source-release evidence (2026-08-24). Single-root v11 clients
     # retain their existing request and response behavior.
-    "21bee37d3cb63f1c877fc3ad919dc4053dc001308c3b4bb2161dd1e9412343a6"
+    # Promotion responses gained optional risk_paths (2026-08-29). ADDITIVE:
+    # old clients ignore it and retain their existing risk-class handling.
+    "9aa08854f3f37f03139643d568cd032e21a6b70be49d44179c25943cc5517dfa"
 )
 
 

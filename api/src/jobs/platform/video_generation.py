@@ -7,6 +7,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from src.jobs.execution_policy import (
+    CancellationMode,
+    WorkerLossBehavior,
+    WorkloadClass,
+    platform_job_operations_policy,
+)
 from src.jobs.platform.base import (
     PlatformJobContext,
     PlatformJobDefinition,
@@ -166,6 +172,12 @@ VIDEO_GENERATION_DEFINITION = PlatformJobDefinition(
         min_memory_headroom_mb=512,
         allow_running_cancellation=True,
     ),
+    operations_policy=platform_job_operations_policy(
+        VIDEO_GENERATION_JOB_TYPE,
+        workload_class=WorkloadClass.PLATFORM_INTERACTIVE,
+        worker_loss=WorkerLossBehavior.FAIL,
+        cancellation=CancellationMode.QUEUED_AND_RUNNING,
+    ),
     encrypt_payload=True,
 )
 
@@ -232,5 +244,11 @@ SDK_VIDEO_GENERATION_DEFINITION = PlatformJobDefinition(
     payload_model=SDKVideoGenerationPayload,
     handler=run_sdk_video_generation,
     policy=VIDEO_GENERATION_DEFINITION.policy,
+    operations_policy=platform_job_operations_policy(
+        "sdk.video_generation",
+        workload_class=WorkloadClass.PLATFORM_INTERACTIVE,
+        worker_loss=WorkerLossBehavior.FAIL,
+        cancellation=CancellationMode.QUEUED_AND_RUNNING,
+    ),
     encrypt_payload=True,
 )

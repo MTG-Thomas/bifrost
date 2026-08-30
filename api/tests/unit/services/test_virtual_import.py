@@ -11,12 +11,15 @@ The implementation uses a targeted resolver to identify workspace-owned imports:
 
 import importlib
 import sys
+import sysconfig
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.core.module_cache_sync import ModuleResolution
+from src.core.module_cache_sync import ModuleResolution, ModuleResolutionError
 from src.services.execution.virtual_import import (
     _is_bifrost_source_spec,
     NamespacePackageLoader,
@@ -628,6 +631,100 @@ class TestIntegration:
                 f"{module_name}.submodule",
             ]:
                 sys.modules.pop(loaded, None)
+
+    def test_installed_dependency_optional_import_preserves_importerror(
+        self, tmp_path, monkeypatch
+    ):
+        """A resolver outage must not break a dependency's optional import probe."""
+        package_name = "virtual_optional_dependency"
+        optional_name = "virtual_optional_dependency_companion"
+        installed_dir = tmp_path / "site-packages"
+        package_dir = installed_dir / package_name
+        package_dir.mkdir(parents=True)
+        (package_dir / "__init__.py").write_text(
+            f"try:\n    import {optional_name}\nexcept ImportError:\n"
+            "    OPTIONAL_AVAILABLE = False\n"
+        )
+        monkeypatch.syspath_prepend(str(installed_dir))
+        install_virtual_import_hook()
+
+        try:
+            with patch(
+                "src.services.execution.virtual_import.resolve_module_sync",
+                side_effect=ModuleResolutionError("resolver unavailable"),
+            ) as resolver:
+                module = importlib.import_module(package_name)
+
+            assert module.OPTIONAL_AVAILABLE is False
+            resolver.assert_called_once_with(optional_name)
+        finally:
+            sys.modules.pop(package_name, None)
+            sys.modules.pop(optional_name, None)
+
+    def test_stdlib_optional_import_preserves_importerror(self):
+        """A resolver outage must not break a stdlib optional import probe."""
+        optional_name = "virtual_stdlib_optional_companion"
+        module_name = "virtual_stdlib_optional_probe"
+        filename = str(Path(sysconfig.get_path("stdlib")) / f"{module_name}.py")
+        namespace = {
+            "__name__": module_name,
+            "__file__": filename,
+            "__loader__": SourceFileLoader(module_name, filename),
+        }
+        install_virtual_import_hook()
+
+        try:
+            with patch(
+                "src.services.execution.virtual_import.resolve_module_sync",
+                side_effect=ModuleResolutionError("resolver unavailable"),
+            ) as resolver:
+                exec(
+                    compile(
+                        f"try:\n    import {optional_name}\nexcept ImportError:\n"
+                        "    OPTIONAL_AVAILABLE = False\n",
+                        filename,
+                        "exec",
+                    ),
+                    namespace,
+                )
+
+            assert namespace["OPTIONAL_AVAILABLE"] is False
+            resolver.assert_called_once_with(optional_name)
+        finally:
+            sys.modules.pop(optional_name, None)
+
+    def test_workspace_import_still_fails_when_resolver_is_unavailable(self):
+        """Workspace imports remain fail-closed during a resolver outage."""
+        module_name = "virtual_resolver_outage_workflow"
+        missing_name = "virtual_resolver_outage_helper"
+        install_virtual_import_hook()
+
+        def resolve(name: str) -> ModuleResolution:
+            if name == module_name:
+                return ModuleResolution(
+                    kind="module",
+                    path=f"{module_name}.py",
+                    content=f"import {missing_name}\n",
+                    hash="abc",
+                )
+            raise ModuleResolutionError("resolver unavailable")
+
+        try:
+            with (
+                patch(
+                    "src.services.execution.virtual_import.PathFinder.find_spec",
+                    return_value=None,
+                ),
+                patch(
+                    "src.services.execution.virtual_import.resolve_module_sync",
+                    side_effect=resolve,
+                ),
+                pytest.raises(ModuleResolutionError, match="resolver unavailable"),
+            ):
+                importlib.import_module(module_name)
+        finally:
+            sys.modules.pop(module_name, None)
+            sys.modules.pop(missing_name, None)
 
     def test_virtual_package_takes_precedence_over_platform_source_module(self, tmp_path):
         """Workspace packages should not be shadowed by Bifrost source modules."""

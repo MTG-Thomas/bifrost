@@ -151,7 +151,15 @@ class TestEventResponseBuilders:
             agent=SimpleNamespace(name="Dispatcher"),
             workflow=None,
             event_type="ticket.created",
-            filter_expression="$.priority == 'high'",
+            criteria={
+                "version": 1,
+                "root": {
+                    "kind": "condition",
+                    "field": "event.body.priority",
+                    "operator": "equals",
+                    "value": "high",
+                },
+            },
             input_mapping={"ticket": "{{ event.data.id }}"},
             is_active=True,
             created_by="admin@example.com",
@@ -162,6 +170,7 @@ class TestEventResponseBuilders:
         with patch.object(events, "EventDeliveryRepository") as delivery_repo_cls:
             repo = delivery_repo_cls.return_value
             repo.count_by_subscription = AsyncMock(side_effect=[5, 3, 2])
+            repo.count_by_subscription_decision = AsyncMock(side_effect=[1, 1])
 
             result = await events._build_event_subscription_response(
                 subscription, AsyncMock()
@@ -172,11 +181,19 @@ class TestEventResponseBuilders:
         assert result.delivery_count == 5
         assert result.success_count == 3
         assert result.failed_count == 2
+        assert result.skipped_count == 1
+        assert result.evaluation_error_count == 1
         repo.count_by_subscription.assert_any_await(
             subscription.id, status=EventDeliveryStatus.SUCCESS
         )
         repo.count_by_subscription.assert_any_await(
             subscription.id, status=EventDeliveryStatus.FAILED
+        )
+        repo.count_by_subscription_decision.assert_any_await(
+            subscription.id, "not_matched"
+        )
+        repo.count_by_subscription_decision.assert_any_await(
+            subscription.id, "evaluation_error"
         )
 
 
@@ -569,12 +586,19 @@ class TestEventDeliveryEndpoints:
             status=EventDeliveryStatus.FAILED,
             error_message="previous failure",
             execution_id=uuid4(),
+            completed_at=datetime.now(timezone.utc),
+            attempt_started_at=None,
         )
         db = AsyncMock()
         db.execute = AsyncMock(return_value=_db_execute_result(delivery))
 
+        async def fail_retry(row):
+            row.status = EventDeliveryStatus.FAILED
+            row.error_message = "queue down"
+            return "Failed to queue retry: queue down"
+
         processor = MagicMock()
-        processor.queue_event_deliveries = AsyncMock(side_effect=RuntimeError("queue down"))
+        processor.retry_delivery = AsyncMock(side_effect=fail_retry)
         with patch("src.services.events.processor.EventProcessor", return_value=processor):
             response = await events.retry_delivery(delivery_id, _ctx(), _user(), db)
 
@@ -583,9 +607,7 @@ class TestEventDeliveryEndpoints:
         assert response.message == "Failed to queue retry: queue down"
         assert delivery.status == EventDeliveryStatus.FAILED
         assert delivery.error_message == "queue down"
-        assert delivery.execution_id is None
-        assert db.flush.await_count == 2
-        processor.queue_event_deliveries.assert_awaited_once_with(event_id)
+        processor.retry_delivery.assert_awaited_once_with(delivery)
 
 
 class TestEventSourceMutationEndpoints:

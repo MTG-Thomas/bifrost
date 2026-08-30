@@ -28,6 +28,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4, uuid5
 
@@ -35,6 +36,7 @@ from pydantic import ValidationError
 from sqlalchemy import delete, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.models.contracts.events import EventCriteria
 from src.models.orm.agents import Agent, AgentRole
 from src.models.orm.events import (
     EventSource,
@@ -303,6 +305,7 @@ class SolutionDeployer:
         bundle: SolutionBundle,
         force: bool = False,
         file_mode: str = "replace",
+        source_artifact: bytes | Path | None = None,
     ) -> DeployResult:
         """Full-replace this install from ``bundle`` — DB phase + app COMPILE.
 
@@ -332,7 +335,8 @@ class SolutionDeployer:
         # remapping, then store it only after the DB commit in finalize_s3.
         from src.services.solutions.export import build_workspace_zip
 
-        source_artifact = build_workspace_zip(bundle)
+        if source_artifact is None:
+            source_artifact = build_workspace_zip(bundle)
 
         # ── Module-closure backstop — before ANY writes ──────────────────────
         # Primary gate is in zip_install (returns a clean 422). This backstop
@@ -763,10 +767,14 @@ class SolutionDeployer:
             )
 
     # ── 1. Python source → SolutionStorage (full replace + cache sync) ───────
-    async def _write_source_artifact(self, sid: UUID, source_zip: bytes) -> None:
+    async def _write_source_artifact(self, sid: UUID, source_zip: bytes | Path) -> None:
         from src.services.solutions.source_artifact import SolutionSourceArtifactStorage
 
-        await SolutionSourceArtifactStorage(sid).write(source_zip)
+        storage = SolutionSourceArtifactStorage(sid)
+        if isinstance(source_zip, Path):
+            await storage.write_path(source_zip)
+        else:
+            await storage.write(source_zip)
 
     async def _write_python(self, sid: UUID, python_files: dict[str, str]) -> None:
         """Full-replace this install's Python source and keep the module cache
@@ -1851,6 +1859,13 @@ class SolutionDeployer:
             for msub in mevent.get("subscriptions") or []:
                 sub_workflow = msub.get("workflow_id")
                 sub_agent = msub.get("agent_id")
+                criteria = (
+                    EventCriteria.model_validate(msub["criteria"]).model_dump(
+                        mode="json"
+                    )
+                    if msub.get("criteria") is not None
+                    else None
+                )
                 await self.db.execute(
                     insert(EventSubscription).values(
                         id=UUID(str(msub["id"])) if msub.get("id") else uuid4(),
@@ -1859,7 +1874,7 @@ class SolutionDeployer:
                         agent_id=UUID(str(sub_agent)) if sub_agent else None,
                         target_type=msub.get("target_type", "workflow"),
                         event_type=msub.get("event_type"),
-                        filter_expression=msub.get("filter_expression"),
+                        criteria=criteria,
                         input_mapping=msub.get("input_mapping"),
                         is_active=msub.get("is_active", True),
                         solution_id=sid,

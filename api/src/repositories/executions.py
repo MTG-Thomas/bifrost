@@ -387,7 +387,10 @@ class ExecutionRepository(BaseRepository[Execution]):
                 logger.debug(f"invalid end_date {end_date!r}, ignoring filter: {e}")
 
         # Order by newest first
-        query = query.order_by(desc(Execution.started_at))
+        query = query.order_by(
+            desc(Execution.started_at).nulls_last(),
+            desc(Execution.id),
+        )
 
         # Pagination
         query = query.offset(offset).limit(limit + 1)  # +1 to check for more

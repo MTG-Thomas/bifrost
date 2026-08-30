@@ -34,6 +34,7 @@ async def test_update_event_status_derives_status_from_delivery_counts(
     session = AsyncMock()
     session.get.return_value = event
     session.execute.return_value = _AllResult(list(counts.items()))
+    session.scalar.return_value = 0
     repo = EventDeliveryRepository(session)
 
     await repo.update_event_status(uuid4())
@@ -57,6 +58,7 @@ async def test_update_event_status_leaves_missing_or_empty_events_unchanged():
     session = AsyncMock()
     session.get.return_value = event
     session.execute.return_value = _AllResult([])
+    session.scalar.return_value = 0
     repo = EventDeliveryRepository(session)
 
     await repo.update_event_status(uuid4())

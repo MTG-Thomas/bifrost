@@ -42,6 +42,10 @@ from src.models.orm.codex_gateway import (
 from src.models.orm.config import Config, SystemConfig
 from src.models.orm.events import Event, EventDelivery, EventSource, EventSubscription, WebhookSource
 from src.models.orm.executions import Execution, ExecutionLog
+from src.models.orm.execution_attempts import ExecutionAttempt
+from src.models.orm.execution_lifecycle_events import ExecutionLifecycleEvent
+from src.models.orm.worker_control_commands import WorkerControlCommand
+from src.models.orm.poison_message_dispositions import PoisonMessageDisposition
 from src.models.orm.external_mcp import (
     AgentMCPConnection,
     MCPConnection,
@@ -82,6 +86,7 @@ from src.models.orm.policy_rule import PolicyRule
 from src.models.orm.worker_metric import WorkerMetric
 from src.models.orm.workspace_repo_changesets import WorkspaceRepoChangeset
 from src.models.orm.workspace_promotions import (
+    SolutionDeployObligation,
     WorkspacePromotionArtifact,
     WorkspacePromotionRelease,
     WorkspaceSourceRelease,
@@ -100,6 +105,7 @@ __all__ = [
     "SolutionDeployJob",
     "SolutionDeployment",
     "SolutionDeploymentDependency",
+    "SolutionDeployObligation",
     "SolutionExportJob",
     "PendingCaptureORM",
     # Applications (App Builder)
@@ -149,6 +155,10 @@ __all__ = [
     "FormPublication",
     # Executions
     "Execution",
+    "ExecutionAttempt",
+    "ExecutionLifecycleEvent",
+    "WorkerControlCommand",
+    "PoisonMessageDisposition",
     "ExecutionLog",
     # CLI Sessions
     "CLISession",

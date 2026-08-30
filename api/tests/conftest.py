@@ -221,6 +221,22 @@ async def close_loop_bound_redis_clients() -> AsyncGenerator[None, None]:
 
 
 @pytest_asyncio.fixture(autouse=True)
+async def close_loop_bound_database_pool() -> AsyncGenerator[None, None]:
+    """Dispose application DB connections before pytest closes each test loop.
+
+    Tests that call application services directly use the global session
+    factory rather than the NullPool-backed ``db_session`` fixture. Its
+    asyncpg connections are bound to the creating loop and cannot safely be
+    checked out by the next function-scoped pytest loop.
+    """
+    yield
+
+    from src.core.database import close_db
+
+    await close_db()
+
+
+@pytest_asyncio.fixture(autouse=True)
 async def isolate_file_policies(request) -> AsyncGenerator[None, None]:
     """Wipe file policies + metadata before every async test that touches them.
 

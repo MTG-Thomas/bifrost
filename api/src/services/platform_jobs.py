@@ -27,6 +27,7 @@ from src.models.contracts.platform_jobs import (
     PlatformJobStatus,
 )
 from src.models.orm.platform_jobs import PlatformJob
+from src.services.execution_attempts import transition_execution_attempt
 from src.services.platform_job_memory_profiles import (
     resolve_platform_job_memory_required_bytes,
     record_platform_job_memory_profile,
@@ -349,10 +350,20 @@ async def finish_platform_job(
         if status == "succeeded":
             job.progress_percent = 100
         job.result = result
-        job.error_code = error_code
+        bounded_error_code = error_code[:100] if error_code else None
+        job.error_code = bounded_error_code
         job.error_message = error_message.strip()[:4000] if error_message else None
         job.error_retryable = error_retryable if error_message else None
         job.completed_at = _now()
+        await transition_execution_attempt(
+            db,
+            logical_job_type="platform_job",
+            logical_job_id=job.id,
+            lease_token=lease_token,
+            status=status,
+            failure_code=bounded_error_code,
+            failure_message=error_message,
+        )
         await record_platform_job_memory_profile(db, job)
         job.lease_owner = None
         job.lease_token = None
@@ -389,6 +400,13 @@ async def defer_platform_job(
         job.status = "waiting"
         job.phase = phase[:200]
         job.result = result
+        await transition_execution_attempt(
+            db,
+            logical_job_type="platform_job",
+            logical_job_id=job.id,
+            lease_token=lease_token,
+            status="waiting",
+        )
         job.lease_owner = None
         job.lease_token = None
         job.heartbeat_at = None
@@ -430,6 +448,14 @@ async def finish_deferred_platform_job(
         job.error_code = "child_work_failed" if error_message else None
         job.error_message = error_message[:4000] if error_message else None
         job.completed_at = _now()
+        await transition_execution_attempt(
+            db,
+            logical_job_type="platform_job",
+            logical_job_id=job.id,
+            status=status,
+            failure_code="child_work_failed" if error_message else None,
+            failure_message=error_message,
+        )
         await record_platform_job_memory_profile(db, job)
         job.revision += 1
         await db.commit()
@@ -479,10 +505,18 @@ async def request_platform_job_cancel(
     now = _now()
     accepted = job.cancel_requested_at is None
     job.cancel_requested_at = job.cancel_requested_at or now
+    was_waiting = job.status == "waiting"
     if job.status in ("queued", "waiting"):
         job.status = "cancelled"
         job.phase = "Cancelled"
         job.completed_at = now
+        if was_waiting:
+            await transition_execution_attempt(
+                db,
+                logical_job_type="platform_job",
+                logical_job_id=job.id,
+                status="cancelled",
+            )
     else:
         job.status = "cancel_requested"
         job.phase = "Cancellation requested"

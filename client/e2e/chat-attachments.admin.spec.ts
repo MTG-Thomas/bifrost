@@ -77,6 +77,8 @@ test.describe("Chat attachments and model profiles", () => {
 
 		let resolveChat!: (payload: Record<string, unknown>) => void;
 		let finishChat!: () => void;
+		let advanceChat!: () => void;
+		let advanceArtifact!: () => void;
 		const chatPayload = new Promise<Record<string, unknown>>((resolve) => {
 			resolveChat = resolve;
 		});
@@ -89,7 +91,7 @@ test.describe("Chat attachments and model profiles", () => {
 				if (payload.type === "chat") {
 					resolveChat(payload);
 					const conversationId = String(payload.conversation_id);
-					setTimeout(() => {
+					advanceChat = () => {
 						socket.send(
 							JSON.stringify({
 								type: "message_start",
@@ -97,8 +99,6 @@ test.describe("Chat attachments and model profiles", () => {
 								assistant_message_id: "assistant-message",
 							}),
 						);
-					}, 500);
-					setTimeout(() => {
 						socket.send(
 							JSON.stringify({
 								type: "agent_switch",
@@ -110,8 +110,6 @@ test.describe("Chat attachments and model profiles", () => {
 								},
 							}),
 						);
-					}, 600);
-					setTimeout(() => {
 						socket.send(
 							JSON.stringify({
 								type: "delta",
@@ -119,8 +117,6 @@ test.describe("Chat attachments and model profiles", () => {
 								content: "I’ll create that. ",
 							}),
 						);
-					}, 750);
-					setTimeout(() => {
 						socket.send(
 							JSON.stringify({
 								type: "assistant_message_end",
@@ -128,8 +124,6 @@ test.describe("Chat attachments and model profiles", () => {
 								message_id: "assistant-progress",
 							}),
 						);
-					}, 900);
-					setTimeout(() => {
 						socket.send(
 							JSON.stringify({
 								type: "tool_call",
@@ -145,8 +139,8 @@ test.describe("Chat attachments and model profiles", () => {
 								},
 							}),
 						);
-					}, 1_000);
-					setTimeout(() => {
+					};
+					advanceArtifact = () => {
 						socket.send(
 							JSON.stringify({
 								type: "tool_result",
@@ -174,8 +168,6 @@ test.describe("Chat attachments and model profiles", () => {
 								},
 							}),
 						);
-					}, 1_500);
-					setTimeout(() => {
 						socket.send(
 							JSON.stringify({
 								type: "delta",
@@ -183,7 +175,7 @@ test.describe("Chat attachments and model profiles", () => {
 								content: "I created the report.",
 							}),
 						);
-					}, 1_800);
+					};
 					finishChat = () => {
 						socket.send(
 							JSON.stringify({
@@ -225,12 +217,16 @@ test.describe("Chat attachments and model profiles", () => {
 
 		await page.getByLabel("Chat input").fill("Summarize this file");
 		await page.getByRole("button", { name: "Send message" }).click();
-		await expect(page.getByText("Thinking…")).toBeVisible();
+		const payload = await chatPayload;
+		await expect(page.getByText("Thinking…")).toBeVisible({ timeout: 15_000 });
 		await page.screenshot({
 			path: "playwright-results/screenshots/chat-thinking.png",
 			fullPage: true,
 		});
-		await expect(page.getByText("Generating Markdown…")).toBeVisible();
+		advanceChat();
+		await expect(page.getByText("Generating Markdown…")).toBeVisible({
+			timeout: 15_000,
+		});
 		await expect(
 			page.getByRole("button", { name: /Generating Markdown/i }),
 		).toHaveAttribute("aria-expanded", "false");
@@ -242,7 +238,8 @@ test.describe("Chat attachments and model profiles", () => {
 			path: "playwright-results/screenshots/chat-generating.png",
 			fullPage: true,
 		});
-		await expect(page.getByText("Responding…")).toBeVisible();
+		advanceArtifact();
+		await expect(page.getByText("Responding…")).toBeVisible({ timeout: 15_000 });
 		await expect(
 			page.getByRole("button", { name: /Responding/i }),
 		).toHaveAttribute("aria-expanded", "false");
@@ -256,7 +253,6 @@ test.describe("Chat attachments and model profiles", () => {
 			fullPage: true,
 		});
 
-		const payload = await chatPayload;
 		expect(payload.message).toBe("Summarize this file");
 		expect(payload.model_profile_id).toBe("profile-pro");
 		expect(payload.attachment_ids).toEqual([expect.any(String)]);
@@ -291,7 +287,7 @@ test.describe("Chat attachments and model profiles", () => {
 			.click();
 		await expect(
 			page.getByRole("heading", { name: "Result" }),
-		).toBeVisible();
+		).toBeVisible({ timeout: 15_000 });
 		await expect(page.getByRole("dialog")).not.toBeVisible();
 		await page.screenshot({
 			path: "playwright-results/screenshots/chat-complete.png",

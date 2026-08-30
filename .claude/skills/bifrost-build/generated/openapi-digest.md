@@ -44,6 +44,7 @@
 | GET | `/api/agent-runs/backfill-jobs/{job_id}` |
 | POST | `/api/agent-runs/backfill-jobs/{job_id}/cancel` |
 | POST | `/api/agent-runs/backfill-summaries` |
+| POST | `/api/agent-runs/enqueue` |
 | POST | `/api/agent-runs/execute` |
 | GET | `/api/agent-runs/metadata-keys` |
 | GET | `/api/agent-runs/metadata-values` |
@@ -379,6 +380,7 @@
 | GET | `/api/platform/scheduler/tasks/{task_id}/runs` |
 | GET | `/api/platform/stuck-history` |
 | GET | `/api/platform/workers` |
+| GET | `/api/platform/workers/commands/history` |
 | GET | `/api/platform/workers/metrics` |
 | GET | `/api/platform/workers/stats` |
 | GET | `/api/platform/workers/{worker_id}` |
@@ -575,8 +577,11 @@
 | POST | `/api/workspace-promotions/drafts` |
 | GET | `/api/workspace-promotions/live` |
 | POST | `/api/workspace-promotions/preview` |
+| POST | `/api/workspace-promotions/preview-jobs` |
 | GET | `/api/workspace-promotions/releases/{release_id}` |
 | POST | `/api/workspace-promotions/releases/{release_id}/activate` |
+| GET | `/api/workspace-promotions/solution-deploy-obligations` |
+| GET | `/api/workspace-promotions/solution-deploy-obligations/{obligation_id}` |
 | GET | `/api/workspace-promotions/source-releases` |
 | POST | `/api/workspace-promotions/source-releases` |
 | POST | `/api/workspace-promotions/source-releases/github` |

@@ -4,6 +4,10 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from src.jobs.execution_policy import (
+    WorkloadClass,
+    platform_job_operations_policy,
+)
 from src.jobs.platform.base import (
     PlatformJobContext,
     PlatformJobDefinition,
@@ -84,6 +88,10 @@ SUMMARY_BACKFILL_DEFINITION = PlatformJobDefinition(
         timeout_seconds=15 * 60,
         max_attempts=2,
         min_memory_headroom_mb=128,
+    ),
+    operations_policy=platform_job_operations_policy(
+        "agent.summary_backfill",
+        workload_class=WorkloadClass.PLATFORM_BATCH,
     ),
     encrypt_payload=True,
 )

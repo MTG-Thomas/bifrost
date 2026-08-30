@@ -6,9 +6,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from bifrost.promotion import sha256_bytes
 from bifrost.workspace_release import (
     canonical_digest,
@@ -19,6 +16,9 @@ from bifrost.workspace_release_authorization import (
     AUTHORIZATION_EVIDENCE_SCHEMA,
     validate_risk_acknowledgement,
 )
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from src.config import get_settings
 from src.models.contracts.workspace_promotions import (
     WorkspaceLiveStatusResponse,
@@ -28,17 +28,22 @@ from src.models.contracts.workspace_promotions import (
     WorkspaceReleaseStatusResponse,
 )
 from src.models.orm.executions import Execution
+from src.models.orm.workflows import Workflow
 from src.models.orm.workspace_promotions import (
     WorkspacePromotionArtifact,
     WorkspacePromotionRelease,
     WorkspaceSourceRelease,
 )
-from src.models.orm.workflows import Workflow
 from src.services.audit import emit_audit
 from src.services.github_actions_oidc import (
     workspace_source_release_tracking_expected,
 )
 from src.services.repo_storage import RepoStorage
+from src.services.workflow_registration import (
+    WorkflowRegistrationConflict,
+    apply_workspace_registration_plan,
+    find_workspace_workflow,
+)
 from src.services.workspace_draft_canary import (
     WorkspaceDraftCanaryError,
     draft_canary_attestation,
@@ -52,21 +57,16 @@ from src.services.workspace_release_materialization import (
     PREPARED_EVIDENCE_SCHEMA,
     prepared_activation_challenge,
 )
+from src.services.workspace_release_projection import acquire_workspace_release_lock
+from src.services.workspace_release_registration_authority import (
+    WorkspaceRegistrationMutationAuthority,
+)
 from src.services.workspace_release_runtime import (
     WorkspaceReleaseDescriptor,
     WorkspaceReleaseRuntimeError,
     inspect_workspace_release_registration_bindings,
 )
-from src.services.workspace_release_projection import acquire_workspace_release_lock
 from src.services.workspace_release_storage import WorkspaceReleaseStorage
-from src.services.workflow_registration import (
-    WorkflowRegistrationConflict,
-    apply_workspace_registration_plan,
-    find_workspace_workflow,
-)
-from src.services.workspace_release_registration_authority import (
-    WorkspaceRegistrationMutationAuthority,
-)
 
 ACTIVATION_EVIDENCE_SCHEMA = "bifrost.workspace-release-activation/v2"
 REGISTRATION_STATE_SCHEMA = "bifrost.workspace-registration-state/v1"
@@ -1084,7 +1084,17 @@ class WorkspaceReleaseActivationService:
             raise WorkspaceReleaseActivationError(
                 "applied registration differs from the effective manifest"
             )
-        workflow = await self.db.get(Workflow, UUID(str(expected["workflow_id"])))
+        workflow = await find_workspace_workflow(
+            self.db,
+            self.organization_id,
+            str(expected["path"]),
+            str(expected["function"]),
+            for_update=True,
+        )
+        if workflow is not None and workflow.id != UUID(str(expected["workflow_id"])):
+            raise WorkspaceReleaseActivationError(
+                "applied workflow identity differs from the effective manifest"
+            )
         if workflow is not None:
             workflow.name = str(expected["name"])
             workflow.type = str(expected["type"])

@@ -185,11 +185,11 @@ def workflow(
             ...
 
     Args:
-        name: Initial MCP tool name (defaults to function name)
+        name: Workflow name (defaults to function name)
         description: Description (defaults to first line of docstring)
         category: Category for organization (default: "General")
         tags: Optional list of tags for filtering
-        is_tool: If True, available as AI agent tool
+        is_tool: If True, register as an AI agent tool. Prefer @tool for new tools.
         effects: Explicit effects used by Workspace promotion policy
         enforced_bounds: Limits enforced by the workflow implementation
         requested_bounds: Limits requested from the execution environment

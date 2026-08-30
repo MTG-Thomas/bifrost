@@ -10,6 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import get_settings
 from src.core.database import get_db_context
+from src.jobs.execution_policy import (
+    WorkloadClass,
+    platform_job_operations_policy,
+)
 from src.jobs.platform.base import (
     PlatformJobContext,
     PlatformJobDefinition,
@@ -192,6 +196,10 @@ WORKSPACE_RELEASE_LOCK_DEFINITION = PlatformJobDefinition(
         max_concurrency=1,
         retry_on_runner_loss=True,
         min_memory_headroom_mb=256,
+    ),
+    operations_policy=platform_job_operations_policy(
+        WORKSPACE_RELEASE_LOCK_JOB_TYPE,
+        workload_class=WorkloadClass.PLATFORM_INTERACTIVE,
     ),
 )
 

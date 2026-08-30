@@ -11,8 +11,8 @@ import pytest
 from openai.types.chat import ChatCompletion
 from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai.exceptions import UsageLimitExceeded
-from pydantic_ai_harness.cache_stability import CacheStabilityMonitor
-from pydantic_ai_harness.compaction import LimitWarner, TieredCompaction
+from pydantic_ai_harness.compaction import TieredCompaction, WarnNearLimits
+from pydantic_ai_harness.warn_on_cache_busts import WarnOnCacheBusts
 from pydantic_ai.messages import (
     BinaryContent,
     ModelMessage,
@@ -165,6 +165,29 @@ def test_create_agent_model_supports_every_configured_provider(
 
     assert model.model_name == "test-model"
     assert model.system == expected_system
+    provider_client = model.provider.client
+    if provider == "google":
+        assert provider_client._api_client._async_httpx_client is not None
+    else:
+        assert provider_client.max_retries == 0
+
+
+def test_openai_uses_pydantic_default_model() -> None:
+    from pydantic_ai.models.openai import OpenAIResponsesModel
+
+    config = LLMConfig(
+        provider="openai",
+        model="gpt-5.6-luna",
+        api_key="test-key",
+        endpoint="https://foundry.example.test/openai/v1",
+    )
+
+    model = create_agent_model(config)
+
+    assert isinstance(model, OpenAIResponsesModel)
+    assert agent_model_settings(config, max_tokens=None, session_id="run-1").get(
+        "openai_store"
+    ) is False
 
 
 def test_create_agent_model_uses_native_openrouter_adapter() -> None:
@@ -182,6 +205,7 @@ def test_create_agent_model_uses_native_openrouter_adapter() -> None:
     assert isinstance(model, OpenRouterModel)
     assert model.model_name == "~deepseek/deepseek-v4-flash-latest"
     assert model.system == "openrouter"
+    assert model.provider.client.max_retries == 0
     settings = cast(OpenRouterModelSettings, model.settings)
     assert settings.get("openrouter_usage") == {"include": True}
 
@@ -209,7 +233,9 @@ def test_runtime_uses_provider_output_defaults_except_when_api_requires_limit() 
     openai = LLMConfig(provider="openai", model="gpt-5", api_key="test-key")
     anthropic = LLMConfig(provider="anthropic", model="claude-sonnet", api_key="test-key")
 
-    assert agent_model_settings(openai, max_tokens=None, session_id="run-123") == {}
+    assert agent_model_settings(openai, max_tokens=None, session_id="run-123") == {
+        "openai_store": False,
+    }
     assert agent_model_settings(anthropic, max_tokens=None, session_id="run-123") == {
         "max_tokens": 16_384,
     }
@@ -329,8 +355,8 @@ def test_budget_is_enforced_before_requests_and_warns_before_hard_stop() -> None
     assert limits.total_tokens_limit == 100_000
     assert limits.count_tokens_before_request is True
     assert any(isinstance(item, TieredCompaction) for item in capabilities)
-    assert any(isinstance(item, CacheStabilityMonitor) for item in capabilities)
-    warner = next(item for item in capabilities if isinstance(item, LimitWarner))
+    assert any(isinstance(item, WarnOnCacheBusts) for item in capabilities)
+    warner = next(item for item in capabilities if isinstance(item, WarnNearLimits))
     assert warner.max_iterations == 9
     assert warner.max_total_tokens == 100_000
     assert warner.warning_threshold == 0.7
@@ -349,7 +375,7 @@ def test_unconfigured_budget_disables_run_limits_but_keeps_context_governance() 
         RunUsage(requests=1_000, input_tokens=1_000_000)
     )
     assert any(isinstance(item, TieredCompaction) for item in capabilities)
-    warner = next(item for item in capabilities if isinstance(item, LimitWarner))
+    warner = next(item for item in capabilities if isinstance(item, WarnNearLimits))
     assert warner.max_iterations is None
     assert warner.max_total_tokens is None
     assert warner.max_context_tokens == budget.context_target_tokens
@@ -584,6 +610,57 @@ async def test_legacy_complete_uses_stream_transport_for_large_output_limits() -
     assert result.input_tokens == 12
     assert result.output_tokens == 3
     assert request_stream.call_args.kwargs["model_settings"]["max_tokens"] == 64_000
+
+
+@pytest.mark.asyncio
+async def test_direct_openai_complete_and_stream_disable_storage() -> None:
+    response = ModelResponse(
+        parts=[TextPart("hello")],
+        usage=RequestUsage(input_tokens=12, output_tokens=3),
+        model_name="test-model",
+        provider_name="openai",
+        finish_reason="stop",
+    )
+
+    class FakeStream:
+        def __aiter__(self):
+            async def events():
+                if False:
+                    yield None
+
+            return events()
+
+        def get(self):
+            return response
+
+    class FakeStreamContext:
+        async def __aenter__(self):
+            return FakeStream()
+
+        async def __aexit__(self, *args):
+            return False
+
+    client = PydanticAIClient(
+        LLMConfig(provider="openai", model="test-model", api_key="test-key")
+    )
+    with patch(
+        "src.services.llm.pydantic_client.create_agent_model",
+        return_value=MagicMock(),
+    ), patch(
+        "src.services.llm.pydantic_client.model_request_stream",
+        side_effect=[FakeStreamContext(), FakeStreamContext()],
+    ) as request_stream:
+        await client.complete([LLMMessage(role="user", content="hello")])
+        _ = [
+            chunk
+            async for chunk in client.stream(
+                [LLMMessage(role="user", content="hello")]
+            )
+        ]
+
+    assert request_stream.call_count == 2
+    for call in request_stream.call_args_list:
+        assert call.kwargs["model_settings"]["openai_store"] is False
 
 
 @pytest.mark.asyncio

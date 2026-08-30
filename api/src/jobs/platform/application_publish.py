@@ -9,6 +9,10 @@ from pydantic import BaseModel
 
 from src.core.database import get_db_context
 from src.core.pubsub import publish_app_published
+from src.jobs.execution_policy import (
+    WorkloadClass,
+    platform_job_operations_policy,
+)
 from src.jobs.platform.base import (
     PlatformJobContext,
     PlatformJobDefinition,
@@ -149,5 +153,9 @@ APPLICATION_PUBLISH_DEFINITION = PlatformJobDefinition(
         max_attempts=2,
         retry_on_runner_loss=True,
         min_memory_headroom_mb=256,
+    ),
+    operations_policy=platform_job_operations_policy(
+        APPLICATION_PUBLISH_JOB_TYPE,
+        workload_class=WorkloadClass.PLATFORM_INTERACTIVE,
     ),
 )
