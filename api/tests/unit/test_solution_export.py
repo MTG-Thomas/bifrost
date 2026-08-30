@@ -185,7 +185,9 @@ def test_export_python_source_verbatim() -> None:
 
 def test_export_is_deterministic() -> None:
     """Idempotent finalize retries must not churn bytes (fixed zip mtimes)."""
-    assert build_workspace_zip(_bundle()) == build_workspace_zip(_bundle())
+    first_export = build_workspace_zip(_bundle())
+    second_export = build_workspace_zip(_bundle())
+    assert first_export == second_export
 
 
 def test_export_writes_files_yaml_top_level_locations() -> None:

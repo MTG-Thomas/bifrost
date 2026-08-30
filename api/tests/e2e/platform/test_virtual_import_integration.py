@@ -7,6 +7,7 @@ Tests the complete flow of:
 """
 
 import importlib
+import hashlib
 import sys
 
 import pytest
@@ -59,10 +60,11 @@ class TestVirtualImportIntegration:
 
         # Set up module in Redis cache
         await clear_module_cache()
+        content = 'VIRTUAL_IMPORT_VALUE = "loaded_from_redis"\ndef test_func(): return 42'
         await set_module(
             path="integration_test_virtual.py",
-            content='VIRTUAL_IMPORT_VALUE = "loaded_from_redis"\ndef test_func(): return 42',
-            content_hash="test123",
+            content=content,
+            content_hash=hashlib.sha256(content.encode()).hexdigest(),
         )
 
         # Install virtual import hook
@@ -82,31 +84,87 @@ class TestVirtualImportIntegration:
             await clear_module_cache()
 
     @pytest.mark.asyncio
+    async def test_sdk_module_resolver_endpoint_resolves_module_namespace_and_miss(
+        self,
+        e2e_client,
+        platform_admin,
+    ):
+        """The resolver endpoint classifies one logical import without whole-index lookup."""
+        from src.core.module_cache import clear_module_cache, set_module
+        from src.services.repo_storage import RepoStorage
+
+        storage = RepoStorage()
+        await clear_module_cache()
+        await storage.write("resolver_live/pkg/helper.py", b"VALUE = 42")
+        await set_module(
+            path="resolver_live/pkg/helper.py",
+            content="VALUE = 42",
+            content_hash="resolver-live-hash",
+        )
+
+        try:
+            module_resp = e2e_client.get(
+                "/api/sdk/modules-resolve",
+                params={"name": "resolver_live.pkg.helper"},
+                headers=platform_admin.headers,
+            )
+            assert module_resp.status_code == 200
+            module_body = module_resp.json()
+            assert module_body["kind"] == "module"
+            assert module_body["path"] == "resolver_live/pkg/helper.py"
+            assert module_body["content"] == "VALUE = 42"
+
+            namespace_resp = e2e_client.get(
+                "/api/sdk/modules-resolve",
+                params={"name": "resolver_live"},
+                headers=platform_admin.headers,
+            )
+            assert namespace_resp.status_code == 200
+            assert namespace_resp.json() == {
+                "kind": "namespace",
+                "path": "resolver_live",
+            }
+
+            miss_resp = e2e_client.get(
+                "/api/sdk/modules-resolve",
+                params={"name": "resolver_live.missing"},
+                headers=platform_admin.headers,
+            )
+            assert miss_resp.status_code == 200
+            assert miss_resp.json() == {
+                "kind": "not_found",
+                "path": "resolver_live/missing",
+            }
+        finally:
+            await clear_module_cache()
+            await storage.delete("resolver_live/pkg/helper.py")
+
+    @pytest.mark.asyncio
     async def test_virtual_import_package_with_submodule(self, db_session: AsyncSession):
         """Test importing a package with submodules from Redis cache."""
         from src.core.module_cache import clear_module_cache, set_module
         from src.services.execution.virtual_import import (
             install_virtual_import_hook,
-            invalidate_module_index,
             remove_virtual_import_hook,
         )
 
         # Set up package in Redis cache
         await clear_module_cache()
+        package_content = 'PKG_NAME = "test_package"'
         await set_module(
             path="integration_test_pkg/__init__.py",
-            content='PKG_NAME = "test_package"',
-            content_hash="pkg123",
+            content=package_content,
+            content_hash=hashlib.sha256(package_content.encode()).hexdigest(),
         )
+        helper_content = 'HELPER_VALUE = "from_helpers"'
         await set_module(
             path="integration_test_pkg/helpers.py",
-            content='HELPER_VALUE = "from_helpers"',
-            content_hash="helper123",
+            content=helper_content,
+            content_hash=hashlib.sha256(helper_content.encode()).hexdigest(),
         )
 
         # Install virtual import hook
         install_virtual_import_hook()
-        invalidate_module_index()  # Force refresh of index
 
         try:
             # Import package and submodule
@@ -200,7 +258,6 @@ class TestEndToEndModuleLoading:
         from src.core.module_cache import clear_module_cache, set_module
         from src.services.execution.virtual_import import (
             install_virtual_import_hook,
-            invalidate_module_index,
             remove_virtual_import_hook,
         )
 
@@ -217,12 +274,11 @@ def run_workflow(params):
             await set_module(
                 path="e2e_test_workflow.py",
                 content=content,
-                content_hash="e2e123",
+                content_hash=hashlib.sha256(content.encode()).hexdigest(),
             )
 
             # Step 2: Install virtual import hook
             install_virtual_import_hook()
-            invalidate_module_index()
 
             # Step 3: Import and use the module
             import e2e_test_workflow  # type: ignore[import-not-found]

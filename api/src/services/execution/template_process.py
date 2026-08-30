@@ -21,6 +21,7 @@ import multiprocessing
 import os
 import signal
 import sys
+from collections.abc import Callable
 from multiprocessing.connection import Connection
 from typing import Any
 
@@ -78,6 +79,10 @@ class _RecvQueue:
         """Receive an item without blocking."""
         return self.get(block=False)
 
+    def fileno(self) -> int:
+        """Return the result pipe descriptor for event-loop readiness watches."""
+        return self._conn.fileno()
+
     def close(self) -> None:
         try:
             self._conn.close()
@@ -87,30 +92,14 @@ class _RecvQueue:
 
 # Commands sent from consumer to template via pipe
 CMD_FORK = "fork"
+CMD_GET_EXIT_STATUSES = "get_exit_statuses"
 CMD_SHUTDOWN = "shutdown"
 
 
-def _reap_exited_children() -> None:
-    """Reap exited forked children to avoid zombie accumulation."""
-    while True:
-        try:
-            pid, _status = os.waitpid(-1, os.WNOHANG)
-        except ChildProcessError:
-            # No child processes exist.
-            break
-        except OSError as e:
-            logger.debug(f"template waitpid ignored: {e}")
-            break
-
-        if pid == 0:
-            # At least one child exists, but none has exited yet.
-            break
-
-        logger.debug(f"Reaped exited child process {pid}")
-
-
-def _load_execution_infrastructure(install_requirements_on_startup: bool) -> None:
-    """Load execution helpers and optionally install workspace requirements."""
+def _load_execution_infrastructure(
+    install_requirements_on_startup: bool,
+) -> Callable[[], Any]:
+    """Load execution helpers and return the deferred virtual-import installer."""
     from src.services.execution.virtual_import import install_virtual_import_hook
     from src.services.execution.simple_worker import install_requirements
 
@@ -126,7 +115,26 @@ def _load_execution_infrastructure(install_requirements_on_startup: bool) -> Non
         sys.path.insert(0, user_site)
         logger.info(f"Added user site-packages to sys.path: {user_site}")
 
-    install_virtual_import_hook()
+    return install_virtual_import_hook
+
+
+def _reap_children(exit_statuses: dict[int, int]) -> None:
+    """Reap exited fork children and retain their exit status for the consumer."""
+    while True:
+        try:
+            child_pid, status = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return
+        except InterruptedError:
+            continue
+        except OSError as exc:
+            logger.debug("template waitpid ignored: %s", exc)
+            return
+
+        if child_pid == 0:
+            return
+
+        exit_statuses[child_pid] = os.waitstatus_to_exitcode(status)
 
 
 def _template_main(
@@ -155,6 +163,7 @@ def _template_main(
     # ----- Load heavy dependencies -----
     # These imports pull in the full transitive closure of each library.
     # After fork, children share these pages via COW.
+    install_virtual_import_hook = None
     try:
         # Core bifrost SDK and execution engine
         try:
@@ -166,6 +175,11 @@ def _template_main(
             import httpx  # noqa: F401
         except ImportError:
             logger.warning("httpx not available — skipping preload")
+
+        try:
+            import requests  # noqa: F401
+        except ImportError:
+            logger.warning("requests not available — skipping preload")
 
         try:
             import pydantic  # noqa: F401
@@ -184,7 +198,9 @@ def _template_main(
 
         # Execution infrastructure
         try:
-            _load_execution_infrastructure(install_requirements_on_startup)
+            install_virtual_import_hook = _load_execution_infrastructure(
+                install_requirements_on_startup
+            )
         except ImportError as e:
             logger.warning(f"Execution infrastructure not available: {e} — continuing without it")
 
@@ -229,6 +245,10 @@ def _template_main(
         "BIFROST_S3_ENDPOINT_URL",
         "BIFROST_S3_BUCKET",
         "BIFROST_S3_REGION",
+        # Execution children receive a freshly minted process-scoped SDK token
+        # only after fork. Never let ambient API credentials cross the template.
+        "BIFROST_ACCESS_TOKEN",
+        "BIFROST_REFRESH_TOKEN",
     ]
     scrubbed = []
     for key in _SCRUB_KEYS:
@@ -270,13 +290,21 @@ def _template_main(
     import src.services.execution.engine  # noqa: F401
     import src.services.execution.worker  # noqa: F401
 
+    # Platform priming must finish before the virtual finder is activated.
+    # Forked children inherit the hook and provide the execution-scoped module
+    # resolver needed for workspace and Solution imports.
+    if install_virtual_import_hook is not None:
+        install_virtual_import_hook()
+
     logger.info("Template process ready — all dependencies loaded")
     pipe.send({"status": "ready", "pid": os.getpid()})
 
     # ----- Fork loop -----
     # Single-threaded, no event loop. Just wait for commands and fork.
+    exit_statuses: dict[int, int] = {}
     while True:
-        _reap_exited_children()
+        _reap_children(exit_statuses)
+
         try:
             if not pipe.poll(timeout=1.0):
                 continue
@@ -291,6 +319,16 @@ def _template_main(
             logger.info("Template received shutdown command")
             break
 
+        if cmd.get("action") == CMD_GET_EXIT_STATUSES:
+            # A child may have exited after the sweep at the top of the loop.
+            _reap_children(exit_statuses)
+            pipe.send({
+                "status": "exit_statuses",
+                "exit_statuses": list(exit_statuses.items()),
+            })
+            exit_statuses.clear()
+            continue
+
         if cmd.get("action") == CMD_FORK:
             worker_id = cmd.get("worker_id", "unknown")
             persistent = cmd.get("persistent", False)
@@ -298,7 +336,7 @@ def _template_main(
             result_send: Connection = cmd["result_send"]
             _handle_fork_request(pipe, worker_id, persistent, work_recv, result_send)
 
-    _reap_exited_children()
+    _reap_children(exit_statuses)
     logger.info("Template process exiting")
 
 
@@ -385,20 +423,19 @@ def _run_forked_child(
     """
     Entry point for a forked child process.
 
-    The child inherits all loaded modules from the template via COW.
-    It creates its own event loop and Redis connection fresh.
+    The child inherits all loaded modules from the template via COW and creates
+    its own event loop. Its execution context arrives on the private work pipe;
+    SDK/module access may still use network clients during the workflow.
 
     Communication uses raw Connection objects (Pipe ends) that were
     inherited via fork — no pickling required.
 
     Args:
-        work_recv: Read end of work pipe; receives execution_ids via .recv().
+        work_recv: Read end of work pipe; receives ``(execution_id, context)``.
         result_send: Write end of result pipe; sends result dicts via .send().
         worker_id: Identifier for logging.
         persistent: If True, loop for multiple executions. If False, run once.
     """
-    import gc
-
     # Reconfigure logging for this child
     logging.basicConfig(
         level=logging.INFO,
@@ -427,10 +464,9 @@ def _run_forked_child(
             if not work_recv.poll(timeout=1.0):
                 continue
 
-            execution_id = work_recv.recv()
+            work_item = work_recv.recv()
 
-            if execution_id is None:
-                continue
+            execution_id, context = work_item
 
             logger.info(f"Worker {worker_id} processing execution: {execution_id[:8]}...")
 
@@ -443,7 +479,7 @@ def _run_forked_child(
             # Execute
             try:
                 from src.services.execution.simple_worker import _execute_sync
-                result = _execute_sync(execution_id, worker_id)
+                result = _execute_sync(execution_id, worker_id, context)
             except ImportError:
                 result = {
                     "execution_id": execution_id,
@@ -462,10 +498,10 @@ def _run_forked_child(
                 # bifrost._logging may not be importable; counter cleanup is best-effort
                 logger.debug(f"clear_sequence_counter failed for {execution_id}: {e}")
 
-            # Force GC before measuring RSS
-            gc.collect()
-
-            # Report current RSS
+            # Report current RSS without a full collection. This child is
+            # one-shot and exits immediately after sending the result, so a
+            # stop-the-world collection adds response latency but cannot
+            # reclaim memory for reuse.
             try:
                 from src.services.execution.simple_worker import _get_process_rss
                 process_rss = _get_process_rss()
@@ -635,6 +671,24 @@ class TemplateProcess:
             work_queue,
             result_queue,
         )
+
+    def collect_child_exit_statuses(self) -> dict[int, int]:
+        """Return statuses for children reaped by the template since the last call."""
+        if self._pipe is None or not self.is_alive():
+            return {}
+
+        self._pipe.send({"action": CMD_GET_EXIT_STATUSES})
+        if not self._pipe.poll(timeout=5):
+            raise RuntimeError("Template process did not return child exit statuses within 5s")
+
+        msg = self._pipe.recv()
+        if msg.get("status") != "exit_statuses":
+            raise RuntimeError(f"Unexpected template exit-status response: {msg}")
+
+        return {
+            int(child_pid): int(exit_code)
+            for child_pid, exit_code in msg.get("exit_statuses", [])
+        }
 
     def shutdown(self) -> None:
         """Send shutdown command to template and wait for it to exit."""

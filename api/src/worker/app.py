@@ -51,6 +51,57 @@ logging.getLogger("src.jobs.consumers.workflow_execution").setLevel(logging.DEBU
 
 logger = logging.getLogger(__name__)
 
+_CONSUMER_NAMES = (
+    "workflow",
+    "package-install",
+    "agent-run",
+    "summarize",
+    "summarize-backfill",
+    "tune-chat",
+)
+
+
+def consumer_factories():
+    """Build factories lazily so configuration and test patches take effect."""
+    def workflow_consumer():
+        queue_name = os.environ.get("BIFROST_WORKFLOW_QUEUE_NAME", "")
+        if configured_consumer_names() == ["workflow"] and not queue_name.endswith(
+            "-canary"
+        ):
+            raise ValueError(
+                "workflow-only workers require an explicit isolated -canary queue"
+            )
+        queue_name = queue_name or "workflow-executions"
+        if queue_name == "workflow-executions":
+            return WorkflowExecutionConsumer()
+        return WorkflowExecutionConsumer(queue_name=queue_name)
+
+    return {
+        "workflow": workflow_consumer,
+        "package-install": PackageInstallConsumer,
+        "agent-run": AgentRunConsumer,
+        "summarize": SummarizeConsumer,
+        "summarize-backfill": SummarizeBackfillConsumer,
+        "tune-chat": TuneChatConsumer,
+    }
+
+
+def configured_consumer_names() -> list[str]:
+    """Return the explicit worker consumer set, failing closed on typos."""
+    configured = os.environ.get("BIFROST_WORKER_CONSUMERS")
+    if configured is None:
+        return list(_CONSUMER_NAMES)
+    raw = configured.strip()
+    if not raw:
+        raise ValueError("BIFROST_WORKER_CONSUMERS must select at least one consumer")
+    names = [name.strip() for name in raw.split(",") if name.strip()]
+    if not names:
+        raise ValueError("BIFROST_WORKER_CONSUMERS must select at least one consumer")
+    unknown = sorted(set(names) - set(_CONSUMER_NAMES))
+    if unknown:
+        raise ValueError(f"Unknown BIFROST_WORKER_CONSUMERS values: {unknown}")
+    return names
+
 
 class Worker:
     """
@@ -87,6 +138,17 @@ class Worker:
             # Initialize database connection
             logger.info("Initializing database connection...")
             await init_db()
+            # Configure the ORM before accepting queue messages. Lazy mapper
+            # setup otherwise lands on the first execution-row insert and can
+            # add hundreds of milliseconds to the first workflow after start.
+            from sqlalchemy.orm import configure_mappers
+
+            configure_mappers()
+            from src.services.execution_attempts import (
+                require_execution_operations_schema,
+            )
+
+            await require_execution_operations_schema()
             logger.info("Database connection established")
 
             # Initialize and start RabbitMQ consumers
@@ -131,14 +193,8 @@ class Worker:
     async def _start_consumers(self) -> None:
         """Start all RabbitMQ consumers."""
         # Create consumer instances
-        self._consumers = [
-            WorkflowExecutionConsumer(),
-            PackageInstallConsumer(),
-            AgentRunConsumer(),
-            SummarizeConsumer(),
-            SummarizeBackfillConsumer(),
-            TuneChatConsumer(),
-        ]
+        factories = consumer_factories()
+        self._consumers = [factories[name]() for name in configured_consumer_names()]
 
         # Start each consumer
         for consumer in self._consumers:
@@ -191,6 +247,12 @@ class Worker:
         # Close RabbitMQ pools (idempotent if already closed).
         await rabbitmq.close()
         logger.info("RabbitMQ connections closed")
+
+        from src.services.agent_runtime.retry_transport import (
+            close_ai_retry_http_client,
+        )
+
+        await close_ai_retry_http_client()
 
         # Close database connections.
         await close_db()

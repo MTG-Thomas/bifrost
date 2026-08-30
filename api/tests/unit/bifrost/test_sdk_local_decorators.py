@@ -1,9 +1,8 @@
 import logging
 
 import pytest
-
 from bifrost import decorators
-
+from shared.workspace_effects import WorkflowBounds, WorkflowEffect
 
 pytestmark = pytest.mark.unit
 
@@ -47,6 +46,44 @@ def test_workflow_decorator_supports_direct_application() -> None:
     assert metadata.type == "workflow"
 
 
+def test_workflow_decorator_attaches_typed_promotion_declarations() -> None:
+    @decorators.workflow(
+        effects=[
+            {"kind": "integration.read", "target": "Microsoft Graph"},
+            WorkflowEffect(kind="bifrost.read", target="organizations"),
+        ],
+        enforced_bounds={"max_records_read": 250, "max_pages": 5},
+        requested_bounds=WorkflowBounds(max_duration_seconds=45),
+    )
+    def bounded_read() -> None:
+        pass
+
+    metadata = bounded_read._executable_metadata
+    assert metadata.effects == (
+        WorkflowEffect(kind="integration.read", target="Microsoft Graph"),
+        WorkflowEffect(kind="bifrost.read", target="organizations"),
+    )
+    assert metadata.enforced_bounds == WorkflowBounds(
+        max_records_read=250,
+        max_pages=5,
+    )
+    assert metadata.requested_bounds == WorkflowBounds(max_duration_seconds=45)
+
+
+def test_workflow_decorator_rejects_malformed_promotion_declarations() -> None:
+    with pytest.raises(ValueError, match="requires an integration target"):
+
+        @decorators.workflow(effects=[{"kind": "integration.write"}])
+        def malformed_effect() -> None:
+            pass
+
+    with pytest.raises(ValueError, match="unknown fields"):
+
+        @decorators.workflow(requested_bounds={"timeout": 30})
+        def malformed_bounds() -> None:
+            pass
+
+
 def test_tool_decorator_marks_workflow_as_agent_tool() -> None:
     @decorators.tool(name="lookup_user", description="Look up a user")
     def lookup(email: str) -> str:
@@ -57,6 +94,19 @@ def test_tool_decorator_marks_workflow_as_agent_tool() -> None:
     assert metadata.description == "Look up a user"
     assert metadata.type == "tool"
     assert metadata.is_tool is True
+
+
+def test_tool_decorator_forwards_promotion_declarations() -> None:
+    @decorators.tool(
+        effects=[{"kind": "bifrost.read"}],
+        requested_bounds={"max_output_bytes": 4096},
+    )
+    def bounded_tool() -> None:
+        pass
+
+    metadata = bounded_tool._executable_metadata
+    assert metadata.effects == (WorkflowEffect(kind="bifrost.read"),)
+    assert metadata.requested_bounds == WorkflowBounds(max_output_bytes=4096)
 
 
 def test_data_provider_decorator_attaches_provider_metadata_and_warns(caplog) -> None:
@@ -85,3 +135,16 @@ def test_data_provider_decorator_supports_direct_application() -> None:
     assert metadata.name == "direct_provider"
     assert metadata.description == ""
     assert metadata.type == "data_provider"
+
+
+def test_data_provider_decorator_attaches_promotion_declarations() -> None:
+    @decorators.data_provider(
+        effects=[],
+        enforced_bounds={"max_records_read": 100},
+    )
+    def bounded_provider() -> list[str]:
+        return []
+
+    metadata = bounded_provider._executable_metadata
+    assert metadata.effects == ()
+    assert metadata.enforced_bounds == WorkflowBounds(max_records_read=100)

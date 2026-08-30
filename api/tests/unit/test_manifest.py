@@ -2037,6 +2037,7 @@ class TestInlineFormContent:
             id=form_id,
             name="Onboarding",
             description="Onboard a new client",
+            confirmation_markdown="## Submitted\n\nWe will be in touch.",
             workflow_id=wf_id,
             launch_workflow_id=launch_id,
             default_launch_params={"source": "marketing"},
@@ -2054,6 +2055,7 @@ class TestInlineFormContent:
 
         round_tripped = parsed.forms[form_id]
         assert round_tripped.description == "Onboard a new client"
+        assert round_tripped.confirmation_markdown == "## Submitted\n\nWe will be in touch."
         assert round_tripped.workflow_id == wf_id
         assert round_tripped.launch_workflow_id == launch_id
         assert round_tripped.default_launch_params == {"source": "marketing"}
@@ -2096,7 +2098,7 @@ class TestInlineAgentContent:
             delegated_agent_ids=[delegate_id],
             knowledge_sources=["faq", "runbooks"],
             system_tools=["execute_workflow", "search_knowledge"],
-            llm_model="claude-sonnet-4",
+            llm_profile="Fast Chat",
             llm_max_tokens=8000,
             max_iterations=15,
             max_token_budget=120000,
@@ -2113,7 +2115,7 @@ class TestInlineAgentContent:
         assert rt.delegated_agent_ids == [delegate_id]
         assert rt.knowledge_sources == ["faq", "runbooks"]
         assert rt.system_tools == ["execute_workflow", "search_knowledge"]
-        assert rt.llm_model == "claude-sonnet-4"
+        assert rt.llm_profile == "Fast Chat"
         assert rt.llm_max_tokens == 8000
         assert rt.max_iterations == 15
         assert rt.max_token_budget == 120000

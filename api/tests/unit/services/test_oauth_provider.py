@@ -348,6 +348,7 @@ class TestOAuthProviderTokenExchange:
                 client_secret=None,
                 redirect_uri="https://app.example.com/callback",
                 audience="api://resource",
+                resource="https://mcp.example.com",
             )
 
         assert success is True
@@ -357,6 +358,7 @@ class TestOAuthProviderTokenExchange:
             "client_id": "client-id",
             "redirect_uri": "https://app.example.com/callback",
             "audience": "api://resource",
+            "resource": "https://mcp.example.com",
         }
 
 
@@ -528,6 +530,7 @@ class TestOAuthProviderTokenRefresh:
                 client_id="client-id",
                 client_secret=None,
                 audience="api://resource",
+                resource="https://mcp.example.com",
             )
 
         assert success is True
@@ -536,6 +539,7 @@ class TestOAuthProviderTokenRefresh:
             "refresh_token": "refresh-token",
             "client_id": "client-id",
             "audience": "api://resource",
+            "resource": "https://mcp.example.com",
         }
 
 
@@ -599,6 +603,7 @@ class TestOAuthProviderScopes:
                 client_secret="client-secret",
                 scopes="",
                 audience="api://resource",
+                resource="https://mcp.example.com",
             )
 
         assert success is True
@@ -607,6 +612,7 @@ class TestOAuthProviderScopes:
             "client_id": "client-id",
             "client_secret": "client-secret",
             "audience": "api://resource",
+            "resource": "https://mcp.example.com",
         }
 
 

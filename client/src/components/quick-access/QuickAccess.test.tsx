@@ -18,9 +18,9 @@ import { renderWithProviders, screen } from "@/test-utils";
 
 const navigateMock = vi.fn();
 
-vi.mock("react-router-dom", async (importOriginal) => {
+vi.mock("react-router", async (importOriginal) => {
 	const actual =
-		await importOriginal<typeof import("react-router-dom")>();
+		await importOriginal<typeof import("react-router")>();
 	return {
 		...actual,
 		useNavigate: () => navigateMock,

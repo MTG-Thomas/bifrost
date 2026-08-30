@@ -6,7 +6,17 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { Route, Routes, useLocation } from "react-router";
 import { renderWithProviders, screen } from "@/test-utils";
+
+function NavigationStateProbe() {
+	const location = useLocation();
+	return (
+		<pre data-testid="navigation-state">
+			{JSON.stringify(location.state)}
+		</pre>
+	);
+}
 
 const mockUseAgentStats = vi.fn();
 vi.mock("@/services/agents", () => ({
@@ -21,6 +31,11 @@ vi.mock("@/services/agentRuns", () => ({
 const mockUseAgent = vi.fn();
 vi.mock("@/hooks/useAgents", () => ({
 	useAgent: (id: string | undefined) => mockUseAgent(id),
+}));
+
+const mockListModelProfiles = vi.fn();
+vi.mock("@/services/aiModels", () => ({
+	listModelProfiles: () => mockListModelProfiles(),
 }));
 
 const baseStats = {
@@ -72,13 +87,32 @@ beforeEach(() => {
 			channels: ["chat"],
 			access_level: "authenticated",
 			created_by: "admin",
-			llm_model: null,
+			llm_profile_id: null,
 			max_iterations: 15,
 			max_token_budget: 50000,
 			is_active: true,
 		},
 		isLoading: false,
 	});
+	mockListModelProfiles.mockResolvedValue([
+		{
+			id: "profile-support",
+			name: "Support profile",
+			connection_id: "connection-1",
+			model: "gpt-5-mini",
+			capabilities: null,
+			enabled_for_chat: true,
+			connection: {
+				id: "connection-1",
+				name: "Default",
+				provider: "openai",
+				endpoint: null,
+			},
+			assignment_keys: [],
+			created_at: "2026-08-22T00:00:00Z",
+			updated_at: "2026-08-22T00:00:00Z",
+		},
+	]);
 });
 
 async function renderTab(agentId = "agent-1") {
@@ -93,9 +127,67 @@ describe("AgentOverviewTab", () => {
 		expect(screen.getByText("95%")).toBeInTheDocument(); // success rate
 	});
 
+	it("shows the governed model profile setting", async () => {
+		mockUseAgent.mockReturnValue({
+			data: {
+				id: "agent-1",
+				name: "Triage",
+				description: "Test",
+				channels: ["chat"],
+				access_level: "authenticated",
+				created_by: "admin",
+				llm_profile_id: "profile-support",
+				max_iterations: 15,
+				max_token_budget: 50000,
+				is_active: true,
+			},
+			isLoading: false,
+		});
+		await renderTab();
+		expect(await screen.findByText("Support profile")).toBeInTheDocument();
+		expect(screen.getByText("Model profile")).toBeInTheDocument();
+	});
+
 	it("renders the recent runs list", async () => {
 		await renderTab();
 		expect(screen.getByText(/help me/i)).toBeInTheDocument();
+		expect(
+			screen.getByRole("img", { name: "Status: Completed" }),
+		).toBeInTheDocument();
+	});
+
+	it("keeps the overview as the origin when a recent run is opened", async () => {
+		const { AgentOverviewTab } = await import("./AgentOverviewTab");
+		const { user } = renderWithProviders(
+			<Routes>
+				<Route
+					path="/agents/:agentId"
+					element={<AgentOverviewTab agentId="agent-1" />}
+				/>
+				<Route
+					path="/agents/:agentId/runs/:runId"
+					element={<NavigationStateProbe />}
+				/>
+			</Routes>,
+			{ initialEntries: ["/agents/agent-1?tab=overview"] },
+		);
+
+		await user.click(screen.getByRole("link", { name: /help me/i }));
+		expect(screen.getByTestId("navigation-state")).toHaveTextContent(
+			JSON.stringify({
+				agentRunOrigin: {
+					href: "/agents/agent-1?tab=overview",
+					label: "Back to Triage overview",
+				},
+			}),
+		);
+	});
+
+	it("links View all runs directly to the Runs tab", async () => {
+		await renderTab();
+		expect(
+			screen.getByRole("link", { name: /view all runs/i }),
+		).toHaveAttribute("href", "/agents/agent-1?tab=runs");
 	});
 
 	it("hides the 'Needs attention' card when no flagged runs", async () => {
@@ -133,7 +225,11 @@ describe("AgentOverviewTab", () => {
 		});
 		mockUseAgentRuns.mockReturnValue({
 			data: {
-				items: [makeRun(), makeRun({ id: "run-2" }), makeRun({ id: "run-3" })],
+				items: [
+					makeRun(),
+					makeRun({ id: "run-2" }),
+					makeRun({ id: "run-3" }),
+				],
 				total: 3,
 				next_cursor: null,
 			},

@@ -19,6 +19,7 @@ def _ctx(*, org_id=None):
     db.execute = AsyncMock()
     db.flush = AsyncMock()
     db.refresh = AsyncMock()
+    db.commit = AsyncMock()
     return SimpleNamespace(
         org_id=org_id,
         db=db,
@@ -291,7 +292,7 @@ async def test_get_credentials_without_token_returns_status_only_response():
 
 
 @pytest.mark.asyncio
-async def test_get_refresh_job_status_builds_last_run_from_system_config():
+async def test_get_refresh_job_status_builds_last_run_from_platform_job():
     job_data = {
         "start_time": "2026-07-05T07:00:00+00:00",
         "end_time": "2026-07-05T07:01:00+00:00",
@@ -301,8 +302,16 @@ async def test_get_refresh_job_status_builds_last_run_from_system_config():
         "needs_refresh": 4,
         "errors": ["halo failed"],
     }
+    started_at = datetime(2026, 7, 5, 7, 0, tzinfo=timezone.utc)
+    completed_at = datetime(2026, 7, 5, 7, 1, tzinfo=timezone.utc)
     result = MagicMock()
-    result.scalar_one_or_none.return_value = SimpleNamespace(value_json=job_data)
+    result.scalar_one_or_none.return_value = SimpleNamespace(
+        result=job_data,
+        status="succeeded",
+        started_at=started_at,
+        completed_at=completed_at,
+        error_message=None,
+    )
     ctx = _ctx()
     ctx.db.execute.return_value = result
 
@@ -310,38 +319,38 @@ async def test_get_refresh_job_status_builds_last_run_from_system_config():
 
     assert response.enabled is True
     assert response.last_run is not None
-    assert response.last_run.status == "completed_with_errors"
+    assert response.last_run.status == "succeeded"
+    assert response.last_run.start_time == started_at
+    assert response.last_run.end_time == completed_at
     assert response.last_run.connections_checked == 5
     assert response.last_run.refreshed_successfully == 3
     assert response.last_run.errors == ["halo failed"]
 
 
 @pytest.mark.asyncio
-async def test_trigger_refresh_all_stores_new_job_status_config():
-    results = {
-        "needs_refresh": 4,
-        "refreshed_successfully": 3,
-        "refresh_failed": 1,
-    }
-    query_result = MagicMock()
-    query_result.scalar_one_or_none.return_value = None
+async def test_trigger_refresh_all_enqueues_platform_job():
     ctx = _ctx()
-    ctx.db.execute.return_value = query_result
+    job = SimpleNamespace(id=uuid4(), status="queued")
 
-    with patch(
-        "src.jobs.schedulers.oauth_token_refresh.run_refresh_job",
-        new=AsyncMock(return_value=results),
-    ) as run_refresh:
-        response = await oauth_connections.trigger_refresh_all(ctx, MagicMock())
+    with (
+        patch.object(
+            oauth_connections,
+            "enqueue_platform_job",
+            AsyncMock(return_value=(job, False)),
+        ) as enqueue,
+        patch.object(
+            oauth_connections,
+            "publish_platform_job_update",
+            AsyncMock(),
+        ) as publish,
+    ):
+        response = await oauth_connections.trigger_refresh_all(ctx, ctx.user)
 
-    run_refresh.assert_awaited_once_with(
-        trigger_type="manual",
-        trigger_user="admin@example.com",
-        refresh_threshold_minutes=None,
-    )
-    assert response.triggered is True
-    assert response.connections_queued == 4
-    assert response.refreshed_successfully == 3
-    assert response.refresh_failed == 1
-    assert ctx.db.add.call_args.args[0].value_json == results
-    ctx.db.flush.assert_awaited_once()
+    assert response.job_id == job.id
+    assert response.status.value == "queued"
+    assert response.reused is False
+    enqueue.assert_awaited_once()
+    assert enqueue.await_args.kwargs["dedupe_key"] == "manual"
+    assert enqueue.await_args.kwargs["resource_lock_key"] == "oauth.refresh"
+    ctx.db.commit.assert_awaited_once()
+    publish.assert_awaited_once_with(job)

@@ -11,6 +11,7 @@ Key principles:
 5. Preflight validates repo health (syntax, lint, refs, orphans)
 """
 
+import asyncio
 import hashlib
 import logging
 import subprocess
@@ -19,6 +20,7 @@ from typing import TYPE_CHECKING, Literal
 
 import yaml
 from git import Repo as GitRepo
+from git.exc import GitCommandError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -59,6 +61,37 @@ from src.services.manifest_import import (
 
 
 logger = logging.getLogger(__name__)
+
+
+async def _run_ruff_check(
+    repo_dir: Path,
+    py_files: list[str],
+) -> subprocess.CompletedProcess[str]:
+    """Run Ruff without blocking, terminating it on timeout or cancellation."""
+    args = ["ruff", "check", "--output-format=json", "--no-fix", *py_files]
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(repo_dir),
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        if proc.returncode is None:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+        raise
+    return subprocess.CompletedProcess(
+        args=args,
+        returncode=proc.returncode,
+        stdout=stdout.decode(errors="replace"),
+        stderr=stderr.decode(errors="replace"),
+    )
 
 
 # =============================================================================
@@ -694,6 +727,62 @@ class GitHubSyncService:
             pushed_commits=ahead,
         )
 
+    def _reconcile_remote_before_workspace_push(
+        self, work_dir: Path, repo: GitRepo
+    ) -> str | None:
+        """Merge an advanced remote branch before closing a workspace commit.
+
+        A workspace changeset can remain activated while Git closure is retried
+        later. The configured production branch may advance during that gap, so
+        pushing the preserved local commit directly would be non-fast-forward.
+        Fetch and merge the remote history without replaying workspace
+        activation or importing remote files into the live workspace. Older
+        workspace repositories and their configured production branches may
+        have been initialized independently. In that case, link the histories
+        with an ``ours`` merge so the already-activated workspace tree remains
+        authoritative and remote-only files are not imported.
+        """
+        remote_ref = f"origin/{self.branch}"
+        try:
+            repo.remotes.origin.fetch(self.branch)
+            commits_behind = int(repo.git.rev_list("--count", f"HEAD..{remote_ref}"))
+        except Exception as exc:
+            error_text = str(exc).lower()
+            if (
+                "not found" in error_text
+                or "empty" in error_text
+                or "couldn't find remote ref" in error_text
+            ):
+                return None
+            return f"Failed to fetch remote branch before workspace push: {exc}"
+
+        if commits_behind == 0:
+            return None
+
+        try:
+            common_ancestors = repo.merge_base("HEAD", remote_ref)
+        except Exception as exc:
+            return f"Failed to inspect workspace and remote Git history: {exc}"
+
+        merge_args = ["--no-edit"]
+        if not common_ancestors:
+            merge_args.extend(["--allow-unrelated-histories", "--strategy=ours"])
+
+        try:
+            repo.git.merge(*merge_args, remote_ref)
+        except Exception as exc:
+            try:
+                if (work_dir / ".git" / "MERGE_HEAD").exists():
+                    repo.git.merge("--abort")
+            except Exception as abort_exc:
+                logger.error(
+                    "Failed to abort workspace Git closure merge: %s", abort_exc
+                )
+            return (
+                f"Failed to merge advanced remote branch before workspace push: {exc}"
+            )
+        return None
+
     # -----------------------------------------------------------------
     # Desktop-style operations: fetch, status, commit, sync, resolve, diff
     # -----------------------------------------------------------------
@@ -804,7 +893,13 @@ class GitHubSyncService:
             logger.error(f"Commit failed: {e}", exc_info=True)
             return CommitResult(success=False, error=str(e))
 
-    async def commit_workspace_changes(self, message: str, *, push: bool = False) -> tuple[str | None, str | None]:
+    async def commit_workspace_changes(
+        self,
+        message: str,
+        *,
+        push: bool = False,
+        expected_file_hashes: dict[str, str | None] | None = None,
+    ) -> tuple[str | None, str | None]:
         """Commit the current authoritative S3 workspace, optionally pushing it.
 
         Unlike ``desktop_commit`` this uses ``checkout()`` so direct workspace
@@ -813,16 +908,129 @@ class GitHubSyncService:
         """
         async with self.repo_manager.checkout() as work_dir:
             repo = self._open_or_init(work_dir)
+            self._prepare_expected_workspace_files(
+                work_dir,
+                repo,
+                expected_file_hashes or {},
+            )
             result = await self._do_commit(work_dir, repo, message)
             if not result.success:
                 raise RuntimeError(result.error or "Git commit failed")
+            self._verify_expected_workspace_tree(repo, expected_file_hashes or {})
             commit_sha = result.commit_sha
             if push:
+                reconciliation_error = self._reconcile_remote_before_workspace_push(
+                    work_dir, repo
+                )
+                self._verify_expected_workspace_files(
+                    work_dir,
+                    expected_file_hashes or {},
+                )
+                self._verify_expected_workspace_tree(
+                    repo,
+                    expected_file_hashes or {},
+                )
+                if reconciliation_error:
+                    return commit_sha, reconciliation_error
                 pushed = self._do_push(work_dir, repo)
                 if not pushed.success:
                     return commit_sha, pushed.error or "Git push failed"
                 commit_sha = pushed.commit_sha or commit_sha
             return commit_sha, None
+
+    @staticmethod
+    def _verify_expected_workspace_files(
+        work_dir: Path,
+        expected_file_hashes: dict[str, str | None],
+    ) -> None:
+        """Fail when the materialized workspace differs from activated content."""
+        mismatches: list[str] = []
+        for path, expected_hash in expected_file_hashes.items():
+            file_path = GitRepoManager._safe_local_path(work_dir, path)
+            if expected_hash is None:
+                if file_path.exists():
+                    mismatches.append(f"{path}: expected deletion")
+                continue
+            if not file_path.is_file():
+                mismatches.append(f"{path}: missing")
+                continue
+            actual_hash = hashlib.sha256(file_path.read_bytes()).hexdigest()
+            if actual_hash != expected_hash:
+                mismatches.append(
+                    f"{path}: expected {expected_hash}, found {actual_hash}"
+                )
+        if mismatches:
+            raise RuntimeError(
+                "Workspace Git checkout does not match activated changeset: "
+                + "; ".join(mismatches)
+            )
+
+    @classmethod
+    def _prepare_expected_workspace_files(
+        cls,
+        work_dir: Path,
+        repo: GitRepo,
+        expected_file_hashes: dict[str, str | None],
+    ) -> None:
+        """Validate activated files and make tracked paths visible to Git staging."""
+        cls._verify_expected_workspace_files(work_dir, expected_file_hashes)
+        for path in expected_file_hashes:
+            try:
+                repo.git.ls_files("--error-unmatch", "--", path)
+            except GitCommandError:
+                continue
+            repo.git.update_index(
+                "--no-assume-unchanged",
+                "--no-skip-worktree",
+                "--",
+                path,
+            )
+
+    @staticmethod
+    def _verify_expected_workspace_tree(
+        repo: GitRepo,
+        expected_file_hashes: dict[str, str | None],
+    ) -> None:
+        """Verify the commit tree contains each activated write or deletion."""
+        if not expected_file_hashes:
+            return
+        if not repo.head.is_valid():
+            raise RuntimeError("Workspace Git closure did not create a valid HEAD")
+
+        mismatches: list[str] = []
+        for path, expected_hash in expected_file_hashes.items():
+            mismatch = GitHubSyncService._expected_workspace_tree_mismatch(
+                repo,
+                path,
+                expected_hash,
+            )
+            if mismatch:
+                mismatches.append(mismatch)
+        if mismatches:
+            raise RuntimeError(
+                "Workspace Git commit does not match activated changeset: "
+                + "; ".join(mismatches)
+            )
+
+    @staticmethod
+    def _expected_workspace_tree_mismatch(
+        repo: GitRepo,
+        path: str,
+        expected_hash: str | None,
+    ) -> str | None:
+        """Return the path-specific commit-tree contract violation, if any."""
+        try:
+            blob = repo.head.commit.tree / path
+        except KeyError:
+            blob = None
+        if expected_hash is None:
+            return f"{path}: expected deletion" if blob is not None else None
+        if blob is None or blob.type != "blob":
+            return f"{path}: missing from commit tree"
+        actual_hash = hashlib.sha256(blob.data_stream.read()).hexdigest()
+        if actual_hash != expected_hash:
+            return f"{path}: expected {expected_hash}, committed {actual_hash}"
+        return None
 
     async def desktop_sync(self, job_id: str | None = None, confirm_deletes: bool = False) -> "SyncResult":
         """Combined pull + push. The ONLY place entity import + S3 sync-up happen.
@@ -1560,13 +1768,7 @@ class GitHubSyncService:
         ]
         if py_files:
             try:
-                result = subprocess.run(
-                    ["ruff", "check", "--output-format=json", "--no-fix", *py_files],
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                    cwd=str(repo_dir),
-                )
+                result = await _run_ruff_check(repo_dir, py_files)
                 if result.stdout.strip():
                     import json
                     for violation in json.loads(result.stdout):
@@ -1579,7 +1781,7 @@ class GitHubSyncService:
                             category="lint",
                             fix_hint="This is a style warning and won't block your commit.",
                         ))
-            except (subprocess.TimeoutExpired, FileNotFoundError):
+            except (asyncio.TimeoutError, FileNotFoundError):
                 pass  # ruff not available or timed out — skip lint
 
         # 4. Ref resolution (UUID references in forms)

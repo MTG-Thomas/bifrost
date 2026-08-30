@@ -8,7 +8,15 @@
 - `./test.sh unit` runs backend unit tests.
 - `./test.sh e2e` runs backend E2E tests.
 - `./test.sh client e2e` runs Playwright browser tests.
-- `./test.sh ci` runs the isolated full local CI path.
+- `./test.sh ci` runs the isolated full local CI path, with backend unit and
+  E2E suites in separate pytest processes before client unit and Playwright.
+
+GitHub Actions runs Playwright on every pull request and merge-queue ref. The
+client job is part of the required `E2E Tests` aggregate gate, uploads traces,
+screenshots, videos, and the HTML report when it fails, and uses the baked
+API/client/Playwright images from `main` unless an image input changed.
+Playwright retries and skipped tests are prohibited so a green gate always
+represents a clean first attempt.
 
 PR117 is superseded by this smaller change because the previous branch also carried a stale OAuth fix and old `test.sh` edits. Current `main` already has the larger test runner refactor, so this PR keeps only the remaining low-risk speed knob.
 

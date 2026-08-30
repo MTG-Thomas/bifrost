@@ -28,6 +28,17 @@ class SessionStub:
         self.new = list(new)
         self.dirty = list(dirty)
         self.deleted = list(deleted)
+        self.executed = []
+
+    def connection(self):
+        session = self
+
+        class Connection:
+            def execute(self, statement):
+                session.executed.append(statement)
+                return SimpleNamespace(scalar_one=lambda: 7)
+
+        return Connection()
 
 
 class ScalarRows:
@@ -106,10 +117,72 @@ def test_after_flush_collects_manifest_relevant_changes_only() -> None:
 def test_after_rollback_clears_collected_changes() -> None:
     session = SessionStub(new=[WatchedThing("new-1")])
     entity_change_hook._after_flush(session, None)
+    setattr(session, entity_change_hook._CATALOG_PENDING_ATTR, True)
 
     entity_change_hook._after_rollback(session)
 
     assert getattr(session, entity_change_hook._PENDING_ATTR) == []
+    assert not getattr(session, entity_change_hook._CATALOG_PENDING_ATTR)
+
+
+def test_bulk_workflow_dml_marks_catalog_for_post_commit_publish() -> None:
+    session = SessionStub()
+    state = SimpleNamespace(
+        is_insert=False,
+        is_update=True,
+        is_delete=False,
+        statement=SimpleNamespace(table=SimpleNamespace(name="workflows")),
+        session=session,
+    )
+
+    entity_change_hook._track_bulk_workflow_change(state)
+
+    assert getattr(session, entity_change_hook._CATALOG_PENDING_ATTR)
+    assert getattr(session, entity_change_hook._CATALOG_REVISION_ATTR) == 7
+    assert len(session.executed) == 1
+
+
+def test_bulk_solution_delete_marks_cascaded_workflows_for_catalog_publish() -> None:
+    session = SessionStub()
+    state = SimpleNamespace(
+        is_insert=False,
+        is_update=False,
+        is_delete=True,
+        statement=SimpleNamespace(table=SimpleNamespace(name="solutions")),
+        session=session,
+    )
+
+    entity_change_hook._track_bulk_workflow_change(state)
+
+    assert getattr(session, entity_change_hook._CATALOG_PENDING_ATTR)
+    assert getattr(session, entity_change_hook._CATALOG_REVISION_ATTR) == 7
+    assert len(session.executed) == 1
+
+
+def test_before_flush_advances_revision_once_per_transaction() -> None:
+    from src.models.orm.workflows import Workflow
+
+    workflow = object.__new__(Workflow)
+    session = SessionStub(new=[workflow])
+
+    entity_change_hook._before_flush_workflow_catalog_revision(session, None, None)
+    entity_change_hook._before_flush_workflow_catalog_revision(session, None, None)
+
+    assert getattr(session, entity_change_hook._CATALOG_REVISION_ATTR) == 7
+    assert len(session.executed) == 1
+
+
+def test_before_flush_advances_revision_for_solution_cascade_delete() -> None:
+    from src.models.orm.solutions import Solution
+
+    solution = object.__new__(Solution)
+    session = SessionStub(deleted=[solution])
+
+    entity_change_hook._before_flush_workflow_catalog_revision(session, None, None)
+
+    assert getattr(session, entity_change_hook._CATALOG_PENDING_ATTR)
+    assert getattr(session, entity_change_hook._CATALOG_REVISION_ATTR) == 7
+    assert len(session.executed) == 1
 
 
 def test_after_commit_deduplicates_changes_and_schedules_publish_tasks() -> None:
@@ -161,6 +234,67 @@ def test_after_commit_clears_pending_when_no_event_loop_exists() -> None:
         entity_change_hook._after_commit(session)
 
     assert getattr(session, entity_change_hook._PENDING_ATTR) == []
+
+
+def test_after_commit_schedules_one_catalog_revision_for_workflow_changes() -> None:
+    session = SessionStub()
+    setattr(
+        session,
+        entity_change_hook._PENDING_ATTR,
+        [
+            ("workflows", "workflow-1", "add"),
+            ("workflows", "workflow-2", "update"),
+        ],
+    )
+    setattr(session, entity_change_hook._CATALOG_PENDING_ATTR, True)
+    setattr(session, entity_change_hook._CATALOG_REVISION_ATTR, 11)
+    scheduled = []
+    loop = SimpleNamespace(create_task=lambda task: scheduled.append(task))
+
+    with (
+        patch.object(entity_change_hook.asyncio, "get_running_loop", return_value=loop),
+        patch("src.core.request_context.get_request_user", return_value=None),
+        patch("src.core.request_context.get_request_session_id", return_value=None),
+        patch.object(entity_change_hook, "_publish_entity_change", AsyncMock()),
+        patch.object(
+            entity_change_hook,
+            "_publish_workflow_catalog_change",
+            AsyncMock(),
+        ) as publish_catalog,
+    ):
+        entity_change_hook._after_commit(session)
+
+    assert len(scheduled) == 3
+    assert publish_catalog.call_count == 1
+    publish_catalog.assert_called_once_with(11)
+    for task in scheduled:
+        task.close()
+
+
+def test_after_commit_publishes_catalog_for_bulk_workflow_dml() -> None:
+    session = SessionStub()
+    setattr(session, entity_change_hook._CATALOG_PENDING_ATTR, True)
+    setattr(session, entity_change_hook._CATALOG_REVISION_ATTR, 12)
+    scheduled = []
+    loop = SimpleNamespace(create_task=lambda task: scheduled.append(task))
+
+    with (
+        patch.object(entity_change_hook.asyncio, "get_running_loop", return_value=loop),
+        patch("src.core.request_context.get_request_user", return_value=None),
+        patch("src.core.request_context.get_request_session_id", return_value=None),
+        patch.object(
+            entity_change_hook,
+            "_publish_workflow_catalog_change",
+            AsyncMock(),
+        ) as publish_catalog,
+    ):
+        entity_change_hook._after_commit(session)
+
+    assert not getattr(session, entity_change_hook._CATALOG_PENDING_ATTR)
+    assert len(scheduled) == 1
+    assert publish_catalog.call_count == 1
+    publish_catalog.assert_called_once_with(12)
+    scheduled[0].close()
 
 
 @pytest.mark.asyncio
@@ -490,7 +624,9 @@ def test_register_entity_change_hooks_registers_session_listeners() -> None:
         entity_change_hook.register_entity_change_hooks()
 
     assert [call.args[1:] for call in listen.call_args_list] == [
+        ("before_flush", entity_change_hook._before_flush_workflow_catalog_revision),
         ("after_flush", entity_change_hook._after_flush),
+        ("do_orm_execute", entity_change_hook._track_bulk_workflow_change),
         ("after_commit", entity_change_hook._after_commit),
         ("after_rollback", entity_change_hook._after_rollback),
     ]

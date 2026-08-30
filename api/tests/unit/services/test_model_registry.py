@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -29,6 +30,22 @@ class FakeRedis:
         if self.fail:
             raise RuntimeError("redis down")
         self.deleted.append(key)
+
+
+@pytest.mark.asyncio
+async def test_google_model_mapping_uses_native_model_list() -> None:
+    model = MagicMock()
+    model.name = "models/gemini-2.5-flash"
+    model.display_name = "Gemini 2.5 Flash"
+    google_client = MagicMock()
+    google_client.aio.models.list = AsyncMock(return_value=MagicMock(page=[model]))
+    google_client.aio.aclose = AsyncMock()
+
+    with patch("google.genai.Client", return_value=google_client):
+        mapping = await model_registry._fetch_model_mapping("google", "test-key")
+
+    assert mapping == {"gemini-2.5-flash": "Gemini 2.5 Flash"}
+    google_client.aio.aclose.assert_awaited_once()
 
 
 def test_normalize_model_name_strips_provider_date_suffixes() -> None:
@@ -140,6 +157,7 @@ async def test_invalidate_model_registry_deletes_one_or_all_providers() -> None:
         "model_registry:openai",
         "model_registry:openai",
         "model_registry:anthropic",
+        "model_registry:google",
     ]
 
 

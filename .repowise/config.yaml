@@ -1,0 +1,5 @@
+embedder: mock
+mcp:
+  tools: lean
+editor_files:
+  agents_md: false

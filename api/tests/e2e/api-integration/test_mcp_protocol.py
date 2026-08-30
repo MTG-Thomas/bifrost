@@ -13,6 +13,8 @@ import requests
 from tests.fixtures.auth import create_test_jwt
 
 TEST_API_URL = os.getenv("TEST_API_URL", "http://api:8000")
+MCP_RESOURCE = f"{TEST_API_URL}/mcp"
+MODERN_PROTOCOL_VERSION = "2026-07-28"
 
 # MCP Streamable HTTP transport requires this Accept header
 MCP_ACCEPT_HEADER = "application/json, text/event-stream"
@@ -90,7 +92,7 @@ class TestMCPProtocol:
 
     def test_mcp_initialize_success(self):
         """POST /mcp with valid admin token should return initialize response."""
-        token = create_test_jwt(is_superuser=True)
+        token = create_test_jwt(is_superuser=True, mcp_resource=MCP_RESOURCE)
         headers = mcp_headers(token)
 
         response = requests.post(
@@ -117,6 +119,7 @@ class TestMCPProtocol:
         result = data["result"]
         assert "serverInfo" in result
         assert "protocolVersion" in result
+        assert "bifrost_search_capabilities" in result["instructions"]
 
     def test_mcp_list_tools(self):
         """Should be able to list available tools.
@@ -125,7 +128,7 @@ class TestMCPProtocol:
         is independent and no session ID is needed. We can call tools/list directly
         after initialize without needing to track session state.
         """
-        token = create_test_jwt(is_superuser=True)
+        token = create_test_jwt(is_superuser=True, mcp_resource=MCP_RESOURCE)
         headers = mcp_headers(token)
 
         # First initialize (required by MCP protocol before other methods)
@@ -163,19 +166,23 @@ class TestMCPProtocol:
         assert "result" in data
         result = data["result"]
         assert "tools" in result
-        # Should have some tools available
         tools = result["tools"]
-        assert len(tools) > 0
-        # Check for expected tool names
-        tool_names = [t["name"] for t in tools]
-        assert "execute_workflow" in tool_names
-        assert "list_workflows" in tool_names
+        tool_names = {t["name"] for t in tools}
+        assert tool_names == {
+            "bifrost_get_required_instructions",
+            "bifrost_search_capabilities",
+            "bifrost_execute_tool",
+            "bifrost_get_execution",
+            "bifrost_search_memory",
+            "bifrost_save_memory",
+            "bifrost_remove_memory",
+        }
 
     def test_mcp_non_admin_allowed(self):
         """Non-admin users can initialize MCP — per-user tool access is
         role-scoped downstream, so they connect successfully and simply see
         the tools their roles grant them (possibly none)."""
-        token = create_test_jwt(is_superuser=False)
+        token = create_test_jwt(is_superuser=False, mcp_resource=MCP_RESOURCE)
         headers = mcp_headers(token)
 
         response = requests.post(
@@ -219,6 +226,141 @@ class TestMCPProtocol:
         )
 
         assert response.status_code == 401
+
+    def test_general_bifrost_token_is_rejected(self):
+        """A UI/API token cannot be replayed at the MCP resource server."""
+        response = requests.post(
+            f"{TEST_API_URL}/mcp",
+            headers=mcp_headers(create_test_jwt(is_superuser=True)),
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "1.0"},
+                },
+            },
+        )
+        assert response.status_code == 401
+
+    def test_untrusted_origin_and_host_are_rejected(self):
+        token = create_test_jwt(is_superuser=True, mcp_resource=MCP_RESOURCE)
+        body = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "1.0"},
+            },
+        }
+
+        bad_origin = requests.post(
+            f"{TEST_API_URL}/mcp",
+            headers={**mcp_headers(token), "Origin": "https://evil.example"},
+            json=body,
+        )
+        assert bad_origin.status_code == 403
+
+        bad_host = requests.post(
+            f"{TEST_API_URL}/mcp",
+            headers={**mcp_headers(token), "Host": "evil.example"},
+            json=body,
+        )
+        assert bad_host.status_code == 421
+
+    @pytest.mark.parametrize(
+        ("headers_override", "params", "expected_code"),
+        [
+            (
+                {"MCP-Protocol-Version": MODERN_PROTOCOL_VERSION,
+                 "Mcp-Method": "tools/list"},
+                {},
+                -32602,
+            ),
+            (
+                {"MCP-Protocol-Version": MODERN_PROTOCOL_VERSION,
+                 "Mcp-Method": "tools/call"},
+                {
+                    "_meta": {
+                        "io.modelcontextprotocol/protocolVersion": MODERN_PROTOCOL_VERSION,
+                        "io.modelcontextprotocol/clientCapabilities": {},
+                    }
+                },
+                -32020,
+            ),
+            (
+                {"MCP-Protocol-Version": MODERN_PROTOCOL_VERSION},
+                {
+                    "_meta": {
+                        "io.modelcontextprotocol/protocolVersion": MODERN_PROTOCOL_VERSION,
+                        "io.modelcontextprotocol/clientCapabilities": {},
+                    }
+                },
+                -32020,
+            ),
+            (
+                {"MCP-Protocol-Version": "malformed-version",
+                 "Mcp-Method": "tools/list"},
+                {
+                    "_meta": {
+                        "io.modelcontextprotocol/protocolVersion": "malformed-version",
+                        "io.modelcontextprotocol/clientCapabilities": {},
+                    }
+                },
+                -32022,
+            ),
+        ],
+    )
+    def test_modern_protocol_rejects_missing_or_conflicting_routing_data(
+        self, headers_override, params, expected_code
+    ):
+        token = create_test_jwt(is_superuser=True, mcp_resource=MCP_RESOURCE)
+        response = requests.post(
+            f"{TEST_API_URL}/mcp",
+            headers={**mcp_headers(token), **headers_override},
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list",
+                "params": params,
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == expected_code
+
+    def test_modern_protocol_rejects_non_json_content_type(self):
+        token = create_test_jwt(is_superuser=True, mcp_resource=MCP_RESOURCE)
+        response = requests.post(
+            f"{TEST_API_URL}/mcp",
+            headers={
+                **mcp_headers(token),
+                "Content-Type": "text/plain",
+                "MCP-Protocol-Version": MODERN_PROTOCOL_VERSION,
+                "Mcp-Method": "tools/list",
+            },
+            data="{}",
+        )
+        assert response.status_code == 400
+
+    def test_modern_protocol_rejects_malformed_json(self):
+        token = create_test_jwt(is_superuser=True, mcp_resource=MCP_RESOURCE)
+        response = requests.post(
+            f"{TEST_API_URL}/mcp",
+            headers={
+                **mcp_headers(token),
+                "MCP-Protocol-Version": MODERN_PROTOCOL_VERSION,
+                "Mcp-Method": "tools/list",
+            },
+            data="{",
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == -32700
 
 
 @pytest.mark.e2e

@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.services.audit import emit_audit
+from src.services.audit import (
+    emit_audit,
+    emit_file_policy_deny,
+    emit_table_policy_deny,
+)
 from src.services.audit_context import (
     ActorContext,
     clear_actor,
@@ -74,6 +78,15 @@ class TestEmitAudit:
         await emit_audit(db, "user.create", resource_type="user")
         # db.add should never be called because we short-circuit early.
         db.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_strict_audit_requires_actor(self):
+        with pytest.raises(RuntimeError, match="requires an actor context"):
+            await emit_audit(
+                MagicMock(),
+                "mcp.operation_receipt.resolve",
+                strict=True,
+            )
 
     @pytest.mark.asyncio
     async def test_writes_when_actor_present(self, monkeypatch):
@@ -149,6 +162,23 @@ class TestEmitAudit:
         await emit_audit(_session_mock(), "user.create")
 
     @pytest.mark.asyncio
+    async def test_strict_audit_propagates_repository_errors(self, monkeypatch):
+        mock_repo = MagicMock()
+        mock_repo.create = AsyncMock(side_effect=RuntimeError("db exploded"))
+        monkeypatch.setattr(
+            "src.services.audit.AuditLogRepository",
+            lambda session: mock_repo,
+        )
+        set_actor(ActorContext(user_id=uuid4(), organization_id=None))
+
+        with pytest.raises(RuntimeError, match="db exploded"):
+            await emit_audit(
+                _session_mock(),
+                "mcp.operation_receipt.resolve",
+                strict=True,
+            )
+
+    @pytest.mark.asyncio
     async def test_actor_override_wins(self, monkeypatch):
         """actor_override replaces the contextvar actor."""
         captured = {}
@@ -180,3 +210,68 @@ class TestEmitAudit:
         )
 
         assert captured["user_id"] == bob_id
+
+
+@pytest.mark.asyncio
+async def test_file_policy_deny_uses_canonical_scope_payload(monkeypatch):
+    emitted = AsyncMock()
+    monkeypatch.setattr("src.services.audit.emit_audit", emitted)
+    solution_id = uuid4()
+    actor = ActorContext(user_id=uuid4(), organization_id=uuid4())
+    db = MagicMock()
+
+    await emit_file_policy_deny(
+        db,
+        policy_action="write",
+        location="reports",
+        path="quarterly/result.csv",
+        scope=str(solution_id),
+        solution_id=solution_id,
+        actor_override=actor,
+    )
+
+    emitted.assert_awaited_once_with(
+        db,
+        "policy.deny",
+        resource_type="file",
+        outcome="failure",
+        details={
+            "policy_action": "write",
+            "location": "reports",
+            "path": "quarterly/result.csv",
+            "scope": str(solution_id),
+            "solution_id": str(solution_id),
+        },
+        actor_override=actor,
+    )
+
+
+@pytest.mark.asyncio
+async def test_table_policy_deny_uses_canonical_table_payload(monkeypatch):
+    emitted = AsyncMock()
+    monkeypatch.setattr("src.services.audit.emit_audit", emitted)
+    table_id = uuid4()
+    actor = ActorContext(user_id=uuid4(), organization_id=uuid4())
+    db = MagicMock()
+
+    await emit_table_policy_deny(
+        db,
+        policy_action="subscribe",
+        table_id=table_id,
+        table_name="customers",
+        actor_override=actor,
+    )
+
+    emitted.assert_awaited_once_with(
+        db,
+        "policy.deny",
+        resource_type="table_document",
+        resource_id=None,
+        outcome="failure",
+        details={
+            "policy_action": "subscribe",
+            "table_id": str(table_id),
+            "table_name": "customers",
+        },
+        actor_override=actor,
+    )

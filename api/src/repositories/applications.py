@@ -8,10 +8,12 @@ HTTP-handler-only surface. See docs/plans/2026-05-26-org-scoping-consolidation.m
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import select, text
+from sqlalchemy.orm import defer
 
 from src.core.log_safety import log_safe
 from src.core.org_filter import OrgFilterType
@@ -52,7 +54,10 @@ class ApplicationRepository(OrgScopedRepository[Application]):
             List of Application ORM objects
         """
         # Build base query with cascade scoping
-        query = select(self.model)
+        query = select(self.model).options(
+            defer(self.model.logo_data),
+            defer(self.model.logo_thumbnail_data),
+        )
         query = self._apply_cascade_scope(query)
         query = query.order_by(self.model.name)
 
@@ -89,7 +94,10 @@ class ApplicationRepository(OrgScopedRepository[Application]):
         Returns:
             List of Application ORM objects
         """
-        query = select(self.model)
+        query = select(self.model).options(
+            defer(self.model.logo_data),
+            defer(self.model.logo_thumbnail_data),
+        )
 
         # Apply org filtering based on filter type
         if filter_type == OrgFilterType.ALL:
@@ -461,6 +469,9 @@ class ApplicationRepository(OrgScopedRepository[Application]):
         app_id: UUID,
         published_by: str,
         message: str | None = None,
+        progress_callback: (
+            Callable[[str, int, int | None], Awaitable[None]] | None
+        ) = None,
     ) -> Application | None:
         """
         Publish draft to live.
@@ -482,6 +493,9 @@ class ApplicationRepository(OrgScopedRepository[Application]):
         from src.services.app_storage import AppStorageService
         app_storage = AppStorageService()
 
+        if progress_callback:
+            await progress_callback("building current source", 0, None)
+
         # build_with_migrate runs auto-migration first so a publish from a
         # legacy source tree picks up the rewritten imports before bundling.
         bundle_result, _migrated = await build_with_migrate(
@@ -496,7 +510,18 @@ class ApplicationRepository(OrgScopedRepository[Application]):
             raise ValueError(f"Bundle build failed during publish: {err_text}")
 
         # Promote the freshly-built preview bundle to live.
-        published_count = await app_storage.publish(str(app_id))
+        async def _report_promotion(current: int, total: int) -> None:
+            if progress_callback:
+                await progress_callback(
+                    "promoting current bundle",
+                    current,
+                    total,
+                )
+
+        published_count = await app_storage.publish(
+            str(app_id),
+            progress_callback=_report_promotion,
+        )
 
         if published_count == 0:
             raise ValueError("No files found to publish")
@@ -510,6 +535,12 @@ class ApplicationRepository(OrgScopedRepository[Application]):
 
         await self.session.flush()
         await self.session.refresh(application)
+        if progress_callback:
+            await progress_callback(
+                "recording published version",
+                published_count,
+                published_count,
+            )
 
         logger.info(
             f"Published application {log_safe(app_id)} "

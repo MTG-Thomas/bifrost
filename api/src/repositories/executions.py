@@ -12,7 +12,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from sqlalchemy import desc, func, select, update
+from sqlalchemy import desc, func, select, text, update
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -78,6 +78,7 @@ class ExecutionRepository(BaseRepository[Execution]):
         execution_model: str | None = None,
         workflow_id: str | None = None,
         solution_deployment_id: str | None = None,
+        check_existing: bool = True,
     ) -> Execution:
         """
         Create a new execution record.
@@ -118,6 +119,12 @@ class ExecutionRepository(BaseRepository[Execution]):
         # Parse api_key_id if present
         parsed_api_key_id = UUID(api_key_id) if api_key_id else None
 
+        # Workers receive raw parameters through the queue. The execution row is
+        # an audit surface, not a second credential or source-payload store.
+        persisted_parameters = _make_json_safe(
+            sanitize_execution_variables(parameters)
+        )
+
         # Parse workflow_id if present
         parsed_workflow_id = UUID(workflow_id) if workflow_id else None
         parsed_solution_deployment_id = UUID(solution_deployment_id) if solution_deployment_id else None
@@ -125,14 +132,25 @@ class ExecutionRepository(BaseRepository[Execution]):
         # A scheduled execution has a pre-existing row (inserted at schedule
         # time as SCHEDULED, promoted to PENDING by the scheduler). In that
         # case update-in-place instead of inserting a duplicate PK.
-        existing = await self.session.get(Execution, UUID(execution_id))
+        existing = (
+            await self.session.get(Execution, UUID(execution_id))
+            if check_existing
+            else None
+        )
         if existing is not None:
             if getattr(existing, "solution_deployment_id", None) != parsed_solution_deployment_id:
                 raise ValueError("immutable scheduled execution deployment pin mismatch")
             existing.workflow_name = workflow_name
             existing.workflow_id = parsed_workflow_id
-            existing.status = status
-            existing.parameters = parameters
+            # Cancellation may win the advisory-lock race after a consumer
+            # claims the row but before it finishes setup. Never resurrect
+            # that execution while enriching the pre-created audit row.
+            if existing.status not in {
+                ExecutionStatus.CANCELLING,
+                ExecutionStatus.CANCELLED,
+            }:
+                existing.status = status
+            existing.parameters = persisted_parameters
             existing.executed_by = parsed_user_id
             existing.executed_by_name = user_name
             existing.organization_id = parsed_org_id
@@ -155,7 +173,7 @@ class ExecutionRepository(BaseRepository[Execution]):
             workflow_id=parsed_workflow_id,
             solution_deployment_id=parsed_solution_deployment_id,
             status=status,
-            parameters=parameters,
+            parameters=persisted_parameters,
             executed_by=parsed_user_id,
             executed_by_name=user_name,
             organization_id=parsed_org_id,
@@ -168,7 +186,12 @@ class ExecutionRepository(BaseRepository[Execution]):
 
         self.session.add(execution)
         await self.session.flush()
-        await self.session.refresh(execution)
+        if check_existing:
+            # Preserve the historical repository contract for callers that do
+            # not know whether the row already exists. Immediate workflow
+            # dispatches pass check_existing=False and do not need DB-generated
+            # values before committing the known-new row.
+            await self.session.refresh(execution)
 
         logger.info(f"Created execution record: {execution_id} (status={status.value})")
         return execution
@@ -187,7 +210,7 @@ class ExecutionRepository(BaseRepository[Execution]):
         metrics: dict | None = None,
         time_saved: int | None = None,
         value: float | None = None,
-    ) -> None:
+    ) -> ExecutionStatus:
         """
         Update an execution record with results.
 
@@ -205,15 +228,43 @@ class ExecutionRepository(BaseRepository[Execution]):
             time_saved: Final time saved in minutes
             value: Final value generated
         """
-        # Get status value if it's an enum
-        status_value = status.value if hasattr(status, "value") else status
+        # Serialize result finalization against claim/cancel. If cancellation
+        # acquired this execution's lock first, the worker result must finish
+        # the accepted cancellation instead of resurrecting the execution as
+        # successful or failed.
+        await self.session.execute(
+            text(
+                "SELECT pg_advisory_xact_lock("
+                "hashtext('bifrost:workflow-execution:' || :execution_id))"
+            ),
+            {"execution_id": execution_id},
+        )
+        current_status_result = await self.session.execute(
+            select(Execution.status).where(Execution.id == UUID(execution_id))
+        )
+        current_status = current_status_result.scalar_one_or_none()
+        current_status_value = (
+            current_status.value
+            if isinstance(current_status, ExecutionStatus)
+            else current_status
+        )
+        cancellation_won = current_status_value in {
+            ExecutionStatus.CANCELLING.value,
+            ExecutionStatus.CANCELLED.value,
+        }
+        effective_status = (
+            ExecutionStatus.CANCELLED
+            if cancellation_won
+            else status
+        )
+        status_value = effective_status.value
 
         # Build update values
         update_values: dict[str, Any] = {
             "status": status_value,
         }
 
-        if result is not None:
+        if result is not None and not cancellation_won:
             update_values["result"] = _make_json_safe(result)
             # Normalize result_type to frontend-friendly values
             python_type = type(result).__name__
@@ -228,7 +279,7 @@ class ExecutionRepository(BaseRepository[Execution]):
             else:
                 update_values["result_type"] = "json"  # Default to json
 
-        if error_message is not None:
+        if error_message is not None and not cancellation_won:
             update_values["error_message"] = error_message
 
         if duration_ms is not None:
@@ -257,9 +308,9 @@ class ExecutionRepository(BaseRepository[Execution]):
                 update_values["cpu_total_seconds"] = metrics["cpu_total_seconds"]
 
         # Economics
-        if time_saved is not None:
+        if time_saved is not None and not cancellation_won:
             update_values["time_saved"] = time_saved
-        if value is not None:
+        if value is not None and not cancellation_won:
             update_values["value"] = value
 
         # Execute update
@@ -284,6 +335,7 @@ class ExecutionRepository(BaseRepository[Execution]):
 
         await self.session.flush()
         logger.debug(f"Updated execution {log_safe(execution_id)} to status {log_safe(status_value)}")
+        return effective_status
 
     # =========================================================================
     # Read Operations (used by API endpoints)
@@ -335,7 +387,10 @@ class ExecutionRepository(BaseRepository[Execution]):
                 logger.debug(f"invalid end_date {end_date!r}, ignoring filter: {e}")
 
         # Order by newest first
-        query = query.order_by(desc(Execution.started_at))
+        query = query.order_by(
+            desc(Execution.started_at).nulls_last(),
+            desc(Execution.id),
+        )
 
         # Pagination
         query = query.offset(offset).limit(limit + 1)  # +1 to check for more
@@ -422,6 +477,9 @@ class ExecutionRepository(BaseRepository[Execution]):
                 model=entry.model,
                 input_tokens=entry.input_tokens,
                 output_tokens=entry.output_tokens,
+                cache_read_tokens=entry.cache_read_tokens,
+                cache_write_tokens=entry.cache_write_tokens,
+                provider_cost=(str(entry.provider_cost) if entry.provider_cost is not None else None),
                 cost=str(entry.cost) if entry.cost else None,
                 duration_ms=entry.duration_ms,
                 timestamp=entry.timestamp.isoformat() if entry.timestamp else "",
@@ -436,6 +494,9 @@ class ExecutionRepository(BaseRepository[Execution]):
             totals_query = select(
                 func.coalesce(func.sum(AIUsage.input_tokens), 0).label("total_input"),
                 func.coalesce(func.sum(AIUsage.output_tokens), 0).label("total_output"),
+                func.coalesce(func.sum(AIUsage.cache_read_tokens), 0).label("total_cache_read"),
+                func.coalesce(func.sum(AIUsage.cache_write_tokens), 0).label("total_cache_write"),
+                func.coalesce(func.sum(AIUsage.provider_cost), Decimal("0")).label("total_provider_cost"),
                 func.coalesce(func.sum(AIUsage.cost), Decimal("0")).label("total_cost"),
                 func.coalesce(func.sum(AIUsage.duration_ms), 0).label("total_duration"),
                 func.count(AIUsage.id).label("call_count"),
@@ -447,6 +508,9 @@ class ExecutionRepository(BaseRepository[Execution]):
             ai_totals = AIUsageTotalsSimple(
                 total_input_tokens=int(totals_row.total_input or 0),
                 total_output_tokens=int(totals_row.total_output or 0),
+                total_cache_read_tokens=int(totals_row.total_cache_read or 0),
+                total_cache_write_tokens=int(totals_row.total_cache_write or 0),
+                total_provider_cost=str(totals_row.total_provider_cost or Decimal("0")),
                 total_cost=str(totals_row.total_cost or Decimal("0")),
                 total_duration_ms=int(totals_row.total_duration or 0),
                 call_count=int(totals_row.call_count or 0),
@@ -467,6 +531,7 @@ class ExecutionRepository(BaseRepository[Execution]):
             result_type=execution.result_type,
             error_message=execution.error_message,
             duration_ms=execution.duration_ms,
+            created_at=execution.created_at,
             started_at=execution.started_at,
             completed_at=execution.completed_at,
             logs=[log.model_dump() for log in logs],
@@ -584,6 +649,13 @@ class ExecutionRepository(BaseRepository[Execution]):
         """Cancel a pending or running execution."""
         from src.core.pubsub import publish_execution_update
 
+        await self.session.execute(
+            text(
+                "SELECT pg_advisory_xact_lock("
+                "hashtext('bifrost:workflow-execution:' || :execution_id))"
+            ),
+            {"execution_id": str(execution_id)},
+        )
         result = await self.session.execute(
             select(Execution).where(Execution.id == execution_id)
         )
@@ -595,12 +667,21 @@ class ExecutionRepository(BaseRepository[Execution]):
         if not user.is_superuser and execution.executed_by != user.user_id:
             return None, "Forbidden"
 
-        # Can only cancel pending or running executions
-        if execution.status not in [ExecutionStatus.PENDING.value, ExecutionStatus.RUNNING.value]:
+        # Can only cancel work that has not reached a terminal state.
+        if execution.status not in [
+            ExecutionStatus.SCHEDULED.value,
+            ExecutionStatus.PENDING.value,
+            ExecutionStatus.RUNNING.value,
+        ]:
             return None, "BadRequest"
 
-        # Update status
-        execution.status = ExecutionStatus.CANCELLING.value  # type: ignore[assignment]
+        # Work not yet claimed by a consumer can be cancelled immediately.
+        # Running work needs the existing Redis cancellation signal.
+        execution.status = (  # type: ignore[assignment]
+            ExecutionStatus.CANCELLING.value
+            if execution.status == ExecutionStatus.RUNNING.value
+            else ExecutionStatus.CANCELLED.value
+        )
 
         await self.session.flush()
         await self.session.refresh(execution)
@@ -608,7 +689,7 @@ class ExecutionRepository(BaseRepository[Execution]):
         # Publish update
         await publish_execution_update(
             execution_id=execution_id,
-            status=ExecutionStatus.CANCELLING.value,
+            status=execution.status,
         )
 
         return self._to_pydantic(execution, user), None
@@ -645,6 +726,7 @@ class ExecutionRepository(BaseRepository[Execution]):
             result_type=execution.result_type,
             error_message=execution.error_message,
             duration_ms=execution.duration_ms,
+            created_at=execution.created_at,
             started_at=execution.started_at,
             completed_at=execution.completed_at,
             logs=None,  # Fetched separately via /logs endpoint
@@ -676,6 +758,7 @@ async def create_execution(
     workflow_id: str | None = None,
     solution_deployment_id: str | None = None,
     session: "AsyncSession | None" = None,
+    check_existing: bool = True,
 ) -> None:
     """
     Create a new execution record in PostgreSQL.
@@ -707,6 +790,7 @@ async def create_execution(
             execution_model=execution_model,
             workflow_id=workflow_id,
             solution_deployment_id=solution_deployment_id,
+            check_existing=check_existing,
         )
 
     if session is not None:
@@ -734,7 +818,7 @@ async def update_execution(
     time_saved: int | None = None,
     value: float | None = None,
     session: "AsyncSession | None" = None,
-) -> None:
+) -> ExecutionStatus:
     """
     Update an execution record with results.
 
@@ -748,9 +832,9 @@ async def update_execution(
 
     from src.core.database import get_session_factory
 
-    async def _do_update(db: AsyncSessionType) -> None:
+    async def _do_update(db: AsyncSessionType) -> ExecutionStatus:
         repo = ExecutionRepository(db)
-        await repo.update_execution(
+        return await repo.update_execution(
             execution_id=execution_id,
             status=status,
             result=result,
@@ -767,10 +851,11 @@ async def update_execution(
 
     if session is not None:
         # Use provided session (caller manages commit)
-        await _do_update(session)
+        return await _do_update(session)
     else:
         # Backward compatible: create own session
         session_factory = get_session_factory()
         async with session_factory() as db:
-            await _do_update(db)
+            effective_status = await _do_update(db)
             await db.commit()
+            return effective_status

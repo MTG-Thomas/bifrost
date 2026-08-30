@@ -244,12 +244,16 @@ async def test_authorize_file_subscribe_reports_errors_and_registers_success():
     )
 
     websocket = _WebSocket()
-    with patch.object(ws_mod, "_populate_user_roles", AsyncMock()):
+    with (
+        patch.object(ws_mod, "_populate_user_roles", AsyncMock()),
+        patch.object(ws_mod, "_emit_file_subscribe_denial", AsyncMock()) as emit_denial,
+    ):
         assert await ws_mod._authorize_file_subscribe(
             websocket,
             user,
             ws_mod.ChannelSpec(name="files:repo:docs", filter=None, scope="global"),
         ) is None
+    emit_denial.assert_awaited_once()
     websocket.send_json.assert_awaited_with(
         {
             "type": "error",
@@ -418,7 +422,7 @@ async def test_can_access_execution_checks_owner_for_existing_rows():
 
 @pytest.mark.asyncio
 async def test_can_access_execution_checks_embed_session_redis_key():
-    user = _user(embed=True, jti="embed-session")
+    user = _user(embed=True, embed_kind="app", jti="embed-session")
     redis = SimpleNamespace(exists=AsyncMock(return_value=1))
 
     @asynccontextmanager

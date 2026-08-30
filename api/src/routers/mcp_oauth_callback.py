@@ -37,7 +37,6 @@ from starlette.responses import HTMLResponse
 
 from src.core.log_safety import log_safe
 
-from src.config import get_settings
 from src.core.db_deps import DbSession
 from src.core.security import decrypt_secret, encrypt_secret
 from src.models.orm.external_mcp import (
@@ -50,6 +49,7 @@ from src.services.mcp_client.oauth_state import (
     consume_nonce,
     decode_state,
 )
+from src.services.mcp_client.oauth_binding import resolve_oauth_binding
 from src.services.oauth_provider import (
     OAuthProviderClient,
     get_url_resolution_defaults,
@@ -162,6 +162,7 @@ async def _exchange_code_for_token(
     code: str,
     pkce_verifier: str,
     redirect_uri: str,
+    resource: str,
     db: DbSession,
 ) -> dict[str, Any]:
     """Run the authorization-code exchange.
@@ -200,6 +201,7 @@ async def _exchange_code_for_token(
         "client_secret": client_secret,
         "redirect_uri": redirect_uri,
         "code_verifier": pkce_verifier,
+        "resource": resource,
     }
     if provider.scopes:
         payload["scope"] = " ".join(provider.scopes)
@@ -226,6 +228,8 @@ async def _persist_token(
     refresh_token: str | None,
     expires_at: datetime | None,
     scopes: list[str],
+    oauth_issuer: str,
+    oauth_resource: str,
     db: DbSession,
 ) -> OAuthToken:
     """Insert a new ``OAuthToken`` row carrying the freshly-exchanged tokens.
@@ -249,6 +253,8 @@ async def _persist_token(
         ),
         expires_at=expires_at,
         scopes=scopes,
+        oauth_issuer=oauth_issuer,
+        oauth_resource=oauth_resource,
     )
     db.add(token)
     await db.flush()
@@ -310,25 +316,13 @@ async def _upsert_user_credential(
 )
 async def mcp_oauth_callback(
     db: DbSession,
-    code: str = Query(...),
+    code: str | None = Query(default=None),
     state: str = Query(...),
+    iss: str | None = Query(default=None),
     error: str | None = Query(default=None),
     error_description: str | None = Query(default=None),
 ) -> HTMLResponse:
     """Handle the vendor's redirect after the user consents (or refuses)."""
-    # Vendor-side error: surface immediately without any state work.
-    if error:
-        logger.info(
-            "MCP OAuth callback received vendor error: %s (%s)",
-            log_safe(error),
-            log_safe(error_description or ""),
-        )
-        return _popup_response(
-            success=False,
-            connection_id="",
-            error="OAuth provider rejected the connection request.",
-        )
-
     # 1. Decode + verify state
     try:
         payload = decode_state(state)
@@ -342,10 +336,21 @@ async def mcp_oauth_callback(
     connection_id = UUID(payload["connection_id"])
     flow_type = payload["flow_type"]
     pkce_verifier = payload["pkce_verifier"]
-    redirect_uri = payload.get("redirect_uri")
+    redirect_uri = payload["redirect_uri"]
+    expected_issuer = payload["oauth_issuer"]
+    resource = payload["resource"]
     user_id = UUID(payload["user_id"]) if "user_id" in payload else None
 
-    # 2. Single-use nonce check
+    if iss != expected_issuer:
+        logger.warning("MCP OAuth callback: authorization issuer mismatch")
+        return _popup_response(
+            success=False,
+            connection_id=str(connection_id),
+            error="authorization server issuer mismatch",
+        )
+
+    # 2. Single-use nonce check. Validate the issuer first so a forged
+    # cross-issuer callback cannot consume an otherwise valid flow.
     if not await consume_nonce(nonce):
         logger.warning(
             "MCP OAuth callback: state nonce already used or unknown (%s…)",
@@ -357,11 +362,24 @@ async def mcp_oauth_callback(
             error="state already used or expired",
         )
 
-    if redirect_uri is None:
-        # Older state token without redirect_uri (shouldn't happen post-deploy);
-        # fall back to the deterministic public URL.
-        public_url = get_settings().public_url.rstrip("/")
-        redirect_uri = f"{public_url}/api/mcp/oauth/callback"
+    if error:
+        logger.info(
+            "MCP OAuth callback received vendor error: %s (%s)",
+            log_safe(error),
+            log_safe(error_description or ""),
+        )
+        return _popup_response(
+            success=False,
+            connection_id=str(connection_id),
+            error="OAuth provider rejected the connection request.",
+        )
+
+    if not code:
+        return _popup_response(
+            success=False,
+            connection_id=str(connection_id),
+            error="missing authorization code",
+        )
 
     # 3. Resolve the connection + provider
     result = await db.execute(
@@ -384,6 +402,21 @@ async def mcp_oauth_callback(
             error=exc.detail if isinstance(exc.detail, str) else "provider error",
         )
 
+    try:
+        current_issuer, current_resource = resolve_oauth_binding(connection)
+    except ValueError as exc:
+        return _popup_response(
+            success=False,
+            connection_id=str(connection_id),
+            error=str(exc),
+        )
+    if current_issuer != expected_issuer or current_resource != resource:
+        return _popup_response(
+            success=False,
+            connection_id=str(connection_id),
+            error="OAuth issuer or resource changed; start a new connection flow",
+        )
+
     # 4. Exchange code for tokens
     try:
         token_result = await _exchange_code_for_token(
@@ -392,6 +425,7 @@ async def mcp_oauth_callback(
             code=code,
             pkce_verifier=pkce_verifier,
             redirect_uri=redirect_uri,
+            resource=resource,
             db=db,
         )
     except HTTPException as exc:
@@ -423,6 +457,8 @@ async def mcp_oauth_callback(
         refresh_token=refresh_token,
         expires_at=expires_at,
         scopes=granted_scopes,
+        oauth_issuer=expected_issuer,
+        oauth_resource=resource,
         db=db,
     )
 

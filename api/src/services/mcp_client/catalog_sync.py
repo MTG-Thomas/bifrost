@@ -104,8 +104,8 @@ async def sync_catalog(
     access_token = await _resolve_service_token_for_sync(connection, db)
 
     try:
-        async with mcp_client_session.open_session(connection, access_token) as session:
-            tools_result = await session.list_tools()
+        async with mcp_client_session.open_client(connection, access_token) as client:
+            tools_result = await client.list_tools_mcp()
     except Exception as exc:
         raise ToolDispatchError(
             f"tools/list failed for connection {connection.id}: {exc}",
@@ -128,13 +128,13 @@ async def sync_catalog(
 
     for tool in tools_result.tools:
         seen_names.add(tool.name)
-        # The MCP SDK exposes the JSON Schema as ``inputSchema`` on the
+        # The MCP SDK exposes the JSON Schema as ``input_schema`` on the
         # Tool model. Persist it verbatim so the planner can re-emit it
         # to the LLM without re-shaping.
         schema = (
-            tool.inputSchema
-            if isinstance(tool.inputSchema, dict)
-            else (tool.inputSchema.model_dump() if tool.inputSchema is not None else {})
+            tool.input_schema
+            if isinstance(tool.input_schema, dict)
+            else (tool.input_schema.model_dump() if tool.input_schema is not None else {})
         )
 
         existing = existing_by_name.get(tool.name)

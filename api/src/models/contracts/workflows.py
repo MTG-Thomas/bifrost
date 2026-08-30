@@ -170,6 +170,13 @@ class RegisterWorkflowRequest(BaseModel):
     """Request model for explicit workflow registration."""
     path: str = Field(..., description="Workspace-relative path to the .py file")
     function_name: str = Field(..., description="Name of the decorated function to register")
+    id: str | None = Field(
+        default=None,
+        description=(
+            "Previously platform-assigned workflow UUID to preserve during "
+            "cross-instance promotion. Omit for first-time creation."
+        ),
+    )
     organization_id: str | None = Field(default=None, description="Organization ID to scope the workflow to, or null for global scope")
     access_level: str | None = Field(
         default=None,

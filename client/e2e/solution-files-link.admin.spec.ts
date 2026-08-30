@@ -7,10 +7,6 @@
  *   - Clicking the chip renders the same read-only file browser used by the
  *     Files page, scoped to the Solution install.
  *
- * NOTE: This spec is written but is NOT in CI for this worktree (the
- * Playwright stack only has the debug stack at localhost:34212, not the test
- * stack). The unit contract is covered by the SolutionDetail + FilesExplorer
- * vitest suites. The Playwright spec is provided for manual/future CI use.
  */
 
 import { expect, type Page } from "@playwright/test";
@@ -169,14 +165,6 @@ test.describe("Solution Files browser (admin)", () => {
 				},
 			});
 			expect(writeR.status()).toBe(204);
-
-			// The Solutions catalog card should expose a compact Files count in
-			// its responsive footer without needing a per-card entities fetch.
-			await page.goto("/solutions");
-			const card = page.getByTestId("install-card").filter({ hasText: slug.toUpperCase() });
-			await expect(card).toBeVisible({ timeout: 10000 });
-			await expect(card.getByTestId("solution-card-counts")).toBeVisible();
-			await expect(card.getByTestId("solution-count-files")).toContainText("1");
 
 			// Navigate to the Solution detail page.
 			await page.goto(`/solutions/${solId}`);

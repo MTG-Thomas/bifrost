@@ -9,7 +9,7 @@
  * - /apps/:slug/* - Published mode (uses live files)
  */
 
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate } from "react-router";
 import { AlertTriangle, ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AppLoadingSkeleton } from "@/components/jsx-app/AppLoadingSkeleton";

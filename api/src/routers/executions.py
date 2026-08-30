@@ -36,6 +36,7 @@ from src.models.contracts.executions import (
 from src.models.orm.ai_usage import AIUsage
 
 from bifrost._logging import read_logs_from_stream
+from shared.pending_execution import get_pending_execution_fallback
 from src.core.auth import Context, RequirePlatformAdmin
 from src.core.principal import UserPrincipal
 from src.core.log_safety import log_safe
@@ -126,6 +127,7 @@ class ExecutionRepository:
             defer(ExecutionModel.result, raiseload=True),
             defer(ExecutionModel.variables, raiseload=True),
             defer(ExecutionModel.execution_context, raiseload=True),
+            defer(ExecutionModel.dispatch_evidence, raiseload=True),
         )
 
         # Organization scoping
@@ -176,11 +178,10 @@ class ExecutionRepository:
         if exclude_local:
             query = query.where(ExecutionModel.is_local_execution == False)  # noqa: E712
 
-        # Order newest first with an id tiebreaker so the order is total:
-        # never-started rows (Scheduled/Pending, NULL started_at) sort first
-        # deterministically instead of "arbitrarily on the server" per page.
+        # Completed and running work is the useful history signal. Never-started
+        # rows remain visible after it instead of crowding the first page.
         query = query.order_by(
-            desc(ExecutionModel.started_at).nulls_first(),
+            desc(ExecutionModel.started_at).nulls_last(),
             desc(ExecutionModel.id),
         )
 
@@ -189,31 +190,30 @@ class ExecutionRepository:
         if cursor is not None:
             cursor_started, cursor_id = cursor
             if cursor_started is None:
-                # Last row served was in the leading NULL block: continue
-                # through older NULL rows, then everything started.
+                # Once pagination reaches never-started rows, only older rows
+                # in that trailing NULL block remain.
                 query = query.where(
-                    or_(
-                        and_(
-                            ExecutionModel.started_at.is_(None),
-                            ExecutionModel.id < cursor_id,
-                        ),
-                        ExecutionModel.started_at.is_not(None),
+                    and_(
+                        ExecutionModel.started_at.is_(None),
+                        ExecutionModel.id < cursor_id,
                     )
                 )
             else:
-                # Strictly older than the cursor row. Excludes the NULL block
-                # (already served on page one) — new Scheduled rows don't
-                # inject themselves into the middle of a pagination either.
+                # Strictly older started rows come next, followed by the
+                # never-started block.
                 query = query.where(
-                    and_(
-                        ExecutionModel.started_at.is_not(None),
-                        or_(
-                            ExecutionModel.started_at < cursor_started,
-                            and_(
-                                ExecutionModel.started_at == cursor_started,
-                                ExecutionModel.id < cursor_id,
+                    or_(
+                        and_(
+                            ExecutionModel.started_at.is_not(None),
+                            or_(
+                                ExecutionModel.started_at < cursor_started,
+                                and_(
+                                    ExecutionModel.started_at == cursor_started,
+                                    ExecutionModel.id < cursor_id,
+                                ),
                             ),
                         ),
+                        ExecutionModel.started_at.is_(None),
                     )
                 )
         elif offset:
@@ -334,6 +334,9 @@ class ExecutionRepository:
                 model=entry.model,
                 input_tokens=entry.input_tokens,
                 output_tokens=entry.output_tokens,
+                cache_read_tokens=entry.cache_read_tokens,
+                cache_write_tokens=entry.cache_write_tokens,
+                provider_cost=(str(entry.provider_cost) if entry.provider_cost is not None else None),
                 cost=str(entry.cost) if entry.cost else None,
                 duration_ms=entry.duration_ms,
                 timestamp=entry.timestamp.isoformat() if entry.timestamp else "",
@@ -348,6 +351,9 @@ class ExecutionRepository:
             totals_query = select(
                 func.coalesce(func.sum(AIUsage.input_tokens), 0).label("total_input"),
                 func.coalesce(func.sum(AIUsage.output_tokens), 0).label("total_output"),
+                func.coalesce(func.sum(AIUsage.cache_read_tokens), 0).label("total_cache_read"),
+                func.coalesce(func.sum(AIUsage.cache_write_tokens), 0).label("total_cache_write"),
+                func.coalesce(func.sum(AIUsage.provider_cost), Decimal("0")).label("total_provider_cost"),
                 func.coalesce(func.sum(AIUsage.cost), Decimal("0")).label("total_cost"),
                 func.coalesce(func.sum(AIUsage.duration_ms), 0).label("total_duration"),
                 func.count(AIUsage.id).label("call_count"),
@@ -359,6 +365,9 @@ class ExecutionRepository:
             ai_totals = AIUsageTotalsSimple(
                 total_input_tokens=int(totals_row.total_input or 0),
                 total_output_tokens=int(totals_row.total_output or 0),
+                total_cache_read_tokens=int(totals_row.total_cache_read or 0),
+                total_cache_write_tokens=int(totals_row.total_cache_write or 0),
+                total_provider_cost=str(totals_row.total_provider_cost or Decimal("0")),
                 total_cost=str(totals_row.total_cost or Decimal("0")),
                 total_duration_ms=int(totals_row.total_duration or 0),
                 call_count=int(totals_row.call_count or 0),
@@ -387,6 +396,7 @@ class ExecutionRepository:
             result_type=execution.result_type,
             error_message=execution.error_message,
             duration_ms=execution.duration_ms,
+            created_at=execution.created_at,
             started_at=execution.started_at,
             completed_at=execution.completed_at,
             scheduled_at=execution.scheduled_at,
@@ -588,8 +598,9 @@ class ExecutionRepository:
         """Convert SQLAlchemy model to the payload-free list model.
 
         Must only touch columns the list query loads — the payload columns
-        (parameters/result/variables/execution_context) are deferred with
-        raiseload=True so History never selects or serializes them.
+        (parameters/result/variables/execution_context/dispatch_evidence) are
+        deferred with raiseload=True so History never selects or serializes
+        them.
         """
         return ExecutionSummary(
             execution_id=str(execution.id),
@@ -605,6 +616,7 @@ class ExecutionRepository:
             result_type=execution.result_type,
             error_message=execution.error_message,
             duration_ms=execution.duration_ms,
+            created_at=execution.created_at,
             started_at=execution.started_at,
             completed_at=execution.completed_at,
             scheduled_at=execution.scheduled_at,
@@ -642,6 +654,7 @@ class ExecutionRepository:
             result_type=execution.result_type,
             error_message=execution.error_message,
             duration_ms=execution.duration_ms,
+            created_at=execution.created_at,
             started_at=execution.started_at,
             completed_at=execution.completed_at,
             scheduled_at=execution.scheduled_at,
@@ -815,11 +828,13 @@ async def get_execution(
     execution, error = await repo.get_execution(execution_id, ctx.user)
 
     if error == "NotFound":
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Execution {execution_id} not found",
+        execution, error = await get_pending_execution_fallback(
+            execution_id,
+            ctx.user,
+            ctx.db,
         )
-    elif error == "Forbidden":
+
+    if error == "Forbidden":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have permission to view this execution",
@@ -1016,13 +1031,19 @@ async def get_stuck_executions(
     ).where(
         and_(
             ExecutionModel.status.in_([
+                ExecutionStatus.SCHEDULED.value,
                 ExecutionStatus.PENDING.value,
                 ExecutionStatus.RUNNING.value,
                 ExecutionStatus.CANCELLING.value,
             ]),
-            ExecutionModel.started_at < cutoff,
+            func.coalesce(
+                ExecutionModel.started_at,
+                ExecutionModel.scheduled_at,
+                ExecutionModel.created_at,
+            )
+            < cutoff,
         )
-    ).order_by(desc(ExecutionModel.started_at))
+    ).order_by(desc(ExecutionModel.started_at).nulls_last())
 
     result = await ctx.db.execute(query)
     executions = result.scalars().all()
@@ -1055,7 +1076,12 @@ async def trigger_cleanup(
     pending_query = select(ExecutionModel).where(
         and_(
             ExecutionModel.status == ExecutionStatus.PENDING.value,
-            ExecutionModel.started_at < cutoff,
+            func.coalesce(
+                ExecutionModel.started_at,
+                ExecutionModel.scheduled_at,
+                ExecutionModel.created_at,
+            )
+            < cutoff,
         )
     )
     pending_result = await ctx.db.execute(pending_query)
@@ -1065,7 +1091,12 @@ async def trigger_cleanup(
     running_query = select(ExecutionModel).where(
         and_(
             ExecutionModel.status == ExecutionStatus.RUNNING.value,
-            ExecutionModel.started_at < cutoff,
+            func.coalesce(
+                ExecutionModel.started_at,
+                ExecutionModel.scheduled_at,
+                ExecutionModel.created_at,
+            )
+            < cutoff,
         )
     )
     running_result = await ctx.db.execute(running_query)
@@ -1075,7 +1106,12 @@ async def trigger_cleanup(
     cancelling_query = select(ExecutionModel).where(
         and_(
             ExecutionModel.status == ExecutionStatus.CANCELLING.value,
-            ExecutionModel.started_at < cutoff,
+            func.coalesce(
+                ExecutionModel.started_at,
+                ExecutionModel.scheduled_at,
+                ExecutionModel.created_at,
+            )
+            < cutoff,
         )
     )
     cancelling_result = await ctx.db.execute(cancelling_query)

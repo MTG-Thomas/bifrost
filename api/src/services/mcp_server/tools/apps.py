@@ -10,14 +10,12 @@ Note: `get_app_schema` provides a concise platform overview and component index.
 """
 
 import logging
-from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import HTTPException
 from fastmcp.tools import ToolResult
 
 from src.core.app_scaffold import APP_INDEX_SOURCE, APP_LAYOUT_SOURCE
-from src.core.pubsub import publish_app_draft_update, publish_app_published
+from src.core.pubsub import publish_app_draft_update
 from src.services.mcp_server.tool_result import error_result, success_result
 from src.services.mcp_server.tools._http_bridge import call_rest
 from src.services.mcp_server.tools._org_scope import apply_mcp_org_scope
@@ -52,17 +50,6 @@ def _pick_slug_row(rows: list[Any], org_id: Any) -> Any | None:
     return sorted(rows, key=lambda row: str(row.id))[0]
 
 
-def _guard_message(err: Exception) -> str:
-    """Extract the read-only message from a solution-guard rejection.
-
-    ``assert_not_solution_managed`` raises ``HTTPException`` (whose ``detail``
-    holds the locked wording); the before_flush backstop raises
-    ``SolutionManagedWriteError`` (whose ``str()`` is the same wording).
-    """
-    detail = getattr(err, "detail", None)
-    return str(detail) if detail is not None else str(err)
-
-
 def _first_row(result: Any) -> Any | None:
     first = getattr(result, "first", None)
     if callable(first):
@@ -76,8 +63,6 @@ def _first_row(result: Any) -> Any | None:
             return scalar_first()
 
     return None
-
-
 async def list_apps(context: Any) -> ToolResult:
     """List all applications with file summaries."""
     from sqlalchemy import select
@@ -410,84 +395,58 @@ async def update_app(
 
 
 async def publish_app(context: Any, app_id: str) -> ToolResult:
-    """Publish all draft files to live.
-
-    Builds a published_snapshot from current file_index entries and
-    sets it on the application.
-    """
-    from uuid import UUID
-
-    from sqlalchemy import select
-
-    from src.models.orm.applications import Application
-    from src.services.app_storage import AppStorageService
-    from src.services.solutions.guard import (
-        SolutionManagedWriteError,
-        assert_not_solution_managed,
+    """Queue publishing through the canonical REST build-and-promote path."""
+    logger.info("MCP publish_app (HTTP bridge) id=%s", app_id)
+    status_code, body = await call_rest(
+        context,
+        "POST",
+        f"/api/applications/{app_id}/publish",
+        json_body={},
+    )
+    if status_code != 202 or not isinstance(body, dict):
+        return error_result(
+            f"publish_app failed: HTTP {status_code}",
+            {"body": body},
+        )
+    job_id = body.get("job_id")
+    return success_result(
+        f"Application publish queued: {job_id}",
+        body,
     )
 
-    logger.info(f"MCP publish_app called with id={app_id}")
 
-    try:
-        app_uuid = UUID(app_id)
-    except ValueError:
-        return error_result(f"Invalid app_id format: {app_id}")
-
-    try:
-        async with get_tool_db(context) as db:
-            query = select(Application).where(Application.id == app_uuid)
-
-            if not context.is_platform_admin and context.org_id:
-                query = query.where(Application.organization_id == context.org_id)
-
-            result = await db.execute(query)
-            app = result.scalar_one_or_none()
-
-            if not app:
-                return error_result(f"Application not found: {app_id}")
-
-            # Refuse before any S3 write: app_storage.publish() copies
-            # preview → live in S3, which the before_flush backstop cannot
-            # see (criterion 6). The guard raises HTTP 409 with the locked
-            # message; surface it as an error_result, not a 500.
-            try:
-                assert_not_solution_managed(app)
-            except (HTTPException, SolutionManagedWriteError) as guard_err:
-                return error_result(_guard_message(guard_err))
-
-            # Publish via AppStorageService: copy preview → live in S3
-            app_storage = AppStorageService()
-            published_count = await app_storage.publish(str(app.id))
-
-            if published_count == 0:
-                return error_result("No files found to publish")
-
-            # Update app metadata
-            preview_files = await app_storage.list_files(str(app.id), "preview")
-            app.published_snapshot = {f: "" for f in preview_files}
-            app.published_at = datetime.now(timezone.utc)
-
-            await db.commit()
-
-            await publish_app_published(
-                app_id=app_id,
-                user_id=str(context.user_id),
-                user_name=context.user_name or context.user_email or "Unknown",
-                new_version_id=app_id,
-            )
-
-            display_text = f"Published application: {app.name} ({published_count} files)"
-            return success_result(display_text, {
-                "success": True,
-                "id": str(app.id),
-                "name": app.name,
-                "is_published": True,
-                "files_published": published_count,
-            })
-
-    except Exception as e:
-        logger.exception(f"Error publishing app via MCP: {e}")
-        return error_result(f"Error publishing app: {str(e)}")
+async def get_app_publish_status(
+    context: Any,
+    publish_job_id: str,
+) -> ToolResult:
+    """Read durable publish progress through the canonical REST endpoint."""
+    logger.info(
+        "MCP get_app_publish_status (HTTP bridge) job=%s",
+        publish_job_id,
+    )
+    status_code, body = await call_rest(
+        context,
+        "GET",
+        f"/api/platform-jobs/{publish_job_id}",
+    )
+    if status_code != 200 or not isinstance(body, dict):
+        return error_result(
+            f"get_app_publish_status failed: HTTP {status_code}",
+            {"body": body},
+        )
+    status_value = body.get("status", "unknown")
+    progress = body.get("progress") or {}
+    phase = progress.get("phase")
+    description = f"Application publish {status_value}"
+    if phase:
+        description += f": {phase}"
+    if status_value in ("failed", "cancelled"):
+        error = body.get("error") or {}
+        return error_result(
+            error.get("message") or description,
+            body,
+        )
+    return success_result(description, body)
 
 
 async def replace_app(
@@ -849,6 +808,10 @@ async def push_files(
         SOLUTION_MANAGED_MESSAGE,
         is_solution_managed,
     )
+    from src.services.workspace_release_files import (
+        reject_release_governed_paths,
+        reject_release_governed_prefixes,
+    )
 
     logger.info(f"MCP push_files called with {len(files)} file(s)")
 
@@ -874,6 +837,34 @@ async def push_files(
                 return error_result(
                     SOLUTION_MANAGED_MESSAGE,
                     {"blocked_paths": blocked},
+                )
+
+            # Preflight the complete batch before any legacy write. App assets
+            # remain mutable; only Python source can belong to immutable Live.
+            governed_candidates = [path for path in files if path.endswith(".py")]
+            if governed_candidates:
+                await reject_release_governed_paths(
+                    db,
+                    getattr(context, "org_id", None),
+                    governed_candidates,
+                )
+
+            delete_prefix: str | None = None
+            if delete_missing_prefix:
+                delete_prefix = delete_missing_prefix.rstrip("/")
+                prefix_marker = f"{delete_prefix}/"
+                if any(
+                    prefix_marker.startswith(managed) or managed.startswith(prefix_marker)
+                    for managed in managed_prefixes
+                ):
+                    return error_result(
+                        SOLUTION_MANAGED_MESSAGE,
+                        {"blocked_delete_prefix": delete_missing_prefix},
+                    )
+                await reject_release_governed_prefixes(
+                    db,
+                    getattr(context, "org_id", None),
+                    [delete_prefix],
                 )
 
             file_storage = FileStorageService(db)
@@ -911,25 +902,8 @@ async def push_files(
                 except Exception as e:
                     push_errors.append(f"{repo_path}: {str(e)}")
 
-            if delete_missing_prefix:
-                prefix = delete_missing_prefix
-                if not prefix.endswith("/"):
-                    prefix += "/"
-                # The delete-sweep is a separate write path from the files-key
-                # guard above: an empty/partial `files` dict slips past the key
-                # check, but the sweep would still delete _repo files under
-                # `prefix`. Refuse if the sweep would touch ANY solution-managed
-                # app's files — in either direction: the delete prefix is under a
-                # managed prefix (delete "apps/managed/sub"), OR contains/equals
-                # one (delete "apps/" which would sweep "apps/managed/...").
-                if any(
-                    prefix.startswith(managed) or managed.startswith(prefix)
-                    for managed in managed_prefixes
-                ):
-                    return error_result(
-                        SOLUTION_MANAGED_MESSAGE,
-                        {"blocked_delete_prefix": delete_missing_prefix},
-                    )
+            if delete_prefix:
+                prefix = f"{delete_prefix}/"
                 existing_files = await db.execute(
                     select(FileIndex.path).where(FileIndex.path.startswith(prefix))
                 )
@@ -1183,7 +1157,8 @@ TOOLS = [
     ("create_app", "Create Application", "Create a new App Builder application with scaffold files."),
     ("get_app", "Get Application", "Get application metadata and file list."),
     ("update_app", "Update Application", "Update application metadata (name, description)."),
-    ("publish_app", "Publish Application", "Publish all draft files to live."),
+    ("publish_app", "Publish Application", "Queue a rebuild and publish; returns a durable publish job ID."),
+    ("get_app_publish_status", "Get Application Publish Status", "Get progress, result, or error for an application publish job."),
     ("replace_app", "Replace Application Source Path", "Repoint an application's repo_path after source files have been moved/renamed."),
     ("validate_app", "Validate Application", "Build and validate an app: compiles all files, checks for missing/unused dependencies, unknown components, and bad workflow IDs."),
     ("push_files", "Push Files", "Push multiple files to _repo/ in a single batch. Useful for creating or updating entire apps or workflow sets."),
@@ -1202,6 +1177,7 @@ def register_tools(mcp: Any, get_context_fn: Any) -> None:
         "get_app": get_app,
         "update_app": update_app,
         "publish_app": publish_app,
+        "get_app_publish_status": get_app_publish_status,
         "replace_app": replace_app,
         "validate_app": validate_app,
         "push_files": push_files,

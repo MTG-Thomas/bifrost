@@ -84,6 +84,24 @@ def org_user_context() -> MCPContext:
     )
 
 
+@pytest.fixture(autouse=True)
+def _legacy_workspace_authority():
+    """Existing cases exercise the no-Live legacy path unless they opt in."""
+    with (
+        patch(
+            "src.services.mcp_server.tools.code_editor._active_workspace_release_view",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "src.services.mcp_server.tools.code_editor.reject_release_governed_paths",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+    ):
+        yield
+
+
 class TestListContent:
     """Tests for the list_content MCP tool."""
 
@@ -1614,6 +1632,188 @@ class TestFormatDeactivationResult:
         assert "execution history" in text
         assert "API endpoint" in text
         assert "Ticket Sync Form" in text
+
+
+class TestImmutableWorkspaceAuthority:
+    """MCP code editing honors the same global Live authority as files APIs."""
+
+    @staticmethod
+    def _view(path: str, content: bytes):
+        view = SimpleNamespace(
+            release=SimpleNamespace(release_id="sha256:" + "a" * 64)
+        )
+        view.governs = lambda candidate: candidate == path
+        view.read = AsyncMock(return_value=content)
+        view.read_many = AsyncMock(return_value={path: content})
+        view.list = AsyncMock(return_value=[path])
+        return view
+
+    @pytest.mark.asyncio
+    async def test_get_content_reads_governed_bytes_from_global_live(
+        self, platform_admin_context
+    ):
+        from src.services.mcp_server.tools.code_editor import get_content
+
+        path = "modules/governed.py"
+        view = self._view(path, b"live = True\n")
+        with (
+            patch(
+                "src.services.mcp_server.tools.code_editor._active_workspace_release_view",
+                new_callable=AsyncMock,
+                return_value=view,
+            ),
+            patch(
+                "src.services.mcp_server.tools.code_editor._read_from_s3",
+                new_callable=AsyncMock,
+                return_value="live = False\n",
+            ) as repo_read,
+        ):
+            result = await get_content(platform_admin_context, path)
+
+        assert get_result_data(result)["content"] == "live = True\n"
+        view.read.assert_awaited_once_with(path)
+        repo_read.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_listing_unions_governed_paths_and_marks_authority(
+        self, platform_admin_context
+    ):
+        from src.services.mcp_server.tools.code_editor import list_content
+
+        path = "modules/governed.py"
+        view = self._view(path, b"live = True\n")
+        repo = MagicMock()
+        repo.list = AsyncMock(return_value=["modules/legacy.py"])
+        with (
+            patch(
+                "src.services.mcp_server.tools.code_editor._active_workspace_release_view",
+                new_callable=AsyncMock,
+                return_value=view,
+            ),
+            patch(
+                "src.services.mcp_server.tools.code_editor.RepoStorage",
+                return_value=repo,
+            ),
+        ):
+            result = await list_content(platform_admin_context, path_prefix="modules/")
+
+        files = {row["path"]: row for row in get_result_data(result)["files"]}
+        assert set(files) == {path, "modules/legacy.py"}
+        assert files[path]["source_authority"] == "workspace-release-v1"
+        assert files["modules/legacy.py"]["source_authority"] == "repo-v1"
+
+    @pytest.mark.asyncio
+    async def test_search_overlays_stale_index_content_with_immutable_live(
+        self, platform_admin_context
+    ):
+        from src.services.mcp_server.tools.code_editor import search_content
+
+        path = "modules/governed.py"
+        view = self._view(path, b"authority = 'immutable-live'\n")
+        session = AsyncMock()
+        session.execute = AsyncMock(
+            return_value=_RowsResult(
+                [SimpleNamespace(path=path, content="authority = 'stale-repo'")]
+            )
+        )
+
+        @asynccontextmanager
+        async def fake_get_tool_db(_context):
+            yield session
+
+        with (
+            patch(
+                "src.services.mcp_server.tools.code_editor._active_workspace_release_view",
+                new_callable=AsyncMock,
+                return_value=view,
+            ),
+            patch(
+                "src.services.mcp_server.tools.code_editor.get_tool_db",
+                fake_get_tool_db,
+            ),
+        ):
+            result = await search_content(
+                platform_admin_context, pattern="immutable-live", path=path
+            )
+
+        matches = get_result_data(result)["matches"]
+        assert len(matches) == 1
+        assert matches[0]["path"] == path
+        view.read_many.assert_awaited_once_with([path])
+
+    @pytest.mark.asyncio
+    async def test_replace_rejects_governed_path_before_storage(
+        self, platform_admin_context
+    ):
+        from src.services.mcp_server.tools.code_editor import replace_content
+        from src.services.workspace_release_files import WorkspaceReleasePathGoverned
+
+        path = "modules/governed.py"
+        session = AsyncMock()
+
+        @asynccontextmanager
+        async def fake_get_tool_db(_context):
+            yield session
+
+        guard = AsyncMock(side_effect=WorkspaceReleasePathGoverned(path, "release-1"))
+        storage = MagicMock()
+        with (
+            patch(
+                "src.services.mcp_server.tools.code_editor.get_tool_db",
+                fake_get_tool_db,
+            ),
+            patch(
+                "src.services.mcp_server.tools.code_editor.reject_release_governed_paths",
+                guard,
+            ),
+            patch(
+                "src.services.mcp_server.tools.code_editor.FileStorageService",
+                return_value=storage,
+            ),
+        ):
+            result = await replace_content(
+                platform_admin_context, path, "replacement = True\n"
+            )
+
+        assert is_error_result(result)
+        guard.assert_awaited_once_with(session, None, [path])
+        assert not storage.method_calls
+
+    @pytest.mark.asyncio
+    async def test_delete_rejects_governed_path_before_repo_mutation(
+        self, platform_admin_context
+    ):
+        from src.services.mcp_server.tools.code_editor import delete_content
+        from src.services.workspace_release_files import WorkspaceReleasePathGoverned
+
+        path = "modules/governed.py"
+        session = AsyncMock()
+
+        @asynccontextmanager
+        async def fake_get_tool_db(_context):
+            yield session
+
+        guard = AsyncMock(side_effect=WorkspaceReleasePathGoverned(path, "release-1"))
+        repo = MagicMock()
+        with (
+            patch(
+                "src.services.mcp_server.tools.code_editor.get_tool_db",
+                fake_get_tool_db,
+            ),
+            patch(
+                "src.services.mcp_server.tools.code_editor.reject_release_governed_paths",
+                guard,
+            ),
+            patch(
+                "src.services.mcp_server.tools.code_editor.RepoStorage",
+                return_value=repo,
+            ),
+        ):
+            result = await delete_content(platform_admin_context, path)
+
+        assert is_error_result(result)
+        guard.assert_awaited_once_with(session, None, [path])
+        assert not repo.method_calls
 
 
 class TestToolRegistration:

@@ -1,6 +1,7 @@
 """Static checks for repo and dev-surface hardening invariants."""
 
 from pathlib import Path
+import re
 from typing import Any
 
 import yaml
@@ -33,12 +34,134 @@ def test_pull_request_ci_does_not_use_noop_path_ignore() -> None:
     assert "paths-ignore" not in pull_request
 
 
+def test_required_e2e_gate_includes_playwright_and_mcp_conformance() -> None:
+    ci = _load_yaml(".github/workflows/ci.yml")
+    jobs = ci["jobs"]
+
+    assert jobs["test-client-e2e"]["name"] == "Client E2E Tests"
+    assert set(jobs["test-e2e-gate"]["needs"]) == {
+        "affected-test-plan",
+        "test-e2e",
+        "test-client-e2e",
+        "mcp-conformance",
+    }
+
+    assert (
+        jobs["deploy-dry-run"]["if"]
+        == "github.repository == 'gobifrost/bifrost' && github.event_name == 'workflow_dispatch'"
+    )
+
+    compose = yaml.safe_load(_read("docker-compose.test.yml"))
+    assert compose["services"]["playwright-runner"]["tmpfs"] == [
+        "/app/e2e/.auth:uid=1000,gid=1000,mode=0700"
+    ]
+
+
+def test_ci_test_image_consumers_use_the_exact_published_tag() -> None:
+    ci = _load_yaml(".github/workflows/ci.yml")
+    jobs = ci["jobs"]
+    image_jobs = {"test-unit", "mcp-conformance", "test-e2e", "test-client-e2e"}
+
+    assert ci["env"]["CI_TEST_IMAGE_TAG"] == "${{ format('sha-{0}', github.sha) }}"
+    assert "github.event_name == 'pull_request'" in jobs["publish-ci-test-images"][
+        "if"
+    ]
+    assert (
+        "github.event.pull_request.head.repo.full_name == github.repository"
+        in jobs["publish-ci-test-images"]["if"]
+    )
+    for job_name in image_jobs:
+        assert set(jobs[job_name]["needs"]) == {
+            "affected-test-plan",
+            "publish-ci-test-images",
+        }
+
+    expected_commands = {
+        "test-unit": "bash api/scripts/ci/prepare-test-images.sh api client",
+        "mcp-conformance": "bash api/scripts/ci/prepare-test-images.sh api client",
+        "test-e2e": "bash api/scripts/ci/prepare-test-images.sh api client",
+        "test-client-e2e": (
+            "bash api/scripts/ci/prepare-test-images.sh api client client-e2e playwright"
+        ),
+    }
+    for job_name, expected_command in expected_commands.items():
+        prepare = next(
+            step
+            for step in jobs[job_name]["steps"]
+            if step["name"] == "Prepare CI test images"
+        )
+        assert prepare["run"] == expected_command
+        assert prepare["env"]["GHCR_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
+
+    api_root = Path(__file__).resolve().parents[2]
+    image_script = (api_root / "scripts/ci/prepare-test-images.sh").read_text(
+        encoding="utf-8"
+    )
+    assert 'image_tag="${CI_TEST_IMAGE_TAG:?CI_TEST_IMAGE_TAG is required}"' in image_script
+    assert 'remote_ref="${registry}/${remote_image}:${image_tag}"' in image_script
+
+
+def test_feature_branch_dispatch_cannot_overwrite_main_ci_test_images() -> None:
+    ci = _load_yaml(".github/workflows/ci.yml")
+    publish_steps = ci["jobs"]["publish-ci-test-images"]["steps"]
+    image_steps = [
+        step for step in publish_steps if step["name"].startswith("Build and push")
+    ]
+
+    assert len(image_steps) == 3
+    for step in image_steps:
+        tags = step["with"]["tags"]
+        assert "github.ref == 'refs/heads/main'" in tags
+        assert ":main" in tags
+        assert ":sha-${{ github.sha }}" in tags
+
+
+def test_playwright_suite_has_no_retries_or_skipped_tests() -> None:
+    config = _read("client/playwright.config.ts")
+    e2e_source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((REPO_ROOT / "client" / "e2e").rglob("*.ts"))
+    )
+
+    retry_values = re.findall(r"\bretries:\s*([^,\n]+)", config)
+    assert retry_values
+    assert all(value.strip() == "0" for value in retry_values)
+    assert 'outputDir: "playwright-results/test-results"' in config
+    assert not re.search(r"\b(?:test|describe)\.(?:skip|fixme)\b", e2e_source)
+
+
 def test_docs_noop_workflow_cannot_spoof_required_ci_check_names() -> None:
     noop = _load_yaml(".github/workflows/ci-noop.yml")
     job_names = {job.get("name", job_id) for job_id, job in noop["jobs"].items()}
 
     assert noop["name"] != "CI"
     assert job_names.isdisjoint(REQUIRED_CI_CHECK_NAMES)
+
+
+def test_release_assets_upload_before_immutable_release_publication() -> None:
+    ci = _load_yaml(".github/workflows/ci.yml")
+    steps = ci["jobs"]["create-release"]["steps"]
+    create_index = next(
+        index for index, step in enumerate(steps) if step["name"] == "Create release"
+    )
+    publish_index = next(
+        index for index, step in enumerate(steps) if step["name"] == "Publish release"
+    )
+
+    create_with = steps[create_index]["with"]
+    publish_run = steps[publish_index]["run"]
+
+    assert create_with["draft"] is True
+    assert "${{ steps.source_tarball.outputs.tarball }}" in create_with["files"]
+    assert "${{ steps.source_tarball.outputs.tarball }}.sha256" in create_with["files"]
+    assert (
+        "${{ steps.source_tarball.outputs.tarball }}.sigstore" in create_with["files"]
+    )
+    assert publish_index > create_index
+    assert "--draft=false" in publish_run
+    assert "args+=(--prerelease)" in publish_run
+    assert "args+=(--latest)" in publish_run
+    assert 'gh release edit "$VERSION" "${args[@]}"' in publish_run
 
 
 def test_dependabot_lock_validation_does_not_commit_to_pr_branch() -> None:

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useSearchParams, useNavigate } from "react-router-dom";
+import { useSearchParams, useNavigate } from "react-router";
 import { ExternalLink, KeyRound, Loader2 } from "lucide-react";
 import { motion } from "framer-motion";
 import { Logo } from "@/components/branding/Logo";

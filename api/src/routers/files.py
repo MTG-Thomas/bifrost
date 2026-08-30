@@ -20,7 +20,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.auth import Context, CurrentActiveUser, CurrentSuperuser
@@ -31,6 +31,10 @@ from src.models.contracts.files import (
     FilePullRequest,
     FilePullResponse,
     WatchSessionRequest,
+)
+from src.models.contracts.workspace_file_impact import (
+    WorkspaceFileImpactRequest,
+    WorkspaceFileImpactResponse,
 )
 from src.models.contracts.policies import FileAction
 from src.models.contracts.policies import FilePolicies
@@ -44,12 +48,13 @@ from src.models import (
     FileDiagnostic,
     FileMetadata,
     FileType,
+    FileStatResponse,
     PendingDeactivation,
     SearchRequest,
     SearchResponse,
     WorkflowIdConflict,
 )
-from src.services.audit import emit_audit
+from src.services.audit import emit_file_policy_deny
 from src.services.editor.search import search_files_db
 from src.services.file_backend import get_backend
 from src.services.file_storage import FileStorageService
@@ -97,6 +102,22 @@ class FileWriteRequest(BaseModel):
     scope: str | None = Field(default=None, description="Org scope. Required for non-workspace, non-uploads locations.")
     mode: Mode = Field(default="cloud", description="Storage mode: local or cloud")
     binary: bool = Field(default=False, description="If true, content is base64-encoded")
+    expected_version: str | None = Field(
+        default=None,
+        description="Write only when the current content has this version",
+    )
+    create_only: bool = Field(
+        default=False,
+        description="Create the file only when the path does not already exist",
+    )
+    impact_candidate_id: str | None = Field(
+        default=None,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+        description=(
+            "Write only when a fresh durable Workspace impact graph exactly "
+            "matches this candidate. Python workspace text files only."
+        ),
+    )
 
 
 class FileDeleteRequest(BaseModel):
@@ -105,6 +126,10 @@ class FileDeleteRequest(BaseModel):
     location: str = Field(default="workspace", description=FILE_LOCATION_DESCRIPTION)
     scope: str | None = Field(default=None, description="Org scope. Required for non-workspace, non-uploads locations.")
     mode: Mode = Field(default="cloud", description="Storage mode: local or cloud")
+    expected_version: str | None = Field(
+        default=None,
+        description="Delete only when the current content has this version",
+    )
 
 
 class FileListRequest(BaseModel):
@@ -134,19 +159,25 @@ class FileListMetadataItem(BaseModel):
     """File metadata item with path, etag, and last_modified."""
     path: str
     etag: str
-    last_modified: str  # ISO 8601
+    last_modified: str | None = None  # ISO 8601 when projected metadata exists
     updated_by: str | None = None
+    source_authority: str = "repo-v1"
+    workspace_release_id: str | None = None
 
 
 class FileListResponse(BaseModel):
     """Response for file listing."""
     files: list[str] = Field(default_factory=list, description="List of file/folder paths")
     files_metadata: list[FileListMetadataItem] = Field(default_factory=list, description="Per-file metadata (when include_metadata=true)")
+    source_authority: str = "repo-v1"
+    workspace_release_id: str | None = None
 
 
 class FileExistsResponse(BaseModel):
     """Response for file existence check."""
     exists: bool = Field(..., description="True if file exists")
+    source_authority: str = "repo-v1"
+    workspace_release_id: str | None = None
 
 
 class SignedUrlRequest(BaseModel):
@@ -456,16 +487,13 @@ async def _deny_file_policy(
     HTTPException propagate rolls back the request-scoped session and loses
     the audit row.
     """
-    await emit_audit(
+    await emit_file_policy_deny(
         ctx.db,
-        "policy.deny",
-        resource_type="file",
-        outcome="failure",
-        details={
-            "policy_action": action,
-            "location": location,
-            "path": path,
-        },
+        policy_action=action,
+        location=location,
+        path=path,
+        scope=scope,
+        solution_id=solution_id,
     )
     await ctx.db.commit()
     # A policy denial must identify its scope inputs (no user/token data —
@@ -928,6 +956,7 @@ async def _build_signed_url(
     from shared.file_paths import resolve_s3_key
 
     solution_id = _ctx_solution_id(ctx, request.location)
+    shared_workspace = request.location == "workspace" and solution_id is None
     if request.method == "GET":
         from src.services.solution_scope import file_read_tiers
 
@@ -988,6 +1017,20 @@ async def _build_signed_url(
             raise
         except ValueError as e:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+
+        if shared_workspace:
+            from src.services.workspace_release_files import (
+                governed_workspace_release_file_view,
+            )
+
+            release_view = await governed_workspace_release_file_view(
+                db, ctx.org_id, request.path
+            )
+            if release_view is not None:
+                # Verify immutable bytes before handing the browser direct
+                # access to the object named by the Live manifest.
+                await release_view.read(request.path)
+                s3_path = release_view.storage.object_key(request.path)
     else:
         effective_scope = _resolve_effective_scope(ctx, request.location, request.scope)
         await _require_declared_solution_file_location(
@@ -1008,6 +1051,23 @@ async def _build_signed_url(
             content_type=request.content_type,
             solution_id=solution_id,
         )
+        if shared_workspace:
+            # A presigned PUT remains usable after this database transaction
+            # releases its writer lock, so it cannot safely participate in the
+            # immutable Workspace CAS protocol. Use the guarded API/editor
+            # mutation paths instead.
+            await _reject_release_governed_mutation(db, ctx.org_id, request.path)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "reason": "workspace_signed_put_unsupported",
+                    "path": request.path,
+                    "message": (
+                        "Presigned PUT is not supported for shared Workspace "
+                        "source; use a guarded file write or `bifrost promote`."
+                    ),
+                },
+            )
 
     file_storage = FileStorageService(db)
 
@@ -1056,6 +1116,19 @@ async def _record_completed_signed_upload(
         content_type=request.content_type,
         solution_id=solution_id,
     )
+    if request.location == "workspace" and solution_id is None:
+        await _reject_release_governed_mutation(db, ctx.org_id, request.path)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "reason": "workspace_signed_put_unsupported",
+                "path": request.path,
+                "message": (
+                    "Presigned PUT completion is not supported for shared "
+                    "Workspace source."
+                ),
+            },
+        )
     try:
         s3_path = resolve_s3_key(request.location, effective_scope, request.path)
     except ValueError as e:
@@ -1118,12 +1191,25 @@ async def read_file(
             request.mode,
         )
         backend = get_backend(request.mode, db)
+        release_view = None
+        if (
+            request.location == "workspace"
+            and request.mode == "cloud"
+            and _ctx_solution_id(ctx, request.location) is None
+        ):
+            from src.services.workspace_release_files import (
+                governed_workspace_release_file_view,
+            )
+
+            release_view = await governed_workspace_release_file_view(
+                db, ctx.org_id, request.path
+            )
         content: bytes | None = None
         had_allowed_tier = False
         for tier in tiers:
             if not await _authorize_file_policy(
                 ctx,
-                action="read",
+                action="exists",
                 location=request.location,
                 scope=tier.scope,
                 path=request.path,
@@ -1133,10 +1219,14 @@ async def read_file(
                 continue
             had_allowed_tier = True
             try:
-                content = await backend.read(
-                    request.path,
-                    request.location,
-                    scope=tier.scope,
+                content = (
+                    await release_view.read(request.path)
+                    if release_view is not None
+                    else await backend.read(
+                        request.path,
+                        request.location,
+                        scope=tier.scope,
+                    )
                 )
                 break
             except FileNotFoundError:
@@ -1175,6 +1265,105 @@ async def read_file(
         )
 
 
+@router.post(
+    "/impact",
+    summary="Preview a Workspace Python file's dependency impact",
+)
+async def preview_workspace_file_impact(
+    request: WorkspaceFileImpactRequest,
+    ctx: Context,
+    user: CurrentSuperuser,
+    db: AsyncSession = Depends(get_db),
+) -> WorkspaceFileImpactResponse:
+    """Trace forward imports and transitive reverse consumers from durable bytes.
+
+    Optional ``content`` overlays one proposed file without writing it.  The
+    returned candidate can be supplied to ``/api/files/write`` so the server
+    recomputes the same graph under the Python-source writer barrier before it
+    accepts the write.
+    """
+    del user
+    from src.services.workspace_file_impact import (
+        WorkspaceFileImpactInvalid,
+        WorkspaceFileImpactService,
+    )
+
+    try:
+        from src.models.contracts.workspace_file_impact import (
+            WorkspaceFileImpactDiagnostic,
+        )
+        from src.services.repo_storage import RepoStorage
+        from src.services.workspace_release_files import (
+            WorkspaceReleaseHybridFileView,
+            governed_workspace_release_file_view,
+        )
+        from src.services.workspace_release_runtime import (
+            inspect_workspace_release_registration_bindings,
+        )
+
+        release_view = await governed_workspace_release_file_view(
+            db, ctx.org_id, request.path
+        )
+        graph_repo = (
+            WorkspaceReleaseHybridFileView(release_view, RepoStorage())
+            if release_view is not None
+            else None
+        )
+        result = await WorkspaceFileImpactService(repo=graph_repo).preview(request)
+        if release_view is not None:
+            is_mutation = request.content is not None
+            result.diagnostics.insert(
+                0,
+                WorkspaceFileImpactDiagnostic(
+                    code="workspace_release_live_authority",
+                    severity="blocker" if is_mutation else "info",
+                    message=(
+                        f"active workspace-release-v1 {release_view.release.release_id} "
+                        "is the immutable Live authority; use `bifrost promote` "
+                        "for reviewed source changes"
+                    ),
+                    path=result.path,
+                ),
+            )
+            if is_mutation:
+                result.blocking_diagnostic_count += 1
+                result.ready_to_write = False
+            bindings = await inspect_workspace_release_registration_bindings(
+                db,
+                release_view.release,
+                paths=[result.path],
+            )
+            for binding in bindings:
+                if binding.status == "bound":
+                    continue
+                mismatch = (
+                    "; mismatched fields: " + ", ".join(binding.mismatch_fields)
+                    if binding.mismatch_fields
+                    else ""
+                )
+                result.diagnostics.append(
+                    WorkspaceFileImpactDiagnostic(
+                        code=binding.code,
+                        severity="blocker",
+                        message=(
+                            f"active workflow {binding.workflow_id} "
+                            f"{binding.function_name} is {binding.status} for Live "
+                            f"release {binding.release_id}{mismatch}; repair with "
+                            f"`{binding.repair_command}`"
+                        ),
+                        path=binding.path,
+                    )
+                )
+                result.blocking_diagnostic_count += 1
+                result.ready_to_write = False
+        return result
+    except WorkspaceFileImpactInvalid as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+
 @router.post("/write", status_code=status.HTTP_204_NO_CONTENT)
 async def write_file(
     request: FileWriteRequest,
@@ -1202,13 +1391,162 @@ async def write_file(
         )
         backend = get_backend(request.mode, db)
 
+        if request.create_only and request.expected_version is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="create_only and expected_version cannot be combined",
+            )
+        await _lock_file_mutation(
+            db,
+            location=request.location,
+            scope=effective_scope,
+            path=request.path,
+        )
+        if (
+            request.location == "workspace"
+            and request.mode == "cloud"
+            and solution_id is None
+        ):
+            await _reject_release_governed_mutation(db, ctx.org_id, request.path)
+
+        current_stat = None
+        if request.create_only or request.expected_version is not None:
+            current_stat = await _get_file_stat(
+                db,
+                request.path,
+                request.location,
+                effective_scope,
+                request.mode,
+            )
+            if request.create_only and current_stat.exists:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "reason": "file_exists",
+                        "path": request.path,
+                        "message": "File already exists; read it before replacing it.",
+                        "current_version": current_stat.version,
+                        "current_last_modified": current_stat.last_modified,
+                        "current_updated_by": current_stat.updated_by,
+                    },
+                )
+            if request.expected_version is not None:
+                if not current_stat.exists:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={
+                            "reason": "file_missing",
+                            "path": request.path,
+                            "expected_version": request.expected_version,
+                            "message": "File no longer exists.",
+                        },
+                    )
+                if current_stat.version != request.expected_version:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={
+                            "reason": "version_conflict",
+                            "path": request.path,
+                            "expected_version": request.expected_version,
+                            "current_version": current_stat.version,
+                            "message": "File changed after it was read.",
+                            "current_last_modified": current_stat.last_modified,
+                            "current_updated_by": current_stat.updated_by,
+                        },
+                    )
+
         if request.binary:
             content = base64.b64decode(request.content)
         else:
             content = request.content.encode("utf-8")
 
         updated_by = ctx.user.email if ctx.user else "system"
-        await backend.write(request.path, content, request.location, updated_by, scope=effective_scope)
+        if request.impact_candidate_id is not None:
+            if (
+                request.location != "workspace"
+                or request.mode != "cloud"
+                or request.binary
+                or not request.path.endswith(".py")
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "impact_candidate_id is supported only for cloud Workspace "
+                        "Python text files"
+                    ),
+                )
+            if ctx.user is None or not ctx.user.is_superuser:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="checked Workspace source writes require a platform administrator",
+                )
+            from src.models.contracts.workspace_file_impact import (
+                WorkspaceFileImpactRequest,
+            )
+            from src.services.workspace_file_impact import (
+                WorkspaceFileImpactBlocked,
+                WorkspaceFileImpactConflict,
+                WorkspaceFileImpactInvalid,
+                WorkspaceFileImpactService,
+            )
+
+            async def checked_write() -> None:
+                await backend.write(
+                    request.path,
+                    content,
+                    request.location,
+                    updated_by,
+                    scope=effective_scope,
+                )
+
+            try:
+                await WorkspaceFileImpactService().guarded_write(
+                    WorkspaceFileImpactRequest(
+                        path=request.path,
+                        content=content.decode("utf-8"),
+                    ),
+                    request.impact_candidate_id,
+                    checked_write,
+                )
+            except WorkspaceFileImpactInvalid as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "reason": "impact_blocked",
+                        "path": request.path,
+                        "message": str(exc),
+                    },
+                ) from exc
+            except WorkspaceFileImpactConflict as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "reason": "impact_candidate_conflict",
+                        "path": exc.path,
+                        "expected_candidate_id": exc.expected,
+                        "current_candidate_id": exc.current,
+                        "message": str(exc),
+                    },
+                ) from exc
+            except WorkspaceFileImpactBlocked as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "reason": "impact_blocked",
+                        "path": exc.response.path,
+                        "diagnostics": [
+                            item.model_dump() for item in exc.response.diagnostics
+                        ],
+                    },
+                ) from exc
+        else:
+            await backend.write(
+                request.path,
+                content,
+                request.location,
+                updated_by,
+                scope=effective_scope,
+            )
         if request.mode == "cloud":
             from shared.file_paths import resolve_s3_key
             from src.services.file_storage.s3_client import S3StorageClient
@@ -1224,10 +1562,14 @@ async def write_file(
                 size_bytes=len(content),
                 sha256=hashlib.sha256(content).hexdigest(),
                 updated_by=updated_by,
-                user_id=str(ctx.user.user_id),
+                user_id=str(user.user_id),
                 solution_id=solution_id,
                 org_id=await _install_org_id(ctx, solution_id),
             )
+            # The yielded DB dependency commits after the response body is sent.
+            # Commit here so a successful write response and its notification
+            # never race ahead of durable metadata.
+            await db.commit()
             await publish_file_change(
                 location=request.location,
                 scope=effective_scope,
@@ -1270,24 +1612,71 @@ async def delete_file(
             solution_id=solution_id,
         )
         backend = get_backend(request.mode, db)
+
+        await _lock_file_mutation(
+            db,
+            location=request.location,
+            scope=effective_scope,
+            path=request.path,
+        )
+        if (
+            request.location == "workspace"
+            and request.mode == "cloud"
+            and solution_id is None
+        ):
+            await _reject_release_governed_mutation(db, ctx.org_id, request.path)
+
+        if request.expected_version is not None:
+            current_stat = await _get_file_stat(
+                db,
+                request.path,
+                request.location,
+                effective_scope,
+                request.mode,
+            )
+            if not current_stat.exists:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "reason": "file_missing",
+                        "path": request.path,
+                        "expected_version": request.expected_version,
+                        "message": "File no longer exists.",
+                    },
+                )
+            if current_stat.version != request.expected_version:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "reason": "version_conflict",
+                        "path": request.path,
+                        "expected_version": request.expected_version,
+                        "current_version": current_stat.version,
+                        "message": "File changed after it was read.",
+                        "current_last_modified": current_stat.last_modified,
+                        "current_updated_by": current_stat.updated_by,
+                    },
+                )
         await backend.delete(request.path, request.location, scope=effective_scope)
         if request.mode == "cloud":
             from src.core.pubsub import publish_file_change
             from src.services.file_policy_service import FilePolicyService
 
-            await publish_file_change(
-                location=request.location,
-                scope=effective_scope,
-                path=request.path,
-                action="delete",
-            )
             await FilePolicyService(db).delete_metadata(
                 organization_id=await _install_org_id(ctx, solution_id),
                 location=request.location,
                 path=request.path,
                 solution_id=solution_id,
             )
-            await db.flush()
+            # Do not acknowledge or publish the deletion while its metadata is
+            # still visible to another transaction.
+            await db.commit()
+            await publish_file_change(
+                location=request.location,
+                scope=effective_scope,
+                path=request.path,
+                action="delete",
+            )
 
         logger.info(f"Deleted file: {log_safe(request.path)} (mode={log_safe(request.mode)}, location={log_safe(request.location)})")
 
@@ -1301,6 +1690,105 @@ async def delete_file(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
+
+
+def _content_version(content: bytes) -> str:
+    return f"sha256:{hashlib.sha256(content).hexdigest()}"
+
+
+async def _reject_release_governed_mutation(
+    db: AsyncSession,
+    organization_id: UUID | None,
+    path: str,
+) -> None:
+    from src.services.workspace_release_files import (
+        WorkspaceReleasePathGoverned,
+        reject_release_governed_paths,
+    )
+
+    try:
+        await reject_release_governed_paths(db, organization_id, [path])
+    except WorkspaceReleasePathGoverned as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "reason": "workspace_release_governed_path",
+                "path": exc.path,
+                "release_id": exc.release_id,
+                "message": str(exc),
+            },
+        ) from exc
+
+
+async def _reject_release_governed_prefix_mutations(
+    db: AsyncSession,
+    organization_id: UUID | None,
+    prefixes: list[str],
+) -> None:
+    from src.services.workspace_release_files import (
+        WorkspaceReleasePathGoverned,
+        reject_release_governed_prefixes,
+    )
+
+    try:
+        await reject_release_governed_prefixes(db, organization_id, prefixes)
+    except WorkspaceReleasePathGoverned as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "reason": "workspace_release_governed_path",
+                "path": exc.path,
+                "release_id": exc.release_id,
+                "message": str(exc),
+            },
+        ) from exc
+
+
+async def _lock_file_mutation(
+    db: AsyncSession,
+    *,
+    location: str,
+    scope: str | None,
+    path: str,
+) -> None:
+    """Serialize competing API mutations for one logical file path."""
+    lock_key = f"{location}:{scope or ''}:{path}"
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+        {"lock_key": lock_key},
+    )
+
+
+async def _get_file_stat(
+    db: AsyncSession,
+    path: str,
+    location: str,
+    scope: str | None,
+    mode: str,
+) -> FileStatResponse:
+    """Load file metadata for conflict detection and stat output."""
+    try:
+        backend = get_backend(mode, db)
+        content = await backend.read(path, location, scope=scope)
+    except FileNotFoundError:
+        return FileStatResponse(path=path, exists=False)
+
+    meta = None
+    if location == "workspace" and mode == "cloud":
+        from src.models.orm.file_index import FileIndex
+
+        row = await db.execute(
+            select(FileIndex.updated_at, FileIndex.updated_by).where(FileIndex.path == path)
+        )
+        meta = row.first()
+    return FileStatResponse(
+        path=path,
+        exists=True,
+        version=_content_version(content),
+        size=len(content),
+        last_modified=meta.updated_at.isoformat() if meta and meta.updated_at else None,
+        updated_by=meta.updated_by if meta else None,
+    )
 
 
 @router.post("/list", response_model=FileListResponse)
@@ -1328,6 +1816,17 @@ async def list_files_simple(
         if not tiers:
             return FileListResponse(files=[])
         primary_tier = tiers[0]
+        release_view = None
+        if (
+            request.location == "workspace"
+            and request.mode == "cloud"
+            and _ctx_solution_id(ctx, request.location) is None
+        ):
+            from src.services.workspace_release_files import (
+                active_workspace_release_file_view,
+            )
+
+            release_view = await active_workspace_release_file_view(db, ctx.org_id)
         directory_allowed = await _authorize_file_policy(
             ctx,
             action="list",
@@ -1349,10 +1848,15 @@ async def list_files_simple(
                 path: meta for path, meta in s3_metadata.items()
                 if not path.startswith(".git/")
             }
+            release_paths = (
+                await release_view.list(request.directory)
+                if release_view is not None
+                else []
+            )
             allowed_paths = set(
                 await _filter_listed_paths(
                     ctx,
-                    paths=list(s3_metadata.keys()),
+                    paths=sorted(set(s3_metadata) | set(release_paths)),
                     location=request.location,
                     scope=primary_tier.scope,
                     action="list",
@@ -1364,7 +1868,8 @@ async def list_files_simple(
                 path: meta for path, meta in s3_metadata.items()
                 if path in allowed_paths
             }
-            if not directory_allowed and not s3_metadata:
+            release_paths = [path for path in release_paths if path in allowed_paths]
+            if not directory_allowed and not s3_metadata and not release_paths:
                 await _deny_file_policy(
                     ctx,
                     action="list",
@@ -1384,16 +1889,40 @@ async def list_files_simple(
             author_lookup = {row.path: row.updated_by for row in fi_result.all()}
 
             return FileListResponse(
-                files=sorted(s3_metadata.keys()),
+                files=sorted(set(s3_metadata) | set(release_paths)),
                 files_metadata=[
                     FileListMetadataItem(
                         path=path,
-                        etag=meta.etag,
-                        last_modified=meta.last_modified.isoformat(),
+                        etag=(
+                            release_view.release.source_hashes[path]
+                            if release_view is not None and path in release_paths
+                            else s3_metadata[path].etag
+                        ),
+                        last_modified=(
+                            None
+                            if release_view is not None and path in release_paths
+                            else s3_metadata[path].last_modified.isoformat()
+                        ),
                         updated_by=author_lookup.get(path),
+                        source_authority=(
+                            "workspace-release-v1"
+                            if release_view is not None and path in release_paths
+                            else "repo-v1"
+                        ),
+                        workspace_release_id=(
+                            release_view.release.release_id
+                            if release_view is not None and path in release_paths
+                            else None
+                        ),
                     )
-                    for path, meta in sorted(s3_metadata.items())
+                    for path in sorted(set(s3_metadata) | set(release_paths))
                 ],
+                source_authority=(
+                    "workspace-release-v1" if release_view is not None else "repo-v1"
+                ),
+                workspace_release_id=(
+                    release_view.release.release_id if release_view is not None else None
+                ),
             )
 
         backend = get_backend(request.mode, db)
@@ -1439,6 +1968,20 @@ async def list_files_simple(
                     continue
                 seen.add(path)
                 files.append(path)
+        if release_view is not None:
+            release_paths = await _filter_listed_paths(
+                ctx,
+                paths=await release_view.list(request.directory),
+                location=request.location,
+                scope=primary_tier.scope,
+                action="list",
+                solution_id=primary_tier.solution_id,
+                organization_id=primary_tier.organization_id,
+            )
+            for path in release_paths:
+                if path not in seen:
+                    seen.add(path)
+                    files.append(path)
         if not any_directory_allowed and not files:
             await _deny_file_policy(
                 ctx,
@@ -1448,7 +1991,15 @@ async def list_files_simple(
                 scope=request.scope,
                 solution_id=primary_tier.solution_id,
             )
-        return FileListResponse(files=files)
+        return FileListResponse(
+            files=files,
+            source_authority=(
+                "workspace-release-v1" if release_view is not None else "repo-v1"
+            ),
+            workspace_release_id=(
+                release_view.release.release_id if release_view is not None else None
+            ),
+        )
 
     except ValueError as e:
         raise HTTPException(
@@ -1479,11 +2030,24 @@ async def file_exists(
             await file_read_tiers(db, ctx, request.location, request.scope),
             request.mode,
         )
+        release_view = None
+        if (
+            request.location == "workspace"
+            and request.mode == "cloud"
+            and _ctx_solution_id(ctx, request.location) is None
+        ):
+            from src.services.workspace_release_files import (
+                governed_workspace_release_file_view,
+            )
+
+            release_view = await governed_workspace_release_file_view(
+                db, ctx.org_id, request.path
+            )
         backend = get_backend(request.mode, db)
         for tier in tiers:
             allowed = await _authorize_file_policy(
                 ctx,
-                action="exists",
+                action="read",
                 location=request.location,
                 scope=tier.scope,
                 path=request.path,
@@ -1492,6 +2056,13 @@ async def file_exists(
             )
             if not allowed:
                 continue
+            if release_view is not None:
+                await release_view.read(request.path)
+                return FileExistsResponse(
+                    exists=True,
+                    source_authority="workspace-release-v1",
+                    workspace_release_id=release_view.release.release_id,
+                )
             exists = await backend.exists(
                 request.path,
                 request.location,
@@ -1500,6 +2071,79 @@ async def file_exists(
             if exists:
                 return FileExistsResponse(exists=True)
         return FileExistsResponse(exists=False)
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+
+@router.post("/stat", response_model=FileStatResponse)
+async def file_stat(
+    request: FileReadRequest,
+    ctx: Context,
+    user: CurrentActiveUser,
+    db: AsyncSession = Depends(get_db),
+) -> FileStatResponse:
+    """Return file metadata for guarded CLI workflows."""
+    try:
+        from src.services.solution_scope import file_read_tiers
+
+        if request.location != "workspace":
+            await _require_declared_solution_file_location(
+                ctx,
+                solution_id=_ctx_solution_id(ctx, request.location),
+                location=request.location,
+            )
+        tiers = _tiers_for_backend_mode(
+            await file_read_tiers(db, ctx, request.location, request.scope),
+            request.mode,
+        )
+        release_view = None
+        if (
+            request.location == "workspace"
+            and request.mode == "cloud"
+            and _ctx_solution_id(ctx, request.location) is None
+        ):
+            from src.services.workspace_release_files import (
+                governed_workspace_release_file_view,
+            )
+
+            release_view = await governed_workspace_release_file_view(
+                db, ctx.org_id, request.path
+            )
+        for tier in tiers:
+            allowed = await _authorize_file_policy(
+                ctx,
+                action="read",
+                location=request.location,
+                scope=tier.scope,
+                path=request.path,
+                solution_id=tier.solution_id,
+                organization_id=tier.organization_id,
+            )
+            if not allowed:
+                continue
+            if release_view is not None:
+                content = await release_view.read(request.path)
+                stat = FileStatResponse(
+                    path=request.path,
+                    exists=True,
+                    version=_content_version(content),
+                    size=len(content),
+                )
+            else:
+                stat = await _get_file_stat(
+                    db,
+                    request.path,
+                    request.location,
+                    tier.scope,
+                    request.mode,
+                )
+            if stat.exists:
+                return stat
+        return FileStatResponse(path=request.path, exists=False)
 
     except ValueError as e:
         raise HTTPException(
@@ -1722,14 +2366,23 @@ async def list_files_editor(
     from src.services.repo_storage import RepoStorage
 
     try:
+        from src.services.workspace_release_files import (
+            active_workspace_release_file_view,
+        )
+
         repo = RepoStorage()
+        release_view = await active_workspace_release_file_view(db, ctx.org_id)
 
         # Normalize path: "." or "" means root
         prefix = "" if path in (".", "") else path.rstrip("/") + "/"
 
         if recursive:
             from src.services.editor.file_filter import is_excluded_path
-            all_paths = await repo.list(prefix)
+            repo_paths = await repo.list(prefix)
+            release_paths = (
+                await release_view.list(prefix) if release_view is not None else []
+            )
+            all_paths = sorted(set(repo_paths) | set(release_paths))
             return [
                 FileMetadata(
                     path=p,
@@ -1739,12 +2392,29 @@ async def list_files_editor(
                     extension=p.split(".")[-1] if "." in p.split("/")[-1] else None,
                     modified=datetime.now(timezone.utc).isoformat(),
                 )
-                for p in sorted(all_paths)
+                for p in all_paths
                 if not is_excluded_path(p)
             ]
 
         # Non-recursive: get direct children
         child_files, child_folders = await repo.list_directory(prefix)
+        release_paths = (
+            await release_view.list(prefix) if release_view is not None else []
+        )
+        release_child_files: set[str] = set()
+        release_child_folders: set[str] = set()
+        for release_path in release_paths:
+            relative = release_path[len(prefix) :]
+            if not relative:
+                continue
+            head, separator, _tail = relative.partition("/")
+            if separator:
+                release_child_folders.add(f"{prefix}{head}/")
+            else:
+                release_child_files.add(release_path)
+
+        child_files = sorted(set(child_files) | release_child_files)
+        child_folders = sorted(set(child_folders) | release_child_folders)
 
         files: list[FileMetadata] = []
 
@@ -1753,7 +2423,9 @@ async def list_files_editor(
             # SeaweedFS can briefly retain an empty CommonPrefix after deleting
             # every object under it. Treat the non-delimited object list as the
             # source of truth before showing a folder in the editor.
-            if not await repo.list(folder_path):
+            if not await repo.list(folder_path) and not any(
+                path.startswith(folder_path) for path in release_paths
+            ):
                 continue
 
             clean = folder_path.rstrip("/")
@@ -1801,8 +2473,18 @@ async def get_file_content_editor(
     Cloud mode only - used by browser editor.
     """
     try:
-        storage = FileStorageService(db)
-        content, _ = await storage.read_file(path)
+        from src.services.workspace_release_files import (
+            governed_workspace_release_file_view,
+        )
+
+        release_view = await governed_workspace_release_file_view(
+            db, ctx.org_id, path
+        )
+        if release_view is not None:
+            content = await release_view.read(path)
+        else:
+            storage = FileStorageService(db)
+            content, _ = await storage.read_file(path)
 
         # Determine encoding
         encoding = "utf-8"
@@ -1848,6 +2530,13 @@ async def put_file_content_editor(
     """
     try:
         storage = FileStorageService(db)
+        await _lock_file_mutation(
+            db,
+            location="workspace",
+            scope=None,
+            path=request.path,
+        )
+        await _reject_release_governed_mutation(db, ctx.org_id, request.path)
 
         # Convert content to bytes
         if request.encoding == "base64":
@@ -2047,6 +2736,10 @@ async def delete_file_editor(
         storage = FileStorageService(db)
         repo = RepoStorage()
 
+        await _reject_release_governed_prefix_mutations(
+            db, ctx.org_id, [path]
+        )
+
         # Check if this is a folder by listing S3 for children
         folder_prefix = path.rstrip("/") + "/"
         children = await repo.list(folder_prefix)
@@ -2103,6 +2796,10 @@ async def rename_file_editor(
     try:
         storage = FileStorageService(db)
 
+        await _reject_release_governed_prefix_mutations(
+            db, ctx.org_id, [old_path, new_path]
+        )
+
         # Use move_file which preserves entity associations
         await storage.move_file(old_path, new_path)
 
@@ -2138,10 +2835,28 @@ async def search_file_contents(
     """
     Search file contents for text or regex patterns.
 
-    Searches database directly - workflows, modules, forms, and agents.
+    Immutable Live Workspace source overlays the mutable file index. Other
+    non-release files continue to come from the database projection.
     """
     try:
-        results = await search_files_db(db, request, root_path="")
+        from src.services.workspace_release_files import (
+            active_workspace_release_file_view,
+        )
+
+        release_view = await active_workspace_release_file_view(db, ctx.org_id)
+        immutable_overlay = None
+        release_id = None
+        if release_view is not None:
+            paths = await release_view.list()
+            immutable_overlay = await release_view.read_many(paths)
+            release_id = release_view.release.release_id
+        results = await search_files_db(
+            db,
+            request,
+            root_path="",
+            immutable_overlay=immutable_overlay,
+            workspace_release_id=release_id,
+        )
         return results
 
     except ValueError as e:

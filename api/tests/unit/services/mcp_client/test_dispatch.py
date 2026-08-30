@@ -18,6 +18,17 @@ class TextBlock:
         return {"type": "text", "text": self.text}
 
 
+class _FakeClientContext:
+    def __init__(self, client) -> None:
+        self.client = client
+
+    async def __aenter__(self):
+        return self.client
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+
 def test_looks_like_auth_error_checks_exception_chain() -> None:
     root = RuntimeError("vendor said invalid_token")
     wrapped = RuntimeError("protocol failure")
@@ -31,8 +42,8 @@ def test_looks_like_auth_error_checks_exception_chain() -> None:
 def test_normalize_call_tool_result_preserves_structured_content() -> None:
     result = SimpleNamespace(
         content=[TextBlock("hello"), object()],
-        structuredContent={"answer": 42},
-        isError=False,
+        structured_content={"answer": 42},
+        is_error=False,
     )
 
     assert dispatch._normalize_call_tool_result(result) == {
@@ -83,6 +94,39 @@ def test_enforce_result_size_cap_replaces_oversized_payload(
 
 
 @pytest.mark.asyncio
+async def test_call_remote_preserves_raw_call_tool_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = SimpleNamespace(id=uuid4())
+    raw_result = SimpleNamespace(
+        content=[TextBlock("remote")],
+        structured_content={"ok": True},
+        is_error=True,
+    )
+
+    class FakeClient:
+        async def call_tool_mcp(self, name, arguments):
+            assert name == "lookup"
+            assert arguments == {"id": 7}
+            return raw_result
+
+    monkeypatch.setattr(
+        dispatch.mcp_client_session,
+        "open_client",
+        lambda connection_arg, token: _FakeClientContext(FakeClient()),
+    )
+
+    result = await dispatch._call_remote(
+        connection,
+        "access-token",
+        "lookup",
+        {"id": 7},
+    )
+
+    assert result is raw_result
+
+
+@pytest.mark.asyncio
 async def test_invoke_rejects_missing_or_disabled_catalog_row(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -128,8 +172,8 @@ async def test_invoke_resolves_token_calls_remote_and_adds_resolution_path(
         assert arguments == {"id": 123}
         return SimpleNamespace(
             content=[TextBlock("ok")],
-            structuredContent={"ok": True},
-            isError=False,
+            structured_content={"ok": True},
+            is_error=False,
         )
 
     monkeypatch.setattr(dispatch, "_load_tool", enabled_tool)
@@ -229,3 +273,40 @@ async def test_invoke_auth_retry_service_path_wraps_retry_failure(
 
     with pytest.raises(ToolDispatchError, match="failed after retry"):
         await dispatch.invoke(connection, "lookup", {}, None, db)
+
+
+@pytest.mark.asyncio
+async def test_invoke_can_fail_closed_without_repeating_remote_auth_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = SimpleNamespace(id=uuid4())
+    caller_user_id = uuid4()
+    db = SimpleNamespace()
+    remote_calls = 0
+
+    async def enabled_tool(connection_id, tool_name, db_arg):
+        return SimpleNamespace(enabled=True)
+
+    async def resolve_token(connection_arg, user_id_arg, db_arg):
+        return "token", ResolutionPath.USER_TOKEN
+
+    async def call_remote(connection_arg, token, tool_name, arguments):
+        nonlocal remote_calls
+        remote_calls += 1
+        raise RuntimeError("401 unauthorized")
+
+    monkeypatch.setattr(dispatch, "_load_tool", enabled_tool)
+    monkeypatch.setattr(dispatch, "resolve_token", resolve_token)
+    monkeypatch.setattr(dispatch, "_call_remote", call_remote)
+
+    with pytest.raises(NeedsReauthError):
+        await dispatch.invoke(
+            connection,
+            "lookup",
+            {},
+            caller_user_id,
+            db,
+            retry_auth_rejection=False,
+        )
+
+    assert remote_calls == 1

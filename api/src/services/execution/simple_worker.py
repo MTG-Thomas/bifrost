@@ -9,8 +9,8 @@ TemplateProcess via os.fork) use to run an execution:
   filesystem, so installing once in the parent is sufficient.
 - _clear_workspace_modules(): called before each execution so workflow
   code changes are picked up from Redis.
-- _execute_sync() / _execute_async(): run a single execution given an
-  execution_id (context is read from Redis, result is returned).
+- _execute_sync() / _execute_async(): run a single execution using context
+  assembled by the parent consumer and delivered over a private pipe.
 - _get_process_rss() / _get_pss_bytes() / _capture_resource_metrics():
   per-process memory/resource reporting used by the pool for recycling
   bloated children.
@@ -24,7 +24,6 @@ template_process.fork() and communicate via pipe-backed send/recv queues.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import resource
@@ -60,6 +59,16 @@ class RequirementsInstallResult:
     @property
     def ok(self) -> bool:
         return not self.failed
+
+
+@dataclass(frozen=True)
+class WorkspaceModuleRefresh:
+    """Evidence from the execution-start workspace coherence check."""
+
+    generation: str
+    cleared: int
+    kept: int
+    generation_mismatch: bool
 
 
 def _parse_requirement_lines(content: str) -> list[str]:
@@ -180,117 +189,189 @@ def install_requirements() -> RequirementsInstallResult:
     return result
 
 
-def _clear_workspace_modules() -> None:
-    """
-    Clear workspace modules from sys.modules only if their content changed.
+def _workspace_module_maps(
+    module_index: set[str],
+) -> tuple[set[str], dict[str, str]]:
+    """Map cached workspace paths to import names and namespace prefixes."""
+    from src.core.module_cache_sync import get_workspace_release_context
 
-    Called before each execution. For each workspace module already loaded,
-    checks the content hash against Redis. If unchanged, the module stays
-    in sys.modules and the next `import` is a no-op. If changed (or if the
-    hash check fails), the module is evicted so it gets re-fetched.
-
-    This avoids re-exec'ing large unchanged modules on every execution.
-    """
-    from src.services.execution.virtual_import import VirtualModuleLoader, NamespacePackageLoader
-    from src.core.module_cache_sync import get_module_index_sync, get_module_sync
-
-    # Build set of known workspace module names from the Redis module index.
-    module_index = get_module_index_sync()
+    release_ctx = get_workspace_release_context()
+    release_prefix = (
+        release_ctx.runtime_storage_prefix if release_ctx is not None else None
+    )
     workspace_names: set[str] = set()
-    # Also build a map from module name -> file path for hash checking
     name_to_path: dict[str, str] = {}
     for path in module_index:
-        mod_name = path.replace("/", ".").removesuffix(".py").removesuffix(".__init__")
+        logical_path = (
+            path[len(release_prefix) :]
+            if release_prefix and path.startswith(release_prefix)
+            else path
+        )
+        mod_name = (
+            logical_path.replace("/", ".")
+            .removesuffix(".py")
+            .removesuffix(".__init__")
+        )
         parts = mod_name.split(".")
         for i in range(1, len(parts) + 1):
             prefix = ".".join(parts[:i])
             workspace_names.add(prefix)
-        # Map the full module name to its file path
-        name_to_path[mod_name] = path
+        name_to_path[mod_name] = logical_path
+    return workspace_names, name_to_path
 
-    # Find workspace modules currently loaded
-    workspace_modules = [
-        (name, module) for name, module in sys.modules.items()
-        if module is not None and (
-            (hasattr(module, '__loader__') and isinstance(
-                module.__loader__, (VirtualModuleLoader, NamespacePackageLoader)
-            ))
+
+def _loaded_workspace_modules(
+    workspace_names: set[str],
+    *,
+    virtual_loader: type,
+    namespace_loader: type,
+) -> list[tuple[str, Any]]:
+    """Classify the currently loaded modules owned by workspace source."""
+    return [
+        (name, module)
+        for name, module in list(sys.modules.items())
+        if module is not None
+        and (
+            isinstance(
+                getattr(module, "__loader__", None),
+                (virtual_loader, namespace_loader),
+            )
             or name in workspace_names
         )
     ]
 
-    # Cross-solution isolation note: a VirtualModuleLoader module records its
-    # __file__ as the BARE relative path (modules/foo.py), NOT a _solutions/{id}/-
-    # rooted path — so two installs' same-named modules both cache under the bare
-    # name. The eviction below handles this via the hash check: a solution
-    # module's name maps (through the _repo/-keyed index) to either no path or a
-    # DIFFERENT (_repo/) content hash than the one it loaded with, so it is
-    # cleared and the next import re-resolves within the now-active solution
-    # context. (An earlier _solutions/-prefix force-evict block was dead code —
-    # the prefix never matched — and was removed; this is the real mechanism.)
 
-    # Check each module's hash — only clear if content changed
-    modules_to_clear: list[str] = []
-    modules_kept = 0
+def _workspace_module_assessment(
+    name: str,
+    module: Any,
+    *,
+    current_generation: str,
+    name_to_path: dict[str, str],
+    cached_modules: dict[str, Any],
+    namespace_loader: type,
+) -> tuple[bool, bool]:
+    """Return whether one loaded module is stale and whether its pin mismatched."""
+    if getattr(module, "__workspace_generation__", None) != current_generation:
+        return True, True
 
-    for name, module in workspace_modules:
-        cached_hash = getattr(module, '__content_hash__', None)
+    cached_hash = getattr(module, "__content_hash__", None)
+    if not cached_hash:
+        return (
+            not isinstance(getattr(module, "__loader__", None), namespace_loader),
+            False,
+        )
 
-        if not cached_hash:
-            # No hash stored — could be a namespace package or exec_from_db module.
-            # Namespace packages are kept if any child modules are kept (decided later).
-            # For now, check if this is a namespace package (has __path__ but no __file__).
-            if isinstance(getattr(module, '__loader__', None), NamespacePackageLoader):
-                # Defer — we'll keep it if any children survive
-                continue
-            # exec_from_db module with no hash — always clear
-            modules_to_clear.append(name)
-            continue
+    file_path = name_to_path.get(name)
+    if not file_path:
+        return True, False
 
-        # Look up current hash in Redis
-        file_path = name_to_path.get(name)
-        if not file_path:
-            # Can't map to a file path — clear to be safe
-            modules_to_clear.append(name)
-            continue
+    cached = cached_modules.get(file_path)
+    return not cached or cached.get("hash") != cached_hash, False
 
-        cached = get_module_sync(file_path)
-        if not cached:
-            # Module removed from cache — clear
-            modules_to_clear.append(name)
-            continue
 
-        if cached.get("hash") != cached_hash:
-            # Content changed — clear
-            modules_to_clear.append(name)
-        else:
-            # Unchanged — keep it
-            modules_kept += 1
+def _workspace_cached_modules(
+    workspace_modules: list[tuple[str, Any]],
+    *,
+    current_generation: str,
+    name_to_path: dict[str, str],
+) -> dict[str, Any]:
+    """Batch-fetch hashes needed to validate loaded workspace modules."""
+    paths = [
+        name_to_path[name]
+        for name, module in workspace_modules
+        if getattr(module, "__workspace_generation__", None) == current_generation
+        and getattr(module, "__content_hash__", None)
+        and name in name_to_path
+    ]
+    from src.core.module_cache_sync import get_modules_sync
 
-    # If ANY workspace module changed, clear ALL workspace modules.
-    # Reason: kept modules may hold stale references to cleared modules
-    # via `from X import Y` bindings captured at import time.
-    if modules_to_clear:
-        modules_to_clear = [name for name, _ in workspace_modules]
-        modules_kept = 0
+    return get_modules_sync(paths)
 
-    # Clear namespace packages only if ALL their children were cleared
+
+def _full_workspace_eviction_closure(
+    workspace_modules: list[tuple[str, Any]],
+    stale_names: list[str],
+    *,
+    namespace_loader: type,
+) -> list[str]:
+    """Expand any stale module to the complete loaded workspace import closure."""
+    modules_to_clear = (
+        [name for name, _module in workspace_modules] if stale_names else []
+    )
     cleared_set = set(modules_to_clear)
+    loaded_names = list(sys.modules)
     for name, module in workspace_modules:
-        if not isinstance(getattr(module, '__loader__', None), NamespacePackageLoader):
+        if not isinstance(getattr(module, "__loader__", None), namespace_loader):
             continue
-        # Check if any child module survived (not in cleared_set and still in sys.modules)
+        if name in cleared_set:
+            continue
         prefix = name + "."
         has_surviving_child = any(
-            n.startswith(prefix) and n not in cleared_set
-            for n in sys.modules
+            loaded.startswith(prefix) and loaded not in cleared_set
+            for loaded in loaded_names
         )
         if not has_surviving_child:
+            cleared_set.add(name)
             modules_to_clear.append(name)
+    return modules_to_clear
+
+
+def _clear_workspace_modules() -> WorkspaceModuleRefresh:
+    """Validate the workspace generation and evict any stale import closure."""
+    from src.core.module_cache_sync import (
+        get_module_index_sync,
+        wait_for_workspace_generation_sync,
+    )
+    from src.services.execution.virtual_import import (
+        NamespacePackageLoader,
+        VirtualModuleLoader,
+    )
+
+    current_generation = wait_for_workspace_generation_sync()
+    workspace_names, name_to_path = _workspace_module_maps(
+        get_module_index_sync()
+    )
+    workspace_modules = _loaded_workspace_modules(
+        workspace_names,
+        virtual_loader=VirtualModuleLoader,
+        namespace_loader=NamespacePackageLoader,
+    )
+    cached_modules = _workspace_cached_modules(
+        workspace_modules,
+        current_generation=current_generation,
+        name_to_path=name_to_path,
+    )
+
+    stale_names: list[str] = []
+    modules_kept = 0
+    generation_mismatch = False
+    for name, module in workspace_modules:
+        stale, mismatched = _workspace_module_assessment(
+            name,
+            module,
+            current_generation=current_generation,
+            name_to_path=name_to_path,
+            cached_modules=cached_modules,
+            namespace_loader=NamespacePackageLoader,
+        )
+        generation_mismatch = generation_mismatch or mismatched
+        if stale:
+            stale_names.append(name)
+        elif not isinstance(
+            getattr(module, "__loader__", None), NamespacePackageLoader
+        ):
+            modules_kept += 1
+
+    modules_to_clear = _full_workspace_eviction_closure(
+        workspace_modules,
+        stale_names,
+        namespace_loader=NamespacePackageLoader,
+    )
+    if stale_names:
+        modules_kept = 0
 
     for name in modules_to_clear:
-        if name in sys.modules:
-            del sys.modules[name]
+        sys.modules.pop(name, None)
 
     if modules_to_clear or modules_kept:
         logger.debug(
@@ -298,8 +379,19 @@ def _clear_workspace_modules() -> None:
             + (f" (cleared: {modules_to_clear})" if modules_to_clear else "")
         )
 
+    return WorkspaceModuleRefresh(
+        generation=current_generation,
+        cleared=len(set(modules_to_clear)),
+        kept=modules_kept,
+        generation_mismatch=generation_mismatch,
+    )
 
-def _execute_sync(execution_id: str, worker_id: str) -> dict[str, Any]:
+
+def _execute_sync(
+    execution_id: str,
+    worker_id: str,
+    context: dict[str, Any],
+) -> dict[str, Any]:
     """
     Synchronous wrapper that runs async execution.
 
@@ -309,6 +401,7 @@ def _execute_sync(execution_id: str, worker_id: str) -> dict[str, Any]:
     Args:
         execution_id: Unique execution identifier
         worker_id: Worker identifier (for logging/tracking)
+        context: Execution context assembled by the parent consumer
 
     Returns:
         Result dict with success, result, error, duration_ms, etc.
@@ -318,7 +411,7 @@ def _execute_sync(execution_id: str, worker_id: str) -> dict[str, Any]:
     configure_opentelemetry("bifrost-worker", span_processor="simple")
 
     try:
-        result = asyncio.run(_execute_async(execution_id, worker_id))
+        result = asyncio.run(_execute_async(execution_id, worker_id, context))
         return result
     except Exception as e:
         logger.exception(f"Execution {execution_id} failed: {e}")
@@ -332,12 +425,16 @@ def _execute_sync(execution_id: str, worker_id: str) -> dict[str, Any]:
         }
 
 
-async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:
+async def _execute_async(
+    execution_id: str,
+    worker_id: str,
+    context: dict[str, Any],
+) -> dict[str, Any]:
     """
-    Read context from Redis, execute workflow, return result.
+    Execute a workflow from parent-supplied context and return its result.
 
     This is the core async execution logic. It:
-    1. Reads execution context from Redis
+    1. Applies the execution's Solution import scope
     2. Builds an ExecutionRequest
     3. Calls the existing execute() engine
     4. Formats and returns the result
@@ -345,34 +442,33 @@ async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:
     Args:
         execution_id: Unique execution identifier
         worker_id: Worker identifier (for logging/tracking)
+        context: Execution context assembled by the parent consumer
 
     Returns:
         Result dict with execution outcome
     """
     start_time = datetime.now(timezone.utc)
 
-    # 1. Read context from Redis
-    context = await _read_context_from_redis(execution_id)
-    if context is None:
-        return {
-            "execution_id": execution_id,
-            "success": False,
-            "error": "Execution context not found in Redis",
-            "error_type": "ContextNotFound",
-            "duration_ms": 0,
-            "worker_id": worker_id,
-        }
-
-    # 1b. Activate THIS execution's Solution import root, THEN evict workspace
+    # Activate THIS execution's Solution import root, THEN evict workspace
     # modules — in that order. The cross-solution eviction in
     # _clear_workspace_modules keys off the active install (get_solution_context);
     # if it ran with no context (as the template_process fork path did), a prior
     # install's same-name module could survive the hash check and shadow this
     # install's file, breaking multi-install isolation (Codex #9). This context is
     # temporary: _run_execution activates it again after credential bootstrap.
-    from src.core.module_cache_sync import clear_solution_context, set_solution_context
+    from src.core.module_cache_sync import (
+        clear_solution_context,
+        clear_workspace_release_context,
+        set_solution_context,
+        set_workspace_release_context,
+    )
 
     _exec_solution_id = context.get("solution_id")
+    _workspace_release_id = context.get("workspace_release_id")
+    if _exec_solution_id and _workspace_release_id:
+        raise RuntimeError(
+            "execution cannot pin a Solution and Workspace release together"
+        )
     if _exec_solution_id:
         context_options = {
             "runtime_storage_prefix": context.get("runtime_storage_prefix"),
@@ -389,12 +485,23 @@ async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:
                 _exec_solution_id,
                 global_repo_access=bool(context.get("solution_global_repo_access", False)),
             )
+    if _workspace_release_id:
+        set_workspace_release_context(
+            _workspace_release_id,
+            runtime_storage_prefix=str(
+                context.get("workspace_release_runtime_storage_prefix") or ""
+            ),
+            source_hashes=dict(context.get("workspace_release_source_hashes") or {}),
+        )
     try:
-        _clear_workspace_modules()
+        workspace_refresh = _clear_workspace_modules()
     finally:
         # Credential backend imports must run without Solution namespace probing;
         # otherwise their own API credential lookup can recursively import them.
         clear_solution_context()
+        clear_workspace_release_context()
+
+    context["workspace_generation"] = workspace_refresh.generation
 
     # 2. Run the execution using existing worker logic
     # This reuses the shared _run_execution() from worker.py
@@ -415,6 +522,13 @@ async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:
 
         # Capture resource metrics (use worker's metrics if available, else local)
         metrics = result.get("metrics") or _capture_resource_metrics()
+        metrics["workspace_modules_cleared"] = workspace_refresh.cleared
+        metrics["workspace_generation_mismatch"] = (
+            workspace_refresh.generation_mismatch
+        )
+
+        execution_context = dict(result.get("execution_context") or {})
+        execution_context["workspace_generation"] = workspace_refresh.generation
 
         # Overwrite peak_memory_bytes with PSS delta — the memory uniquely
         # attributable to this execution, excluding shared parent pages.
@@ -437,7 +551,7 @@ async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:
             "metrics": metrics,
             "cached": result.get("cached", False),
             "cache_expires_at": result.get("cache_expires_at"),
-            "execution_context": result.get("execution_context"),
+            "execution_context": execution_context,
             "worker_id": worker_id,
         }
 
@@ -452,43 +566,6 @@ async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:
             "duration_ms": duration_ms,
             "worker_id": worker_id,
         }
-
-
-async def _read_context_from_redis(execution_id: str) -> dict[str, Any] | None:
-    """
-    Read execution context from Redis.
-
-    Args:
-        execution_id: Unique execution identifier
-
-    Returns:
-        Context dict or None if not found
-    """
-    import redis.asyncio as redis
-    from src.config import get_settings
-
-    settings = get_settings()
-
-    redis_client = redis.from_url(
-        settings.redis_url,
-        decode_responses=True,
-        socket_timeout=5.0,
-    )
-
-    try:
-        key = f"bifrost:exec:{execution_id}:context"
-        data = await redis_client.get(key)
-
-        if data is None:
-            logger.warning(f"Context not found in Redis: {execution_id}")
-            return None
-
-        return json.loads(data)
-    except Exception as e:
-        logger.error(f"Failed to read context from Redis: {e}")
-        return None
-    finally:
-        await redis_client.aclose()
 
 
 def _get_pss_bytes() -> int:

@@ -14,7 +14,7 @@ from src.services.execution.template_process import (
     _RecvQueue,
     _SendQueue,
     _load_execution_infrastructure,
-    _reap_exited_children,
+    _reap_children,
     _run_forked_child,
 )
 
@@ -86,21 +86,25 @@ def test_recv_queue_ignores_close_errors() -> None:
     assert conn.closed is True
 
 
-def test_reap_exited_children_stops_on_no_children_and_oserror() -> None:
+def test_reap_children_stops_on_no_children_and_oserror() -> None:
+    exit_statuses: dict[int, int] = {}
     with (
         patch("src.services.execution.template_process.os.WNOHANG", 1, create=True),
         patch("src.services.execution.template_process.os.waitpid", side_effect=ChildProcessError),
     ):
-        _reap_exited_children()
+        _reap_children(exit_statuses)
 
     with (
         patch("src.services.execution.template_process.os.WNOHANG", 1, create=True),
         patch("src.services.execution.template_process.os.waitpid", side_effect=OSError("wait failed")),
     ):
-        _reap_exited_children()
+        _reap_children(exit_statuses)
+
+    assert exit_statuses == {}
 
 
-def test_reap_exited_children_drains_exited_children() -> None:
+def test_reap_children_drains_exited_children() -> None:
+    exit_statuses: dict[int, int] = {}
     with (
         patch("src.services.execution.template_process.os.WNOHANG", 1, create=True),
         patch(
@@ -108,9 +112,10 @@ def test_reap_exited_children_drains_exited_children() -> None:
             side_effect=[(101, 0), (102, 0), (0, 0)],
         ) as waitpid,
     ):
-        _reap_exited_children()
+        _reap_children(exit_statuses)
 
     assert waitpid.call_count == 3
+    assert exit_statuses == {101: 0, 102: 0}
 
 
 def test_load_execution_infrastructure_installs_requirements_and_user_site(monkeypatch) -> None:
@@ -130,10 +135,11 @@ def test_load_execution_infrastructure_installs_requirements_and_user_site(monke
     )
     monkeypatch.setattr("src.services.execution.template_process.sys.path", [])
 
-    _load_execution_infrastructure(install_requirements_on_startup=True)
+    deferred_hook = _load_execution_infrastructure(install_requirements_on_startup=True)
 
     install.assert_called_once()
-    hook.assert_called_once()
+    hook.assert_not_called()
+    assert deferred_hook is hook
     assert sys.path[0] == user_site
 
 
@@ -329,7 +335,8 @@ def test_template_process_shutdown_kills_process_that_stays_alive() -> None:
 
 
 def test_run_forked_child_reports_success_with_rss(monkeypatch) -> None:
-    work_recv = FakeConnection(items=["exec-12345678"], poll_result=True)
+    context = {"organization_id": "org-1"}
+    work_recv = FakeConnection(items=[("exec-12345678", context)], poll_result=True)
     result_send = FakeConnection()
     simple_worker = types.SimpleNamespace(
         _execute_sync=Mock(
@@ -350,7 +357,9 @@ def test_run_forked_child_reports_success_with_rss(monkeypatch) -> None:
 
     _run_forked_child(work_recv, result_send, "worker-1", persistent=False)
 
-    simple_worker._execute_sync.assert_called_once_with("exec-12345678", "worker-1")
+    simple_worker._execute_sync.assert_called_once_with(
+        "exec-12345678", "worker-1", context
+    )
     logging_module.clear_sequence_counter.assert_called_once_with("exec-12345678")
     assert result_send.sent == [
         {
@@ -363,7 +372,7 @@ def test_run_forked_child_reports_success_with_rss(monkeypatch) -> None:
 
 
 def test_run_forked_child_sends_error_result_for_execution_failure(monkeypatch) -> None:
-    work_recv = FakeConnection(items=["exec-failure"], poll_result=True)
+    work_recv = FakeConnection(items=[("exec-failure", {})], poll_result=True)
     result_send = FakeConnection()
     simple_worker = types.SimpleNamespace(
         _execute_sync=Mock(side_effect=ValueError("boom")),

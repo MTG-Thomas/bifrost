@@ -6,14 +6,25 @@ on:
     tags: ["v*"]
   pull_request:
     branches: [main]
-  # GitHub merge queue runs CI on a synthetic ref containing
-  # main + queued PRs stacked in queue order. Required status
-  # checks must fire on this event or the queue blocks forever
-  # waiting on absent statuses.
-  merge_group:
   workflow_dispatch:
+    inputs:
+      queue_post_merge:
+        description: Publish the exact queue-merged main SHA without rerunning validation
+        required: false
+        type: boolean
+        default: false
+      queue_merge_sha:
+        description: Exact verified merge SHA expected by a queue post-merge run
+        required: false
+        type: string
 
 permissions: read-all
+
+# A new PR head supersedes its prior run. Push/tag runs publish artifacts and
+# must finish; the serialized queue itself has separate non-cancelling lock.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   REGISTRY: ghcr.io
@@ -22,14 +33,247 @@ env:
   WORKER_IMAGE: mtg-thomas/bifrost-worker
   CI_API_TEST_IMAGE: mtg-thomas/bifrost-ci-api-dev
   CI_CLIENT_TEST_IMAGE: mtg-thomas/bifrost-ci-client-dev
+  CI_PLAYWRIGHT_TEST_IMAGE: mtg-thomas/bifrost-ci-playwright
+  # Every test lane consumes the immutable image published from its exact tree.
+  CI_TEST_IMAGE_TAG: ${{ format('sha-{0}', github.sha) }}
 
 jobs:
   # =============================================================================
-  # CI Test Images - Baked dependency/toolchain images for future PR test runs.
+  # Change-aware plan - one exact, inspectable plan shared by every test lane.
+  # =============================================================================
+  affected-test-plan:
+    runs-on: ubuntu-latest
+    name: Plan Affected Tests
+    permissions:
+      contents: read
+    outputs:
+      scope: ${{ steps.plan.outputs.scope }}
+      api_quality_mode: ${{ steps.plan.outputs.api_quality_mode }}
+      api_quality_targets: ${{ steps.plan.outputs.api_quality_targets }}
+      api_unit_mode: ${{ steps.plan.outputs.api_unit_mode }}
+      api_unit_targets: ${{ steps.plan.outputs.api_unit_targets }}
+      api_e2e_mode: ${{ steps.plan.outputs.api_e2e_mode }}
+      api_e2e_targets: ${{ steps.plan.outputs.api_e2e_targets }}
+      api_e2e_matrix: ${{ steps.plan.outputs.api_e2e_matrix }}
+      client_quality_mode: ${{ steps.plan.outputs.client_quality_mode }}
+      client_quality_targets: ${{ steps.plan.outputs.client_quality_targets }}
+      client_unit_mode: ${{ steps.plan.outputs.client_unit_mode }}
+      client_unit_targets: ${{ steps.plan.outputs.client_unit_targets }}
+      client_e2e_mode: ${{ steps.plan.outputs.client_e2e_mode }}
+      client_e2e_targets: ${{ steps.plan.outputs.client_e2e_targets }}
+      mcp_conformance_mode: ${{ steps.plan.outputs.mcp_conformance_mode }}
+    steps:
+      - name: Verify exact queue merge SHA
+        if: inputs.queue_post_merge
+        env:
+          EXPECTED_MERGE_SHA: ${{ inputs.queue_merge_sha }}
+        run: |
+          if [[ -z "$EXPECTED_MERGE_SHA" || "$GITHUB_SHA" != "$EXPECTED_MERGE_SHA" ]]; then
+            echo "Queue post-merge dispatch does not match the verified main SHA" >&2
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Build affected test plan
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BASE_SHA: ${{ github.event.before }}
+        run: |
+          case "$EVENT_NAME" in
+            pull_request) base_sha="$PR_BASE_SHA" ;;
+            push) base_sha="$PUSH_BASE_SHA" ;;
+            *) base_sha="" ;;
+          esac
+          if [ -z "$base_sha" ] || [[ "$base_sha" =~ ^0+$ ]]; then
+            python3 api/scripts/plan_affected_tests.py \
+              --force-comprehensive
+          else
+            python3 api/scripts/plan_affected_tests.py \
+              --base "$base_sha" \
+              --head "$GITHUB_SHA"
+          fi
+
+      - name: Upload affected test plan
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: affected-test-plan
+          path: ${{ runner.temp }}/affected-test-plan.json
+          if-no-files-found: error
+          retention-days: 14
+
+  # =============================================================================
+  # Production-image candidates - Build once while tests run. These tags are
+  # immutable inputs for the post-merge publisher and never select a runtime.
+  # =============================================================================
+  build-candidate-images:
+    if: >-
+      github.repository == 'MTG-Thomas/bifrost' &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    name: Build candidate ${{ matrix.component }} image
+    permissions:
+      attestations: write
+      artifact-metadata: write # actions/attest storage record for registry attestations
+      contents: read
+      id-token: write
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: api
+            image: mtg-thomas/bifrost-api
+            context: .
+            dockerfile: ./api/Dockerfile
+            target: runtime
+            version_arg: BIFROST_VERSION
+            cache_scope: dev-api
+          - component: worker
+            image: mtg-thomas/bifrost-worker
+            context: .
+            dockerfile: ./api/Dockerfile
+            target: runtime
+            version_arg: BIFROST_VERSION
+            cache_scope: dev-worker
+          - component: client
+            image: mtg-thomas/bifrost-client
+            context: ./client
+            dockerfile: ./client/Dockerfile
+            target: production
+            version_arg: VITE_BIFROST_VERSION
+            cache_scope: dev-client
+    steps:
+      - name: Checkout exact pull-request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Compute immutable candidate identity
+        id: identity
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$(git rev-parse HEAD)" != "$HEAD_SHA" ]; then
+            echo "Candidate checkout does not match the pull-request head." >&2
+            exit 1
+          fi
+          tree_sha="$(git rev-parse "${HEAD_SHA}^{tree}")"
+          version="$(./scripts/compute-dev-version.sh --next-after "$BASE_SHA")"
+          echo "tree_sha=$tree_sha" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Build immutable candidate
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          push: true
+          tags: >-
+            ghcr.io/${{ matrix.image }}:candidate-tree-${{ steps.identity.outputs.tree_sha }}
+          build-args: |
+            ${{ matrix.version_arg }}=${{ steps.identity.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/MTG-Thomas/bifrost
+            org.opencontainers.image.revision=${{ github.event.pull_request.head.sha }}
+            org.opencontainers.image.version=${{ steps.identity.outputs.version }}
+            com.midtowntg.bifrost.source-tree=${{ steps.identity.outputs.tree_sha }}
+            com.midtowntg.bifrost.candidate=true
+          cache-from: type=gha,scope=${{ matrix.cache_scope }}
+          cache-to: type=gha,scope=${{ matrix.cache_scope }},mode=max
+
+      - name: Sign immutable candidate
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+          IMAGE: ghcr.io/${{ matrix.image }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [ -z "$IMAGE_DIGEST" ]; then
+            echo "Candidate image digest is required." >&2
+            exit 1
+          fi
+          cosign sign --yes "${IMAGE}@${IMAGE_DIGEST}"
+
+      - name: Attest candidate build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/${{ matrix.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Verify candidate identity and signature
+        env:
+          EXPECTED_DIGEST: ${{ steps.build.outputs.digest }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          IMAGE: ghcr.io/${{ matrix.image }}
+          TREE_SHA: ${{ steps.identity.outputs.tree_sha }}
+          VERSION: ${{ steps.identity.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 api/scripts/ci/candidate_image.py verify \
+            --image "$IMAGE" \
+            --tree-sha "$TREE_SHA" \
+            --version "$VERSION" \
+            --source-sha "$HEAD_SHA" \
+            --expected-digest "$EXPECTED_DIGEST"
+
+  candidate-images:
+    if: >-
+      always() &&
+      github.repository == 'MTG-Thomas/bifrost' &&
+      github.event_name == 'pull_request'
+    needs: build-candidate-images
+    runs-on: ubuntu-latest
+    name: Candidate Images
+    steps:
+      - name: Require exact signed candidates
+        env:
+          BUILD_RESULT: ${{ needs.build-candidate-images.result }}
+        run: |
+          if [ "$BUILD_RESULT" != "success" ]; then
+            echo "Every MTG platform PR must publish exact signed image candidates before merge." >&2
+            echo "Fork pull requests must move to a reviewed branch in MTG-Thomas/bifrost." >&2
+            exit 1
+          fi
+          echo "API, worker, and client candidates are ready for exact-tree promotion."
+
+  # =============================================================================
+  # CI Test Images - Baked dependency/toolchain images for this exact test run.
   # Source code is still mounted from each PR checkout by docker-compose.test.yml.
   # =============================================================================
   publish-ci-test-images:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     name: Publish CI Test Images
     permissions:
@@ -40,7 +284,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
@@ -57,7 +301,7 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.CI_API_TEST_IMAGE }}:main
+            ${{ github.ref == 'refs/heads/main' && format('{0}/{1}:main', env.REGISTRY, env.CI_API_TEST_IMAGE) || '' }}
             ${{ env.REGISTRY }}/${{ env.CI_API_TEST_IMAGE }}:sha-${{ github.sha }}
           cache-from: type=gha,scope=test-api-dev
           cache-to: type=gha,scope=test-api-dev,mode=max
@@ -70,34 +314,66 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.CI_CLIENT_TEST_IMAGE }}:main
+            ${{ github.ref == 'refs/heads/main' && format('{0}/{1}:main', env.REGISTRY, env.CI_CLIENT_TEST_IMAGE) || '' }}
             ${{ env.REGISTRY }}/${{ env.CI_CLIENT_TEST_IMAGE }}:sha-${{ github.sha }}
           cache-from: type=gha,scope=test-client-dev
           cache-to: type=gha,scope=test-client-dev,mode=max
+
+      - name: Build and push Playwright CI test image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: ./client
+          file: ./client/Dockerfile.playwright
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ github.ref == 'refs/heads/main' && format('{0}/{1}:main', env.REGISTRY, env.CI_PLAYWRIGHT_TEST_IMAGE) || '' }}
+            ${{ env.REGISTRY }}/${{ env.CI_PLAYWRIGHT_TEST_IMAGE }}:sha-${{ github.sha }}
+          cache-from: type=gha,scope=test-playwright
+          cache-to: type=gha,scope=test-playwright,mode=max
 
   # =============================================================================
   # Lint & Type Check - Fast, gates all builds alongside unit tests
   # =============================================================================
   lint:
-    # Skip on push: main — the merge_group run already covered this
-    # commit. Still runs on PRs, queue, tag pushes, and workflow_dispatch.
-    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+    needs: affected-test-plan
+    # Skip the redundant push:main rerun; the merge queue already produced this
+    # required check for the exact reviewed commit.
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main') && !inputs.queue_post_merge
     runs-on: ubuntu-latest
     name: Lint & Type Check
     permissions:
       contents: read
     steps:
+      - name: Require a valid affected test plan
+        if: needs.affected-test-plan.result != 'success'
+        run: |
+          echo "Affected test planning failed or was cancelled." >&2
+          exit 1
+
       - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Check GitHub Action pins
-        run: python3 api/scripts/check_github_action_pins.py
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 api/scripts/check_github_action_pins.py --verify-versions
 
       - name: Check MTG CI boundaries
         run: python3 api/scripts/check_mtg_ci_boundaries.py
 
+      # Codex skill mirrors (plugins/bifrost/skills/, .codex/skills/) are
+      # generated from the canonical .claude/skills/ source.
+      - name: Codex skill mirrors in sync
+        run: |
+          chmod +x scripts/sync-codex-skills.sh
+          ./scripts/sync-codex-skills.sh
+          git diff --exit-code -- plugins/bifrost/skills .codex/skills \
+            || { echo "::error::Codex skill mirrors are stale — run scripts/sync-codex-skills.sh and commit."; exit 1; }
+
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        if: needs.affected-test-plan.outputs.api_quality_mode != 'skip'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -113,153 +389,282 @@ jobs:
       # already ships a current pip into the venv and any explicit upgrade
       # would be flagged by Scorecard as an unpinned install.
       - name: Install Python deps into .venv
+        if: needs.affected-test-plan.outputs.api_quality_mode != 'skip'
         run: |
           python -m venv .venv
           ./.venv/bin/pip install --require-hashes -r requirements.lock
           ./.venv/bin/pip install --require-hashes -r requirements-pyright.lock
 
       - name: Ruff
+        if: needs.affected-test-plan.outputs.api_quality_mode != 'skip'
         working-directory: api
-        run: ../.venv/bin/ruff check .
+        env:
+          QUALITY_MODE: ${{ needs.affected-test-plan.outputs.api_quality_mode }}
+          QUALITY_TARGETS: ${{ needs.affected-test-plan.outputs.api_quality_targets }}
+        run: |
+          if [ "$QUALITY_MODE" = "comprehensive" ]; then
+            ../.venv/bin/ruff check .
+          else
+            mapfile -t targets <<< "$QUALITY_TARGETS"
+            if (( ${#targets[@]} == 0 )); then
+              echo "Affected API quality lane has no targets." >&2
+              exit 1
+            fi
+            ../.venv/bin/ruff check "${targets[@]}"
+          fi
 
       - name: Pyright
+        if: needs.affected-test-plan.outputs.api_quality_mode != 'skip'
         working-directory: api
-        run: ../.venv/bin/pyright
+        env:
+          QUALITY_MODE: ${{ needs.affected-test-plan.outputs.api_quality_mode }}
+          QUALITY_TARGETS: ${{ needs.affected-test-plan.outputs.api_quality_targets }}
+        run: |
+          if [ "$QUALITY_MODE" = "comprehensive" ]; then
+            ../.venv/bin/pyright
+          else
+            mapfile -t targets <<< "$QUALITY_TARGETS"
+            ../.venv/bin/pyright "${targets[@]}"
+          fi
 
       - name: Set up Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        if: needs.affected-test-plan.outputs.client_quality_mode != 'skip'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "26"
           cache: npm
           cache-dependency-path: client/package-lock.json
 
       - name: Install client deps
+        if: needs.affected-test-plan.outputs.client_quality_mode != 'skip'
         working-directory: client
         run: npm ci
 
       - name: TypeScript
+        if: needs.affected-test-plan.outputs.client_quality_mode != 'skip'
         working-directory: client
         run: npm run tsc
 
       - name: ESLint
+        if: needs.affected-test-plan.outputs.client_quality_mode != 'skip'
         working-directory: client
-        run: npm run lint
+        env:
+          QUALITY_MODE: ${{ needs.affected-test-plan.outputs.client_quality_mode }}
+          QUALITY_TARGETS: ${{ needs.affected-test-plan.outputs.client_quality_targets }}
+        run: |
+          if [ "$QUALITY_MODE" = "comprehensive" ]; then
+            npm run lint
+          else
+            mapfile -t targets <<< "$QUALITY_TARGETS"
+            npx eslint "${targets[@]}"
+          fi
+
+      - name: Report skipped code quality lanes
+        if: needs.affected-test-plan.outputs.api_quality_mode == 'skip' && needs.affected-test-plan.outputs.client_quality_mode == 'skip'
+        run: echo "No executable API or client source is in the affected closure."
 
   # =============================================================================
   # Client Unit Tests (Vitest) - Fast, runs on host Node — no Docker needed.
   # Parallel to Unit Tests; does NOT become the critical path.
   # =============================================================================
   test-client-unit:
-    # Skip on push: main — covered by the merge_group run.
-    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+    needs: affected-test-plan
+    # Skip the redundant push:main rerun; the merge queue already produced this
+    # required check for the exact reviewed commit.
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main') && !inputs.queue_post_merge
     runs-on: ubuntu-latest
     name: Client Unit Tests
     steps:
+      - name: Require a valid affected test plan
+        if: needs.affected-test-plan.result != 'success'
+        run: |
+          echo "Affected test planning failed or was cancelled." >&2
+          exit 1
+
       - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        if: needs.affected-test-plan.outputs.client_unit_mode != 'skip'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        if: needs.affected-test-plan.outputs.client_unit_mode != 'skip'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "26"
           cache: npm
           cache-dependency-path: client/package-lock.json
 
       - name: Install client deps
+        if: needs.affected-test-plan.outputs.client_unit_mode != 'skip'
         working-directory: client
         run: npm ci
 
       - name: Vitest
+        if: needs.affected-test-plan.outputs.client_unit_mode != 'skip'
         working-directory: client
-        run: npm test
+        env:
+          TEST_MODE: ${{ needs.affected-test-plan.outputs.client_unit_mode }}
+          TEST_TARGETS: ${{ needs.affected-test-plan.outputs.client_unit_targets }}
+        run: |
+          if [ "$TEST_MODE" = "comprehensive" ]; then
+            npm test
+          else
+            mapfile -t targets <<< "$TEST_TARGETS"
+            if (( ${#targets[@]} == 0 )); then
+              echo "Affected client unit lane has no targets." >&2
+              exit 1
+            fi
+            npm test -- "${targets[@]}"
+          fi
+
+      - name: Report skipped client unit lane
+        if: needs.affected-test-plan.outputs.client_unit_mode == 'skip'
+        run: echo "Client unit tests are outside the affected closure."
 
   # =============================================================================
   # Unit Tests - Fast, gates all builds
   # =============================================================================
   test-unit:
+    needs: [affected-test-plan, publish-ci-test-images]
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main') && !inputs.queue_post_merge
     runs-on: ubuntu-latest
     name: Unit Tests
     permissions:
       contents: read
       packages: read
     steps:
+      - name: Require a valid affected test plan
+        if: needs.affected-test-plan.result != 'success'
+        run: |
+          echo "Affected test planning failed or was cancelled." >&2
+          exit 1
+
       - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        if: needs.affected-test-plan.outputs.api_unit_mode != 'skip'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
       - name: Detect test image input changes
+        if: needs.affected-test-plan.outputs.api_unit_mode != 'skip'
         id: test-image-inputs
         run: bash scripts/ci/detect-test-image-inputs.sh
 
       # Prefer baked main images. docker-compose.test.yml still bind-mounts the
-      # current checkout, so PR source code is what tests execute.
-      - name: Pull API CI test image
-        id: pull-api-ci-image
-        if: steps.test-image-inputs.outputs.api_changed != 'true'
-        continue-on-error: true
+      # current checkout, so PR source code is what tests execute. Keep this a
+      # repo-owned shell path: third-party Docker actions are downloaded before
+      # the first step and have repeatedly rate-limited the entire required job.
+      - name: Prepare CI test images
+        if: needs.affected-test-plan.outputs.api_unit_mode != 'skip'
         env:
-          API_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_API_TEST_IMAGE }}:main
-        run: |
-          docker pull "$API_CI_IMAGE_REF"
-          docker tag "$API_CI_IMAGE_REF" bifrost-test-api-dev:latest
-
-      - name: Build API dev image
-        if: steps.test-image-inputs.outputs.api_changed == 'true' || steps.pull-api-ci-image.outcome == 'failure' || steps.pull-api-ci-image.outcome == 'skipped'
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          file: ./api/Dockerfile.dev
-          load: true
-          tags: bifrost-test-api-dev:latest
-          cache-from: type=gha,scope=test-api-dev
-          cache-to: type=gha,scope=test-api-dev,mode=max
-
-      - name: Pull client CI test image
-        id: pull-client-ci-image
-        if: steps.test-image-inputs.outputs.client_changed != 'true'
-        continue-on-error: true
-        env:
-          CLIENT_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_CLIENT_TEST_IMAGE }}:main
-        run: |
-          docker pull "$CLIENT_CI_IMAGE_REF"
-          docker tag "$CLIENT_CI_IMAGE_REF" bifrost-test-client-dev:latest
-
-      - name: Build client dev image
-        if: steps.test-image-inputs.outputs.client_changed == 'true' || steps.pull-client-ci-image.outcome == 'failure' || steps.pull-client-ci-image.outcome == 'skipped'
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: ./client
-          file: ./client/Dockerfile.dev
-          load: true
-          tags: bifrost-test-client-dev:latest
-          cache-from: type=gha,scope=test-client-dev
-          cache-to: type=gha,scope=test-client-dev,mode=max
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          API_IMAGE_CHANGED: ${{ steps.test-image-inputs.outputs.api_changed }}
+          CLIENT_IMAGE_CHANGED: ${{ steps.test-image-inputs.outputs.client_changed }}
+        run: bash api/scripts/ci/prepare-test-images.sh api client
 
       - name: Run unit tests
+        if: needs.affected-test-plan.outputs.api_unit_mode != 'skip'
         env:
           BIFROST_SKIP_BUILD: "1"
+          TEST_MODE: ${{ needs.affected-test-plan.outputs.api_unit_mode }}
+          TEST_TARGETS: ${{ needs.affected-test-plan.outputs.api_unit_targets }}
         run: |
           chmod +x test.sh
           ./test.sh stack up
-          ./test.sh unit --cov=. --cov-report=xml:/coverage/coverage.xml
-          ./test.sh coverage coverage.xml
+          if [ "$TEST_MODE" = "comprehensive" ]; then
+            ./test.sh unit --cov=. --cov-report=xml:/tmp/bifrost/coverage.xml
+            shopt -s nullglob
+            coverage_files=(/tmp/bifrost-bifrost-test-*/coverage.xml)
+            test "${#coverage_files[@]}" -eq 1
+            cp "${coverage_files[0]}" coverage.xml
+          else
+            mapfile -t targets <<< "$TEST_TARGETS"
+            if (( ${#targets[@]} == 0 )); then
+              echo "Affected API unit lane has no targets." >&2
+              exit 1
+            fi
+            ./test.sh "${targets[@]}"
+          fi
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+      - name: Preserve API coverage evidence
+        if: needs.affected-test-plan.outputs.api_unit_mode == 'comprehensive'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          files: ./coverage.xml
-          flags: api
           name: api-coverage
-          token: ${{ secrets.CODECOV_TOKEN }}
+          path: ./coverage.xml
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Report skipped API unit lane
+        if: needs.affected-test-plan.outputs.api_unit_mode == 'skip'
+        run: echo "API unit tests are outside the affected closure."
+
+  # =============================================================================
+  # MCP Conformance - the exact-pinned official runner gates the stable subset
+  # applicable to Bifrost's authenticated four-tool modern gateway. Broader
+  # stateless checks remain visible in the uploaded advisory artifact.
+  # =============================================================================
+  mcp-conformance:
+    needs: [affected-test-plan, publish-ci-test-images]
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main') && !inputs.queue_post_merge
+    runs-on: ubuntu-latest
+    name: MCP Conformance
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Require a valid affected test plan
+        if: needs.affected-test-plan.result != 'success'
+        run: |
+          echo "Affected test planning failed or was cancelled." >&2
+          exit 1
+
+      - name: Checkout repository
+        if: needs.affected-test-plan.outputs.mcp_conformance_mode != 'skip'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Detect test image input changes
+        if: needs.affected-test-plan.outputs.mcp_conformance_mode != 'skip'
+        id: test-image-inputs
+        run: bash scripts/ci/detect-test-image-inputs.sh
+
+      - name: Prepare CI test images
+        if: needs.affected-test-plan.outputs.mcp_conformance_mode != 'skip'
+        env:
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          API_IMAGE_CHANGED: ${{ steps.test-image-inputs.outputs.api_changed }}
+          CLIENT_IMAGE_CHANGED: ${{ steps.test-image-inputs.outputs.client_changed }}
+        run: bash api/scripts/ci/prepare-test-images.sh api client
+
+      - name: Run blocking MCP conformance
+        if: needs.affected-test-plan.outputs.mcp_conformance_mode != 'skip'
+        env:
+          BIFROST_SKIP_BUILD: "1"
+          BIFROST_TEST_USE_CLEAN_BOOT: "1"
+        run: |
+          chmod +x test.sh
+          ./test.sh stack up
+          ./test.sh mcp conformance
+
+      - name: Upload MCP conformance results
+        if: always() && needs.affected-test-plan.outputs.mcp_conformance_mode != 'skip'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mcp-conformance-results
+          path: /tmp/bifrost-*/mcp-conformance/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Tear down MCP conformance stack
+        if: always() && needs.affected-test-plan.outputs.mcp_conformance_mode != 'skip'
+        run: ./test.sh stack down
+
+      - name: Report skipped MCP conformance lane
+        if: needs.affected-test-plan.outputs.mcp_conformance_mode == 'skip'
+        run: echo "MCP protocol surfaces are outside the affected closure."
 
   # =============================================================================
   # E2E Tests - Sharded across 4 parallel runners. Each shard boots its own
@@ -274,127 +679,201 @@ jobs:
   # no ruleset edits needed.
   # =============================================================================
   test-e2e:
+    needs: [affected-test-plan, publish-ci-test-images]
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main') && !inputs.queue_post_merge
     runs-on: ubuntu-latest
-    name: E2E Tests (shard ${{ matrix.shard }}/4)
+    name: E2E Tests (shard ${{ matrix.shard }}/${{ matrix.total }})
     permissions:
       contents: read
       packages: read
     strategy:
       fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
+      matrix: ${{ fromJSON(needs.affected-test-plan.outputs.api_e2e_matrix || '{"include":[{"shard":0,"total":0}]}') }}
     steps:
+      - name: Require a valid affected test plan
+        if: needs.affected-test-plan.result != 'success'
+        run: |
+          echo "Affected test planning failed or was cancelled." >&2
+          exit 1
+
       - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        if: matrix.total != 0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Detect test image input changes
+        if: matrix.total != 0
         id: test-image-inputs
         run: bash scripts/ci/detect-test-image-inputs.sh
 
-      - name: Pull API CI test image
-        id: pull-api-ci-image
-        if: steps.test-image-inputs.outputs.api_changed != 'true'
-        continue-on-error: true
+      - name: Prepare CI test images
+        if: matrix.total != 0
         env:
-          API_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_API_TEST_IMAGE }}:main
-        run: |
-          docker pull "$API_CI_IMAGE_REF"
-          docker tag "$API_CI_IMAGE_REF" bifrost-test-api-dev:latest
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          API_IMAGE_CHANGED: ${{ steps.test-image-inputs.outputs.api_changed }}
+          CLIENT_IMAGE_CHANGED: ${{ steps.test-image-inputs.outputs.client_changed }}
+        run: bash api/scripts/ci/prepare-test-images.sh api client
 
-      - name: Build API dev image
-        if: steps.test-image-inputs.outputs.api_changed == 'true' || steps.pull-api-ci-image.outcome == 'failure' || steps.pull-api-ci-image.outcome == 'skipped'
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          file: ./api/Dockerfile.dev
-          load: true
-          tags: bifrost-test-api-dev:latest
-          cache-from: type=gha,scope=test-api-dev
-          cache-to: type=gha,scope=test-api-dev,mode=max
-
-      - name: Pull client CI test image
-        id: pull-client-ci-image
-        if: steps.test-image-inputs.outputs.client_changed != 'true'
-        continue-on-error: true
-        env:
-          CLIENT_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_CLIENT_TEST_IMAGE }}:main
-        run: |
-          docker pull "$CLIENT_CI_IMAGE_REF"
-          docker tag "$CLIENT_CI_IMAGE_REF" bifrost-test-client-dev:latest
-
-      - name: Build client dev image
-        if: steps.test-image-inputs.outputs.client_changed == 'true' || steps.pull-client-ci-image.outcome == 'failure' || steps.pull-client-ci-image.outcome == 'skipped'
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: ./client
-          file: ./client/Dockerfile.dev
-          load: true
-          tags: bifrost-test-client-dev:latest
-          cache-from: type=gha,scope=test-client-dev
-          cache-to: type=gha,scope=test-client-dev,mode=max
-
-      - name: Run E2E tests (shard ${{ matrix.shard }}/4)
+      - name: Run E2E tests (shard ${{ matrix.shard }}/${{ matrix.total }})
+        if: matrix.total != 0
         env:
           BIFROST_SKIP_BUILD: "1"
           SHARD_ID: ${{ matrix.shard }}
+          SHARD_TOTAL: ${{ matrix.total }}
+          TEST_MODE: ${{ needs.affected-test-plan.outputs.api_e2e_mode }}
+          TEST_TARGETS: ${{ needs.affected-test-plan.outputs.api_e2e_targets }}
         run: |
           chmod +x test.sh
           ./test.sh stack up
-          mapfile -t shard_files < <(python3 scripts/e2e_shard.py --shard-id "$SHARD_ID" --total 4)
+          if [ "$TEST_MODE" = "comprehensive" ]; then
+            mapfile -t shard_files < <(python3 scripts/e2e_shard.py --shard-id "$SHARD_ID" --total "$SHARD_TOTAL")
+          else
+            mapfile -t shard_files <<< "$TEST_TARGETS"
+          fi
           if [ ${#shard_files[@]} -eq 0 ]; then
             echo "ERROR: shard $SHARD_ID resolved to zero files" >&2
             exit 1
           fi
-          echo "Shard $SHARD_ID/4: ${#shard_files[@]} files"
-          ./test.sh "${shard_files[@]}" -v --durations=50 \
-            --cov=. --cov-report=xml:/coverage/coverage-e2e-${{ matrix.shard }}.xml
-          ./test.sh coverage coverage-e2e-${{ matrix.shard }}.xml
+          echo "Shard $SHARD_ID/$SHARD_TOTAL: ${#shard_files[@]} files"
+          if [ "$TEST_MODE" = "comprehensive" ]; then
+            ./test.sh "${shard_files[@]}" -v --durations=50 \
+              --cov=. --cov-report=xml:/tmp/bifrost/coverage-e2e-${{ matrix.shard }}.xml
+            ./test.sh coverage coverage-e2e-${{ matrix.shard }}.xml
+          else
+            ./test.sh "${shard_files[@]}" -v --durations=50
+          fi
 
-      - name: Upload E2E coverage to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+      - name: Preserve E2E coverage evidence
+        if: needs.affected-test-plan.outputs.api_e2e_mode == 'comprehensive'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          files: ./coverage-e2e-${{ matrix.shard }}.xml
-          flags: api-e2e
           name: api-e2e-coverage-${{ matrix.shard }}
-          token: ${{ secrets.CODECOV_TOKEN }}
+          path: ./coverage-e2e-${{ matrix.shard }}.xml
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Report skipped API e2e lane
+        if: matrix.total == 0
+        run: echo "API e2e tests are outside the affected closure."
+
+  # =============================================================================
+  # Client E2E Tests - Playwright browser coverage in the Docker test stack.
+  # Source and specs are bind-mounted from the checkout; dependency-heavy
+  # API, client, and browser images are pulled from main or rebuilt with
+  # persistent BuildKit caches when their baked inputs change.
+  # =============================================================================
+  test-client-e2e:
+    needs: [affected-test-plan, publish-ci-test-images]
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main') && !inputs.queue_post_merge
+    runs-on: ubuntu-latest
+    name: Client E2E Tests
+    permissions:
+      contents: read
+      packages: read
+    env:
+      BIFROST_SKIP_BUILD: "1"
+      PLAYWRIGHT_RESULTS_MOUNT: ${{ github.workspace }}/client/playwright-results
+    steps:
+      - name: Require a valid affected test plan
+        if: needs.affected-test-plan.result != 'success'
+        run: |
+          echo "Affected test planning failed or was cancelled." >&2
+          exit 1
+
+      - name: Checkout repository
+        if: needs.affected-test-plan.outputs.client_e2e_mode != 'skip'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Detect test image input changes
+        if: needs.affected-test-plan.outputs.client_e2e_mode != 'skip'
+        id: test-image-inputs
+        run: bash scripts/ci/detect-test-image-inputs.sh
+
+      - name: Prepare CI test images
+        if: needs.affected-test-plan.outputs.client_e2e_mode != 'skip'
+        env:
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          API_IMAGE_CHANGED: ${{ steps.test-image-inputs.outputs.api_changed }}
+          CLIENT_IMAGE_CHANGED: ${{ steps.test-image-inputs.outputs.client_changed }}
+          PLAYWRIGHT_IMAGE_CHANGED: ${{ steps.test-image-inputs.outputs.playwright_changed }}
+        run: bash api/scripts/ci/prepare-test-images.sh api client client-e2e playwright
+
+      - name: Run Playwright tests
+        if: needs.affected-test-plan.outputs.client_e2e_mode != 'skip'
+        env:
+          TEST_MODE: ${{ needs.affected-test-plan.outputs.client_e2e_mode }}
+          TEST_TARGETS: ${{ needs.affected-test-plan.outputs.client_e2e_targets }}
+        run: |
+          mkdir -p client/playwright-results
+          chmod 777 client/playwright-results
+          chmod +x test.sh
+          ./test.sh stack up
+          if [ "$TEST_MODE" = "comprehensive" ]; then
+            ./test.sh client e2e
+          else
+            mapfile -t targets <<< "$TEST_TARGETS"
+            if (( ${#targets[@]} == 0 )); then
+              echo "Affected client e2e lane has no targets." >&2
+              exit 1
+            fi
+            ./test.sh client e2e "${targets[@]}"
+          fi
+
+      - name: Upload Playwright failure artifacts
+        if: failure() && needs.affected-test-plan.outputs.client_e2e_mode != 'skip'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-results
+          path: client/playwright-results
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Report skipped client e2e lane
+        if: needs.affected-test-plan.outputs.client_e2e_mode == 'skip'
+        run: echo "Client browser tests are outside the affected closure."
 
   # Aggregate gate — required check named "E2E Tests" (matches ruleset 15329014).
-  # Fails if any shard failed or was cancelled. Runs even when shards fail
+  # Fails if any backend shard or the Playwright job failed or was cancelled.
   # (if: always()) so branch protection always sees a conclusive result.
   test-e2e-gate:
-    if: always()
-    needs: [test-e2e]
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main') && !inputs.queue_post_merge
+    needs: [affected-test-plan, test-e2e, test-client-e2e, mcp-conformance]
     runs-on: ubuntu-latest
     name: E2E Tests
     steps:
       - name: Check shard results
         run: |
+          if [ "${{ needs.affected-test-plan.result }}" != "success" ]; then
+            echo "Affected test planning failed or was cancelled (result: ${{ needs.affected-test-plan.result }})"
+            exit 1
+          fi
           if [ "${{ needs.test-e2e.result }}" != "success" ]; then
             echo "One or more e2e shards failed or were cancelled (result: ${{ needs.test-e2e.result }})"
             exit 1
           fi
-          echo "All e2e shards passed."
+          if [ "${{ needs.test-client-e2e.result }}" != "success" ]; then
+            echo "Client e2e tests failed or were cancelled (result: ${{ needs.test-client-e2e.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.mcp-conformance.result }}" != "success" ]; then
+            echo "MCP conformance failed or was cancelled (result: ${{ needs.mcp-conformance.result }})"
+            exit 1
+          fi
+          echo "Every selected backend e2e, client Playwright, and MCP conformance lane passed or was explicitly outside the affected closure."
 
   # =============================================================================
-  # Dev Build - Every push to main, gated by unit tests only
+  # Dev publication - MTG promotes the exact PR-built digest after the queue
+  # proves tree equality. Upstream keeps its existing main-push build.
   # =============================================================================
   build-dev:
-    # Only fires on push: main — branch protection + merge queue
-    # already gated this commit, so no needs: here.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Only fires on push: main. The serialized queue already gated the exact
+    # candidate tree; this lane publishes artifacts without repeating tests.
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || inputs.queue_post_merge
     runs-on: ubuntu-latest
     name: Build Dev Images
     permissions:
+      artifact-metadata: write # actions/attest storage record for registry attestations
       contents: read
       packages: write
       id-token: write # OIDC for keyless cosign signing
@@ -402,16 +881,24 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - name: Compute version
+      - name: Compute candidate-compatible version
         id: version
         run: |
-          VERSION=$(./scripts/compute-dev-version.sh)
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "short_sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          if [ "$(git rev-parse HEAD)" != "$GITHUB_SHA" ]; then
+            echo "Publication checkout does not match the triggering commit." >&2
+            exit 1
+          fi
+          publication_parent="$(git rev-parse "${GITHUB_SHA}^1")"
+          version="$(./scripts/compute-dev-version.sh --next-after "$publication_parent")"
+          tree_sha="$(git rev-parse "${GITHUB_SHA}^{tree}")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "tree_sha=$tree_sha" >> "$GITHUB_OUTPUT"
 
       # Surface manifest drift to the job summary. Plugin manifests are updated
       # at tag time (see bifrost-release skill) — between tags the `version`
@@ -438,10 +925,10 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -450,7 +937,29 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
+      - name: Promote tested API candidate
+        if: github.repository == 'MTG-Thomas/bifrost'
+        id: promote-api
+        env:
+          IMAGE: ghcr.io/${{ env.API_IMAGE }}
+          SHORT_SHA: ${{ steps.version.outputs.short_sha }}
+          TREE_SHA: ${{ steps.version.outputs.tree_sha }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 api/scripts/ci/candidate_image.py promote \
+            --component api \
+            --image "$IMAGE" \
+            --tree-sha "$TREE_SHA" \
+            --version "$VERSION" \
+            --main-source-sha "$GITHUB_SHA" \
+            --tag "$VERSION" \
+            --tag dev \
+            --tag "sha-${SHORT_SHA}" \
+            --github-output "$GITHUB_OUTPUT"
+
       - name: Build and push API dev image
+        if: github.repository != 'MTG-Thomas/bifrost'
         id: build-api
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
@@ -464,24 +973,68 @@ jobs:
             ghcr.io/${{ env.API_IMAGE }}:sha-${{ steps.version.outputs.short_sha }}
           build-args: |
             BIFROST_VERSION=${{ steps.version.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            com.midtowntg.bifrost.source-tree=${{ steps.version.outputs.tree_sha }}
+          cache-from: type=gha,scope=dev-api
+          cache-to: type=gha,scope=dev-api,mode=max
 
       - name: Sign API dev image
         env:
           COSIGN_EXPERIMENTAL: "true"
+          IMAGE: ghcr.io/${{ env.API_IMAGE }}
+          IMAGE_DIGEST: ${{ steps.promote-api.outputs.digest || steps.build-api.outputs.digest }}
         run: |
-          cosign sign --yes \
-            ghcr.io/${{ env.API_IMAGE }}@${{ steps.build-api.outputs.digest }}
+          set -euo pipefail
+          if [ -z "$IMAGE_DIGEST" ]; then
+            echo "API image digest is required." >&2
+            exit 1
+          fi
+          cosign sign --yes "${IMAGE}@${IMAGE_DIGEST}"
 
       - name: Attest API dev image provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        if: github.repository != 'MTG-Thomas/bifrost'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/${{ env.API_IMAGE }}
           subject-digest: ${{ steps.build-api.outputs.digest }}
           push-to-registry: true
 
+      - name: Attest API protected-main promotion
+        if: github.repository == 'MTG-Thomas/bifrost'
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-name: ghcr.io/${{ env.API_IMAGE }}
+          subject-digest: ${{ steps.promote-api.outputs.digest }}
+          predicate-type: https://bifrost.midtowntg.com/attestations/image-promotion/v1
+          predicate-path: ${{ steps.promote-api.outputs.predicate_path }}
+          push-to-registry: true
+
+      - name: Promote tested worker candidate
+        if: github.repository == 'MTG-Thomas/bifrost'
+        id: promote-worker
+        env:
+          IMAGE: ghcr.io/${{ env.WORKER_IMAGE }}
+          SHORT_SHA: ${{ steps.version.outputs.short_sha }}
+          TREE_SHA: ${{ steps.version.outputs.tree_sha }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 api/scripts/ci/candidate_image.py promote \
+            --component worker \
+            --image "$IMAGE" \
+            --tree-sha "$TREE_SHA" \
+            --version "$VERSION" \
+            --main-source-sha "$GITHUB_SHA" \
+            --tag "$VERSION" \
+            --tag dev \
+            --tag "sha-${SHORT_SHA}" \
+            --github-output "$GITHUB_OUTPUT"
+
       - name: Build and push worker dev image
+        if: github.repository != 'MTG-Thomas/bifrost'
         id: build-worker
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
@@ -495,24 +1048,68 @@ jobs:
             ghcr.io/${{ env.WORKER_IMAGE }}:sha-${{ steps.version.outputs.short_sha }}
           build-args: |
             BIFROST_VERSION=${{ steps.version.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            com.midtowntg.bifrost.source-tree=${{ steps.version.outputs.tree_sha }}
+          cache-from: type=gha,scope=dev-worker
+          cache-to: type=gha,scope=dev-worker,mode=max
 
       - name: Sign worker dev image
         env:
           COSIGN_EXPERIMENTAL: "true"
+          IMAGE: ghcr.io/${{ env.WORKER_IMAGE }}
+          IMAGE_DIGEST: ${{ steps.promote-worker.outputs.digest || steps.build-worker.outputs.digest }}
         run: |
-          cosign sign --yes \
-            ghcr.io/${{ env.WORKER_IMAGE }}@${{ steps.build-worker.outputs.digest }}
+          set -euo pipefail
+          if [ -z "$IMAGE_DIGEST" ]; then
+            echo "Worker image digest is required." >&2
+            exit 1
+          fi
+          cosign sign --yes "${IMAGE}@${IMAGE_DIGEST}"
 
       - name: Attest worker dev image provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        if: github.repository != 'MTG-Thomas/bifrost'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/${{ env.WORKER_IMAGE }}
           subject-digest: ${{ steps.build-worker.outputs.digest }}
           push-to-registry: true
 
+      - name: Attest worker protected-main promotion
+        if: github.repository == 'MTG-Thomas/bifrost'
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-name: ghcr.io/${{ env.WORKER_IMAGE }}
+          subject-digest: ${{ steps.promote-worker.outputs.digest }}
+          predicate-type: https://bifrost.midtowntg.com/attestations/image-promotion/v1
+          predicate-path: ${{ steps.promote-worker.outputs.predicate_path }}
+          push-to-registry: true
+
+      - name: Promote tested client candidate
+        if: github.repository == 'MTG-Thomas/bifrost'
+        id: promote-client
+        env:
+          IMAGE: ghcr.io/${{ env.CLIENT_IMAGE }}
+          SHORT_SHA: ${{ steps.version.outputs.short_sha }}
+          TREE_SHA: ${{ steps.version.outputs.tree_sha }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 api/scripts/ci/candidate_image.py promote \
+            --component client \
+            --image "$IMAGE" \
+            --tree-sha "$TREE_SHA" \
+            --version "$VERSION" \
+            --main-source-sha "$GITHUB_SHA" \
+            --tag "$VERSION" \
+            --tag dev \
+            --tag "sha-${SHORT_SHA}" \
+            --github-output "$GITHUB_OUTPUT"
+
       - name: Build and push client dev image
+        if: github.repository != 'MTG-Thomas/bifrost'
         id: build-client
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
@@ -527,21 +1124,43 @@ jobs:
             ghcr.io/${{ env.CLIENT_IMAGE }}:sha-${{ steps.version.outputs.short_sha }}
           build-args: |
             VITE_BIFROST_VERSION=${{ steps.version.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            com.midtowntg.bifrost.source-tree=${{ steps.version.outputs.tree_sha }}
+          cache-from: type=gha,scope=dev-client
+          cache-to: type=gha,scope=dev-client,mode=max
 
       - name: Sign client dev image
         env:
           COSIGN_EXPERIMENTAL: "true"
+          IMAGE: ghcr.io/${{ env.CLIENT_IMAGE }}
+          IMAGE_DIGEST: ${{ steps.promote-client.outputs.digest || steps.build-client.outputs.digest }}
         run: |
-          cosign sign --yes \
-            ghcr.io/${{ env.CLIENT_IMAGE }}@${{ steps.build-client.outputs.digest }}
+          set -euo pipefail
+          if [ -z "$IMAGE_DIGEST" ]; then
+            echo "Client image digest is required." >&2
+            exit 1
+          fi
+          cosign sign --yes "${IMAGE}@${IMAGE_DIGEST}"
 
       - name: Attest client dev image provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        if: github.repository != 'MTG-Thomas/bifrost'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/${{ env.CLIENT_IMAGE }}
           subject-digest: ${{ steps.build-client.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest client protected-main promotion
+        if: github.repository == 'MTG-Thomas/bifrost'
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-name: ghcr.io/${{ env.CLIENT_IMAGE }}
+          subject-digest: ${{ steps.promote-client.outputs.digest }}
+          predicate-type: https://bifrost.midtowntg.com/attestations/image-promotion/v1
+          predicate-path: ${{ steps.promote-client.outputs.predicate_path }}
           push-to-registry: true
 
       # ---------------------------------------------------------------------------
@@ -588,7 +1207,7 @@ jobs:
   # confirm the deploy job will succeed when it fires for real.
   # =============================================================================
   deploy-dry-run:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.repository == 'gobifrost/bifrost' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     name: Deploy Dry Run
     permissions:
@@ -716,8 +1335,17 @@ jobs:
   # Release Manifest Check - Fail before any tag image is published
   # =============================================================================
   verify-release-manifest:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test-unit, test-e2e-gate, lint]
+    # `always()` is required because the tag test jobs have an intentionally
+    # skipped CI-image publication ancestor. Explicit result checks preserve
+    # the fail-closed release gate without inheriting that transitive skip.
+    if: >-
+      always() &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.test-unit.result == 'success' &&
+      needs.test-e2e-gate.result == 'success' &&
+      needs.lint.result == 'success' &&
+      needs.mcp-conformance.result == 'success'
+    needs: [test-unit, test-e2e-gate, lint, mcp-conformance]
     runs-on: ubuntu-latest
     name: Verify Release Manifest
     permissions:
@@ -725,7 +1353,9 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Compute version from tag
         id: version
@@ -766,7 +1396,10 @@ jobs:
   # Build API Image - Only on version tags, after tests pass
   # =============================================================================
   build-api:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      always() &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.verify-release-manifest.result == 'success'
     needs: [verify-release-manifest]
     runs-on: ubuntu-latest
     name: Build API Image
@@ -793,10 +1426,10 @@ jobs:
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -842,7 +1475,7 @@ jobs:
             ghcr.io/${{ env.API_IMAGE }}@${{ steps.build-api.outputs.digest }}
 
       - name: Attest API image provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/${{ env.API_IMAGE }}
           subject-digest: ${{ steps.build-api.outputs.digest }}
@@ -870,7 +1503,10 @@ jobs:
   # Build Client Image - Only on version tags, after tests pass
   # =============================================================================
   build-client:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      always() &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.verify-release-manifest.result == 'success'
     needs: [verify-release-manifest]
     runs-on: ubuntu-latest
     name: Build Client Image
@@ -882,7 +1518,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -897,10 +1533,10 @@ jobs:
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -947,7 +1583,7 @@ jobs:
             ghcr.io/${{ env.CLIENT_IMAGE }}@${{ steps.build-client.outputs.digest }}
 
       - name: Attest client image provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/${{ env.CLIENT_IMAGE }}
           subject-digest: ${{ steps.build-client.outputs.digest }}
@@ -975,7 +1611,10 @@ jobs:
   # Build Worker Image - Only on version tags, after tests pass
   # =============================================================================
   build-worker:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      always() &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.verify-release-manifest.result == 'success'
     needs: [verify-release-manifest]
     runs-on: ubuntu-latest
     name: Build Worker Image
@@ -1002,7 +1641,7 @@ jobs:
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
@@ -1051,7 +1690,7 @@ jobs:
             ghcr.io/${{ env.WORKER_IMAGE }}@${{ steps.build-worker.outputs.digest }}
 
       - name: Attest worker image provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/${{ env.WORKER_IMAGE }}
           subject-digest: ${{ steps.build-worker.outputs.digest }}
@@ -1064,7 +1703,12 @@ jobs:
   # action. Both feed Scorecard's Signed-Releases check.
   # =============================================================================
   create-release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      always() &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.build-api.result == 'success' &&
+      needs.build-client.result == 'success' &&
+      needs.build-worker.result == 'success'
     needs: [build-api, build-client, build-worker]
     runs-on: ubuntu-latest
     name: Create Release
@@ -1075,7 +1719,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Get version from tag
         id: get_version
@@ -1137,7 +1781,7 @@ jobs:
       # discoverable via `gh attestation verify`. Independent signal from the
       # cosign blob signatures above.
       - name: Generate SLSA build provenance attestation
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: ${{ steps.source_tarball.outputs.tarball }}
 
@@ -1156,6 +1800,24 @@ jobs:
           fail_on_unmatched_files: false
           body: |
             ## Bifrost ${{ steps.get_version.outputs.version }}
+
+            ### Highlights
+
+            - Immutable Solution deployments with compare-and-swap activation and runtime pinning.
+            - Standalone v2 applications, SDK streaming, and a more capable local development workflow.
+            - Security hardening across authentication, multi-tenancy boundaries, path containment, and dependency supply chains.
+            - Expanded diagnostics, OpenTelemetry coverage, and worker-capacity controls.
+
+            ### Upgrade notes
+
+            This is a major-version release candidate. The legacy `bifrost export` and
+            `bifrost import` commands have been removed; Solutions are their
+            lifecycle-aware replacement. CLI consumers must use a CLI build matching
+            the server contract version.
+
+            ### Contributors
+
+            Thomas Bray, Jack Musick, and Paul Szatkowski.
 
             ### Docker Images
 
@@ -1202,7 +1864,24 @@ jobs:
               --owner ${{ github.repository_owner }}
             ```
 
-          draft: false
+          # Immutable releases only accept asset uploads while they are drafts.
+          # Publish in the next step after every asset has been uploaded.
+          draft: true
           prerelease: ${{ steps.get_version.outputs.prerelease == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.get_version.outputs.version }}
+          PRERELEASE: ${{ steps.get_version.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          args=(--draft=false)
+          if [ "$PRERELEASE" = "true" ]; then
+            args+=(--prerelease)
+          else
+            args+=(--latest)
+          fi
+          gh release edit "$VERSION" "${args[@]}"

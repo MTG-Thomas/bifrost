@@ -1,5 +1,5 @@
 import { Home, LogOut, ShieldAlert } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { Card, CardContent } from "@/components/ui/card";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";

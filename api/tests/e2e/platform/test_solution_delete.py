@@ -12,6 +12,10 @@ from uuid import UUID
 import pytest
 from sqlalchemy import select
 
+from src.models.orm.mcp_catalog_revision import (
+    MCPCatalogRevision,
+    WORKFLOW_CATALOG_NAME,
+)
 from src.models.orm.solutions import Solution as SolutionORM
 from src.models.orm.tables import Table
 from src.models.orm.workflows import Workflow
@@ -57,6 +61,14 @@ async def test_delete_cascades_code_entities(e2e_client, platform_admin, db_sess
     dep = wait_for_deploy(e2e_client, dep, headers)
     assert dep.status_code == 200, dep.text
 
+    revision_before_delete = (
+        await db_session.execute(
+            select(MCPCatalogRevision.revision).where(
+                MCPCatalogRevision.catalog == WORKFLOW_CATALOG_NAME
+            )
+        )
+    ).scalar_one()
+
     r = e2e_client.request("DELETE", f"/api/solutions/{sid}", headers=headers,
                             params={"confirm": slug})
     assert r.status_code in (200, 204), r.text
@@ -64,6 +76,15 @@ async def test_delete_cascades_code_entities(e2e_client, platform_admin, db_sess
     assert body["solution_id"] == sid
     assert body["workflows_deleted"] >= 1
     assert body["config_declarations_deleted"] >= 1
+
+    revision_after_delete = (
+        await db_session.execute(
+            select(MCPCatalogRevision.revision).where(
+                MCPCatalogRevision.catalog == WORKFLOW_CATALOG_NAME
+            )
+        )
+    ).scalar_one()
+    assert revision_after_delete == revision_before_delete + 1
 
     # The install is gone.
     g = e2e_client.get(f"/api/solutions/{sid}", headers=headers)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -185,7 +186,9 @@ class TestAuthorizeFileSubscribe:
             {"type": "error", "channel": "bad", "message": "Invalid file channel"}
         ]
 
-    async def test_rejects_scope_failures(self) -> None:
+    async def test_rejects_scope_failures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        emit_denial = AsyncMock()
+        monkeypatch.setattr(ws_mod, "_emit_file_subscribe_denial", emit_denial)
         websocket = FakeWebSocket()
 
         result = await ws_mod._authorize_file_subscribe(
@@ -202,6 +205,7 @@ class TestAuthorizeFileSubscribe:
                 "message": "Access denied",
             }
         ]
+        emit_denial.assert_awaited_once()
 
     async def test_rejects_when_no_policy_applies(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def populate_roles(_: UserPrincipal) -> None:
@@ -212,6 +216,8 @@ class TestAuthorizeFileSubscribe:
 
         monkeypatch.setattr(ws_mod, "_populate_user_roles", populate_roles)
         monkeypatch.setattr(ws_mod, "_file_has_applicable_policy", no_policy)
+        emit_denial = AsyncMock()
+        monkeypatch.setattr(ws_mod, "_emit_file_subscribe_denial", emit_denial)
         websocket = FakeWebSocket()
 
         result = await ws_mod._authorize_file_subscribe(
@@ -222,6 +228,7 @@ class TestAuthorizeFileSubscribe:
 
         assert result is None
         assert websocket.sent[-1]["message"] == "Access denied"
+        emit_denial.assert_awaited_once()
 
     async def test_registers_subscription_and_dispatcher(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def populate_roles(_: UserPrincipal) -> None:
@@ -389,8 +396,12 @@ class TestHandleTableMessage:
             assert resolved_id == table_id
             return None
 
+        async def populate_roles(user: UserPrincipal) -> None:
+            user.role_names = set()
+
         monkeypatch.setattr(ws_mod, "_resolve_table_id", resolve_table)
         monkeypatch.setattr(ws_mod, "_load_policies_for_table", missing_policies)
+        monkeypatch.setattr(ws_mod, "_populate_user_roles", populate_roles)
         websocket = FakeWebSocket()
 
         result = await ws_mod._authorize_table_subscribe(
@@ -422,6 +433,8 @@ class TestHandleTableMessage:
         monkeypatch.setattr(ws_mod, "_load_policies_for_table", load_policies)
         monkeypatch.setattr(ws_mod, "_populate_user_roles", populate_roles)
         monkeypatch.setattr(ws_mod, "is_subscribe_authorized", lambda *_: False)
+        emit_denial = AsyncMock()
+        monkeypatch.setattr(ws_mod, "_emit_table_subscribe_denial", emit_denial)
         websocket = FakeWebSocket()
 
         result = await ws_mod._authorize_table_subscribe(
@@ -434,6 +447,7 @@ class TestHandleTableMessage:
         assert websocket.sent == [
             {"type": "error", "channel": "table:docs", "message": "Access denied"}
         ]
+        emit_denial.assert_awaited_once()
 
     async def test_authorize_table_subscribe_registers_canonical_channel(
         self, monkeypatch: pytest.MonkeyPatch

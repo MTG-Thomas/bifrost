@@ -1,4 +1,4 @@
-import { useParams, useNavigate, useLocation } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router";
 import { motion } from "framer-motion";
 import {
 	ArrowLeft,

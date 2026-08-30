@@ -20,6 +20,7 @@ def _summary_row() -> SimpleNamespace:
         result_type="json",
         error_message=None,
         duration_ms=118,
+        created_at=datetime.now(timezone.utc),
         started_at=datetime.now(timezone.utc),
         completed_at=datetime.now(timezone.utc),
         scheduled_at=None,

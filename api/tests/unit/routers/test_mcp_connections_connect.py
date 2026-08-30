@@ -71,6 +71,14 @@ async def _make_server(
         id=uuid4(),
         name=f"mcp-srv-{uuid4().hex[:8]}",
         server_url="https://vendor.example.com/mcp",
+        discovery_metadata={
+            "authorization_server_metadata": {
+                "issuer": "https://vendor.example.com"
+            },
+            "protected_resource_metadata": {
+                "resource": "https://vendor.example.com/mcp"
+            },
+        },
         oauth_provider_id=provider.id if provider else None,
         is_active=True,
     )
@@ -162,6 +170,7 @@ async def test_activate_client_credentials_happy_path(db_session: AsyncSession):
     assert captured_payload["client_secret"] == "my-org-secret"
     assert captured_payload["scope"] == "read write"
     assert captured_payload["audience"] == "https://vendor.example.com/api"
+    assert captured_payload["resource"] == "https://vendor.example.com/mcp"
     assert captured_payload["__token_url"] == "https://vendor.example.com/oauth/token"
 
     # Token row was persisted and linked
@@ -178,6 +187,8 @@ async def test_activate_client_credentials_happy_path(db_session: AsyncSession):
     assert token_row.organization_id == org.id
     assert token_row.user_id is None
     assert token_row.scopes == ["read", "write"]
+    assert token_row.oauth_issuer == "https://vendor.example.com"
+    assert token_row.oauth_resource == "https://vendor.example.com/mcp"
 
     # Connection FK updated
     assert connection.service_oauth_token_id == token_row.id

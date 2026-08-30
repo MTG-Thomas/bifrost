@@ -6,12 +6,16 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderWithProviders, screen, waitFor } from "@/test-utils";
+import { SolutionDetail } from "./SolutionDetail";
+
+const APP_LOGO_DATA_URL =
+	"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=";
 
 const mockNavigate = vi.fn();
-vi.mock("react-router-dom", async () => {
+vi.mock("react-router", async () => {
 	const actual =
-		await vi.importActual<typeof import("react-router-dom")>(
-			"react-router-dom",
+		await vi.importActual<typeof import("react-router")>(
+			"react-router",
 		);
 	return {
 		...actual,
@@ -44,6 +48,12 @@ vi.mock("@/components/files/FilesExplorer", () => ({
 			</div>
 		);
 	},
+}));
+
+vi.mock("@/components/forms/FormShareDialog", () => ({
+	FormShareDialog: ({ formName }: { formName: string }) => (
+		<div role="dialog">Share {formName}</div>
+	),
 }));
 
 const mockGetSolutionEntities = vi.fn();
@@ -125,7 +135,7 @@ function makeEntities(statusOverride = "active") {
 					app_model: "standalone_v2",
 					is_published: true,
 					has_unpublished_changes: false,
-					logo: "data:image/svg+xml;base64,PHN2Zy8+",
+					logo_url: APP_LOGO_DATA_URL,
 				},
 			],
 			forms: [
@@ -172,7 +182,6 @@ function makeEntities(statusOverride = "active") {
 }
 
 async function renderPage() {
-	const { SolutionDetail } = await import("./SolutionDetail");
 	return renderWithProviders(<SolutionDetail />);
 }
 
@@ -551,6 +560,31 @@ describe("SolutionDetail", () => {
 			);
 		});
 
+		it("opens sharing for a solution-managed form without exposing edit controls", async () => {
+			const { user } = await renderPage();
+			await screen.findByTestId("solution-detail");
+
+			await user.click(screen.getByTestId("tab-contents"));
+			await user.click(screen.getByTestId("chip-forms"));
+			await user.click(
+				screen.getByRole("button", { name: "Ticket Intake actions" }),
+			);
+
+			expect(
+				screen.getByRole("menuitem", { name: "Share Form" }),
+			).toBeInTheDocument();
+			expect(
+				screen.queryByRole("menuitem", { name: "Edit Form" }),
+			).not.toBeInTheDocument();
+
+			await user.click(
+				screen.getByRole("menuitem", { name: "Share Form" }),
+			);
+			expect(screen.getByRole("dialog")).toHaveTextContent(
+				"Share Ticket Intake",
+			);
+		});
+
 		it("uses the applications list open behavior for solution apps", async () => {
 			const { user } = await renderPage();
 			await screen.findByTestId("solution-detail");
@@ -560,7 +594,7 @@ describe("SolutionDetail", () => {
 			expect(screen.queryByText(/open published/i)).not.toBeInTheDocument();
 			expect(screen.getByTestId("entity-logo")).toHaveAttribute(
 				"src",
-				"data:image/svg+xml;base64,PHN2Zy8+",
+				APP_LOGO_DATA_URL,
 			);
 			await user.click(screen.getByRole("button", { name: /solution app/i }));
 

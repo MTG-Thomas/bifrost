@@ -1,7 +1,7 @@
 """Tests for ``bifrost.cli._check_cli_version`` — URL resolution and transport.
 
-The *behavioral* contract of the gate (contract-version hard gate, build-drift
-soft notice, old-server fallback, un-reachable warning) lives in
+The *behavioral* contract of the gate (server-minimum hard gate, build-drift
+soft notice, old-server behavior, un-reachable warning) lives in
 ``test_cli_contract_gate.py``. This file keeps the still-valid cross-cutting
 concerns the gate must honor regardless of which gate fires:
 
@@ -262,6 +262,9 @@ class TestUrlResolution:
         # Make sure the env var isn't already set in the test process so we
         # know the value got there via dotenv, not inheritance.
         monkeypatch.delenv("BIFROST_API_URL", raising=False)
+        monkeypatch.delenv("BIFROST_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("BIFROST_REFRESH_TOKEN", raising=False)
+        monkeypatch.delenv("HTTPS_PROXY", raising=False)
         monkeypatch.setenv("BIFROST_LOAD_CWD_ENV", "1")
 
         _patch_version(monkeypatch, "1.2.3")

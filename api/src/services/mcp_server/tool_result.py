@@ -14,6 +14,18 @@ import json
 from typing import Any
 
 from fastmcp.tools import ToolResult
+from mcp_types import CallToolResult
+
+
+def direct_result(data: Any) -> ToolResult:
+    """Return a tool payload without adding display or metadata envelopes.
+
+    MCP ``structuredContent`` only accepts JSON objects, so using it would
+    either duplicate object payloads or require wrapping arrays and scalars.
+    Direct execution results instead use the required content channel for
+    every JSON value, preserving the selected tool's exact return shape.
+    """
+    return ToolResult(content="null" if data is None else data)
 
 
 def success_result(display_text: str, data: dict[str, Any] | None = None) -> ToolResult:
@@ -35,6 +47,22 @@ def success_result(display_text: str, data: dict[str, Any] | None = None) -> Too
         content=content,
         structured_content=data,
     )
+
+
+def tool_result_wire_payload(result: ToolResult) -> dict[str, Any]:
+    """Serialize exactly as FastMCP normalizes a tools/call result."""
+    normalized = result.to_mcp_result()
+    if isinstance(normalized, CallToolResult):
+        call_result = normalized
+    elif isinstance(normalized, tuple):
+        content, structured = normalized
+        call_result = CallToolResult(
+            content=content,
+            structured_content=structured,
+        )
+    else:
+        call_result = CallToolResult(content=normalized)
+    return call_result.model_dump(by_alias=True, mode="json", exclude_none=True)
 
 
 def error_result(error_message: str, extra_data: dict[str, Any] | None = None) -> ToolResult:

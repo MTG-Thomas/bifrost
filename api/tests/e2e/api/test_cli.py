@@ -583,9 +583,25 @@ class TestCLIConfigOperations:
 # Download Tests
 # =============================================================================
 
+CLI_DOWNLOAD_URL = "/api/cli/download/bifrost-cli.tar.gz"
+
 
 class TestCLIDownload:
     """Test SDK download endpoint."""
+
+    def test_legacy_download_redirects_to_suffix_bearing_url(self, e2e_client):
+        response = e2e_client.get("/api/cli/download", follow_redirects=False)
+
+        assert response.status_code == 307
+        assert response.headers["location"] == CLI_DOWNLOAD_URL
+
+    def test_download_alias_redirects_to_versioned_artifact(self, e2e_client):
+        response = e2e_client.get(CLI_DOWNLOAD_URL, follow_redirects=False)
+
+        assert response.status_code == 307
+        location = response.headers["location"]
+        assert location.startswith("/api/cli/artifacts/bifrost-cli-")
+        assert location.endswith(".tar.gz")
 
     def test_download_sdk(
         self,
@@ -594,11 +610,15 @@ class TestCLIDownload:
     ):
         """Test downloading the SDK package."""
         response = e2e_client.get(
-            "/api/cli/download",
+            CLI_DOWNLOAD_URL,
             headers=platform_admin.headers,
+            follow_redirects=True,
         )
         assert response.status_code == 200
         assert response.headers.get("content-type") == "application/gzip"
+        assert response.url.path.startswith("/api/cli/artifacts/bifrost-cli-")
+        assert response.url.path.endswith(".tar.gz")
+        assert ".tar.gz" in response.headers["content-disposition"]
 
     def test_download_sdk_includes_new_files(
         self,
@@ -610,8 +630,9 @@ class TestCLIDownload:
         import io
 
         response = e2e_client.get(
-            "/api/cli/download",
+            CLI_DOWNLOAD_URL,
             headers=platform_admin.headers,
+            follow_redirects=True,
         )
         assert response.status_code == 200
 
@@ -628,6 +649,7 @@ class TestCLIDownload:
         assert "bifrost/workflows.py" in names
         assert "bifrost/executions.py" in names
         assert "bifrost/integrations.py" in names
+        assert "_bifrost_workspace_effects.py" in names
         # Runtime DATA files (not just .py) must ship too. The lucide snapshot is
         # what `bifrost migrate-imports` reads to classify icons; without it the
         # installed CLI silently can't migrate v1 icon imports to lucide-react.
@@ -643,8 +665,9 @@ class TestCLIDownload:
         import io
 
         response = e2e_client.get(
-            "/api/cli/download",
+            CLI_DOWNLOAD_URL,
             headers=platform_admin.headers,
+            follow_redirects=True,
         )
         assert response.status_code == 200
 
@@ -669,8 +692,9 @@ class TestCLIDownload:
         import io
 
         response = e2e_client.get(
-            "/api/cli/download",
+            CLI_DOWNLOAD_URL,
             headers=platform_admin.headers,
+            follow_redirects=True,
         )
         assert response.status_code == 200
 
@@ -692,8 +716,9 @@ class TestCLIDownload:
         import io
 
         response = e2e_client.get(
-            "/api/cli/download",
+            CLI_DOWNLOAD_URL,
             headers=platform_admin.headers,
+            follow_redirects=True,
         )
         assert response.status_code == 200
 
@@ -710,13 +735,15 @@ class TestCLIDownload:
         e2e_client,
         platform_admin,
     ):
-        """Test that pyproject.toml defines bifrost CLI entry point."""
+        """Test that pyproject.toml defines the CLI and all wheel modules."""
         import tarfile
         import io
+        import tomllib
 
         response = e2e_client.get(
-            "/api/cli/download",
+            CLI_DOWNLOAD_URL,
             headers=platform_admin.headers,
+            follow_redirects=True,
         )
         assert response.status_code == 200
 
@@ -726,9 +753,11 @@ class TestCLIDownload:
             assert pyproject is not None
             content = pyproject.read().decode()
 
-        # Check for CLI entry point
-        assert "[project.scripts]" in content
-        assert "bifrost" in content
+        package_config = tomllib.loads(content)
+        assert package_config["project"]["scripts"]["bifrost"] == "bifrost.cli:main"
+        assert package_config["tool"]["setuptools"]["py-modules"] == [
+            "_bifrost_workspace_effects"
+        ]
 
     def test_download_sdk_can_be_imported(
         self,
@@ -744,8 +773,9 @@ class TestCLIDownload:
 
         # Download the SDK
         response = e2e_client.get(
-            "/api/cli/download",
+            CLI_DOWNLOAD_URL,
             headers=platform_admin.headers,
+            follow_redirects=True,
         )
         assert response.status_code == 200
 
@@ -811,8 +841,9 @@ print('SUCCESS')
 
         # Download the SDK
         response = e2e_client.get(
-            "/api/cli/download",
+            CLI_DOWNLOAD_URL,
             headers=platform_admin.headers,
+            follow_redirects=True,
         )
         assert response.status_code == 200
 

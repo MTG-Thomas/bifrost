@@ -22,19 +22,35 @@ Execution Model:
 """
 
 import asyncio
+from dataclasses import replace
 import logging
+import os
+import socket
+import time
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
+from redis.exceptions import RedisError
+from sqlalchemy import text
+
+from src.core.database import get_db_context
 from src.core.pubsub import publish_execution_update, publish_history_update
 from src.core.redis_client import get_redis_client
+from src.jobs.execution_policy import broker_execution_policies
 from src.jobs.rabbitmq import (
     BaseConsumer,
+    DeliveryContext,
     DomainFailureHandled,
     DuplicateMessage,
     MalformedMessage,
     RetryableConsumerError,
+)
+from src.models.enums import ExecutionStatus
+from src.repositories.executions import create_execution, update_execution
+from src.services.execution_attempts import (
+    start_execution_attempt,
+    transition_execution_attempt,
 )
 from src.services.execution.process_pool import ProcessPoolAdmissionRejected
 
@@ -42,6 +58,11 @@ logger = logging.getLogger(__name__)
 
 # Queue name
 QUEUE_NAME = "workflow-executions"
+
+# Sync callers are already awake when derived terminal work begins. A short
+# grace lets sibling authoritative result commits finish before shared daily
+# and ROI aggregate rows are updated.
+_SYNC_DERIVED_WORK_GRACE_SECONDS = 0.025
 
 
 def workflow_prefetch_count(settings: Any) -> int:
@@ -65,14 +86,19 @@ class WorkflowExecutionConsumer(BaseConsumer):
     Full execution context is read from Redis pending execution.
     """
 
-    def __init__(self):
+    def __init__(self, *, queue_name: str = QUEUE_NAME):
         from src.config import get_settings
         from src.services.execution.process_pool import get_process_pool
 
         settings = get_settings()
+        policy = broker_execution_policies()[QUEUE_NAME]
+        if queue_name != QUEUE_NAME:
+            policy = replace(policy, identifier=queue_name)
+        self._workflow_operations_policy = policy
         super().__init__(
-            queue_name=QUEUE_NAME,
+            queue_name=queue_name,
             prefetch_count=workflow_prefetch_count(settings),
+            operations_policy=policy,
         )
         self._redis_client = get_redis_client()
 
@@ -129,6 +155,69 @@ class WorkflowExecutionConsumer(BaseConsumer):
             logger.error(f"Failed to process result for {execution_id}: {e}")
             raise
 
+    async def _record_completion_metrics(
+        self,
+        *,
+        workflow_id: str | None,
+        org_id: str | None,
+        status: str,
+        duration_ms: int,
+        peak_memory_bytes: int | None = None,
+        cpu_total_seconds: float | None = None,
+        time_saved: int = 0,
+        value: float = 0.0,
+        include_workflow_roi: bool = False,
+    ) -> None:
+        """Persist derived aggregates outside the authoritative result commit.
+
+        Daily and workflow aggregates intentionally share rows across many
+        executions. PostgreSQL serializes their atomic increments, so keeping
+        them in the authoritative completion transaction makes concurrent sync
+        callers wait behind unrelated aggregate bookkeeping. The execution
+        record, buffered SDK writes, and captured logs are committed before
+        this method is called.
+
+        Aggregate failures have never been allowed to fail an execution. Keep
+        that contract here while ensuring the short-lived metrics transaction
+        is independently committed or rolled back.
+        """
+        from src.core.database import get_session_factory
+        from src.core.metrics import update_daily_metrics, update_workflow_roi_daily
+
+        try:
+            session_factory = get_session_factory()
+            async with session_factory() as session:
+                await update_daily_metrics(
+                    org_id=org_id,
+                    status=status,
+                    duration_ms=duration_ms,
+                    peak_memory_bytes=peak_memory_bytes,
+                    cpu_total_seconds=cpu_total_seconds,
+                    time_saved=time_saved,
+                    value=value,
+                    workflow_id=workflow_id,
+                    db=session,
+                )
+
+                if include_workflow_roi and workflow_id:
+                    await update_workflow_roi_daily(
+                        workflow_id=workflow_id,
+                        org_id=org_id,
+                        status=status,
+                        time_saved=time_saved,
+                        value=value,
+                        db=session,
+                    )
+
+                await session.commit()
+        except Exception as e:
+            logger.warning(
+                "Failed to update derived metrics for %s: %s",
+                workflow_id or "inline execution",
+                e,
+                exc_info=True,
+            )
+
     async def _process_success(
         self,
         execution_id: str,
@@ -141,10 +230,8 @@ class WorkflowExecutionConsumer(BaseConsumer):
         DB sessions are short-lived — Redis and pub/sub happen outside sessions.
         """
         from src.core.database import get_session_factory
-        from src.core.metrics import update_daily_metrics, update_workflow_roi_daily
-        from src.models.enums import ExecutionStatus
-        from src.repositories.executions import update_execution
 
+        completion_started = time.perf_counter()
         workflow_result = result.get("result")
         duration_ms = result.get("duration_ms", 0)
 
@@ -153,6 +240,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
         if not pending:
             logger.warning(f"No pending record found for result: {execution_id}")
             return
+        pending_read_ms = (time.perf_counter() - completion_started) * 1000
 
         workflow_id = pending.get("workflow_id")
         workflow_name = pending.get("workflow_name", "unknown")
@@ -176,7 +264,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
         # (flush functions do Redis reads internally but DB writes share the session)
         session_factory = get_session_factory()
         async with session_factory() as session:
-            await update_execution(
+            status = await update_execution(
                 execution_id=execution_id,
                 status=status,
                 result=workflow_result,
@@ -190,12 +278,32 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 value=roi_value,
                 session=session,
             )
+            if execution_attempt_id := pending.get("execution_attempt_id"):
+                await transition_execution_attempt(
+                    session,
+                    attempt_id=UUID(execution_attempt_id),
+                    status=(
+                        "cancelled"
+                        if status == ExecutionStatus.CANCELLED
+                        else "succeeded"
+                    ),
+                )
+            execution_update_ms = (time.perf_counter() - completion_started) * 1000
+            if status == ExecutionStatus.CANCELLED:
+                workflow_result = None
+                roi_time_saved = 0
+                roi_value = 0.0
 
-            try:
-                from src.services.events.processor import update_delivery_from_execution
-                await update_delivery_from_execution(execution_id, status.value, session=session)
-            except Exception as e:
-                logger.warning(f"Failed to update event delivery for {execution_id[:8]}...: {e}")
+            if pending.get("event") is not None:
+                try:
+                    from src.services.events.processor import update_delivery_from_execution
+                    await update_delivery_from_execution(
+                        execution_id, status.value, session=session
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to update event delivery for {execution_id[:8]}...: {e}"
+                    )
 
             # Flush pending changes and logs (Redis read + DB write in same session)
             try:
@@ -205,39 +313,26 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     logger.info(f"Flushed {changes_count} pending changes for {execution_id[:8]}...")
             except Exception as e:
                 logger.warning(f"Failed to flush pending changes for {execution_id[:8]}...: {e}")
+            changes_flushed_ms = (time.perf_counter() - completion_started) * 1000
 
-            try:
-                from bifrost._logging import flush_logs_to_postgres
-                logs_count = await flush_logs_to_postgres(execution_id, session=session)
-                if logs_count > 0:
-                    logger.debug(f"Flushed {logs_count} logs for {execution_id[:8]}...")
-            except Exception as e:
-                logger.warning(f"Failed to flush logs for {execution_id[:8]}...: {e}")
-
-            metrics_data = result.get("metrics") or {}
-            await update_daily_metrics(
-                org_id=org_id,
-                status=status.value,
-                duration_ms=duration_ms,
-                peak_memory_bytes=metrics_data.get("peak_memory_bytes"),
-                cpu_total_seconds=metrics_data.get("cpu_total_seconds"),
-                time_saved=roi_time_saved,
-                value=roi_value,
-                workflow_id=workflow_id,
-                db=session,
-            )
-
-            if workflow_id:
-                await update_workflow_roi_daily(
-                    workflow_id=workflow_id,
-                    org_id=org_id,
-                    status=status.value,
-                    time_saved=roi_time_saved,
-                    value=roi_value,
-                    db=session,
-                )
+            if result.get("logs"):
+                try:
+                    from bifrost._logging import flush_logs_to_postgres
+                    logs_count = await flush_logs_to_postgres(
+                        execution_id, session=session
+                    )
+                    if logs_count > 0:
+                        logger.debug(
+                            f"Flushed {logs_count} logs for {execution_id[:8]}..."
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to flush logs for {execution_id[:8]}...: {e}"
+                    )
+            logs_flushed_ms = (time.perf_counter() - completion_started) * 1000
 
             await session.commit()
+        durable_ms = (time.perf_counter() - completion_started) * 1000
 
         # Wake sync callers as soon as their result and buffered SDK writes are
         # durably committed.  Everything below is terminal-event fan-out or
@@ -251,6 +346,24 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 error_type=result.get("error_type"),
                 duration_ms=duration_ms,
             )
+        result_ready_ms = (time.perf_counter() - completion_started) * 1000
+
+        if is_sync:
+            await asyncio.sleep(_SYNC_DERIVED_WORK_GRACE_SECONDS)
+
+        metrics_data = result.get("metrics") or {}
+        await self._record_completion_metrics(
+            workflow_id=workflow_id,
+            org_id=org_id,
+            status=status.value,
+            duration_ms=duration_ms,
+            peak_memory_bytes=metrics_data.get("peak_memory_bytes"),
+            cpu_total_seconds=metrics_data.get("cpu_total_seconds"),
+            time_saved=roi_time_saved,
+            value=roi_value,
+            include_workflow_roi=True,
+        )
+        metrics_done_ms = (time.perf_counter() - completion_started) * 1000
 
         # Pub/sub — no DB connection held.  The result is already persisted and
         # execution clients fetch it from the result endpoint, so publishing it
@@ -283,6 +396,21 @@ class WorkflowExecutionConsumer(BaseConsumer):
 
         await self._redis_client.delete_pending_execution(execution_id)
 
+        logger.debug(
+            "Completion timing %s: pending=%.1fms execution_update=%.1fms "
+            "changes=%.1fms logs=%.1fms durable=%.1fms result_ready=%.1fms "
+            "metrics=%.1fms total=%.1fms",
+            execution_id[:8],
+            pending_read_ms,
+            execution_update_ms,
+            changes_flushed_ms,
+            logs_flushed_ms,
+            durable_ms,
+            result_ready_ms,
+            metrics_done_ms,
+            (time.perf_counter() - completion_started) * 1000,
+        )
+
         logger.info(
             f"Execution result processed: {execution_id[:8]}... status={status.value}",
             extra={
@@ -306,9 +434,6 @@ class WorkflowExecutionConsumer(BaseConsumer):
         DB sessions are short-lived — Redis and pub/sub happen outside sessions.
         """
         from src.core.database import get_session_factory
-        from src.core.metrics import update_daily_metrics
-        from src.models.enums import ExecutionStatus
-        from src.repositories.executions import update_execution
 
         error = result.get("error", "Unknown error")
         error_type = result.get("error_type", "ExecutionError")
@@ -338,7 +463,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
         # DB operations + flush — single short-lived session
         session_factory = get_session_factory()
         async with session_factory() as session:
-            await update_execution(
+            status = await update_execution(
                 execution_id=execution_id,
                 status=status,
                 error_message=error,
@@ -346,14 +471,32 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 duration_ms=duration_ms,
                 session=session,
             )
-
-            try:
-                from src.services.events.processor import update_delivery_from_execution
-                await update_delivery_from_execution(
-                    execution_id, status.value, error_message=error, session=session
+            if execution_attempt_id := pending.get("execution_attempt_id"):
+                await transition_execution_attempt(
+                    session,
+                    attempt_id=UUID(execution_attempt_id),
+                    status=(
+                        "cancelled"
+                        if status == ExecutionStatus.CANCELLED
+                        else "failed"
+                    ),
+                    failure_code=error_type,
+                    failure_message=error,
                 )
-            except Exception as e:
-                logger.warning(f"Failed to update event delivery for {execution_id[:8]}...: {e}")
+
+            if pending.get("event") is not None:
+                try:
+                    from src.services.events.processor import update_delivery_from_execution
+                    await update_delivery_from_execution(
+                        execution_id,
+                        status.value,
+                        error_message=error,
+                        session=session,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to update event delivery for {execution_id[:8]}...: {e}"
+                    )
 
             try:
                 from bifrost._sync import flush_pending_changes
@@ -363,26 +506,26 @@ class WorkflowExecutionConsumer(BaseConsumer):
             except Exception as e:
                 logger.warning(f"Failed to flush pending changes for {execution_id[:8]}...: {e}")
 
-            try:
-                from bifrost._logging import flush_logs_to_postgres
-                logs_count = await flush_logs_to_postgres(execution_id, session=session)
-                if logs_count > 0:
-                    logger.debug(f"Flushed {logs_count} logs for failed {execution_id[:8]}...")
-            except Exception as e:
-                logger.warning(f"Failed to flush logs for {execution_id[:8]}...: {e}")
-
-            await update_daily_metrics(
-                org_id=org_id,
-                status=status.value,
-                duration_ms=duration_ms,
-                workflow_id=workflow_id,
-                db=session,
-            )
+            if result.get("logs"):
+                try:
+                    from bifrost._logging import flush_logs_to_postgres
+                    logs_count = await flush_logs_to_postgres(
+                        execution_id, session=session
+                    )
+                    if logs_count > 0:
+                        logger.debug(
+                            f"Flushed {logs_count} logs for failed {execution_id[:8]}..."
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to flush logs for {execution_id[:8]}...: {e}"
+                    )
 
             await session.commit()
 
-        # Match the success path: once the failure is durable, wake sync
-        # callers before terminal-event fan-out and cleanup add latency.
+        # A sync failure is just as latency-sensitive as a success. Wake the
+        # caller once the authoritative failure is durable; aggregates and
+        # terminal fan-out are derived follow-up work.
         if is_sync:
             await self._redis_client.push_result(
                 execution_id=execution_id,
@@ -391,6 +534,15 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 error_type=error_type,
                 duration_ms=duration_ms,
             )
+
+            await asyncio.sleep(_SYNC_DERIVED_WORK_GRACE_SECONDS)
+
+        await self._record_completion_metrics(
+            workflow_id=workflow_id,
+            org_id=org_id,
+            status=status.value,
+            duration_ms=duration_ms,
+        )
 
         # Pub/sub — no DB connection held
         await publish_execution_update(
@@ -450,28 +602,35 @@ class WorkflowExecutionConsumer(BaseConsumer):
 
     async def process_message(self, message_data: dict[str, Any]) -> None:
         """Process a workflow execution message."""
-        from src.core.database import get_db_context
         from src.services.execution.queue_tracker import remove_from_queue
 
+        dispatch_started = time.perf_counter()
         execution_id = message_data.get("execution_id", "")
         workflow_id = message_data.get("workflow_id")
         code_base64 = message_data.get("code")
         script_name = message_data.get("script_name")
         is_sync = message_data.get("sync", False)
+        execution_record_exists = bool(
+            message_data.get("execution_record_exists", False)
+        )
         file_path: str | None = None  # Will be set from workflow metadata lookup
         start_time = datetime.now(timezone.utc)
 
         if not execution_id:
             raise MalformedMessage("workflow execution message missing execution_id")
 
-        # Remove from queue tracking (execution is now being processed)
-        await remove_from_queue(execution_id)
-
-        # Read execution context from Redis
-        pending = await self._redis_client.get_pending_execution(execution_id)
+        try:
+            # Remove from queue tracking (execution is now being processed),
+            # then load the context required before workflow code can run.
+            await remove_from_queue(execution_id)
+            pending = await self._redis_client.get_pending_execution(execution_id)
+        except RedisError as exc:
+            raise RetryableConsumerError(
+                f"Redis pending execution state is unavailable: {exc}"
+            ) from exc
 
         if pending is None:
-            existing_status = await self._get_existing_execution_status(execution_id)
+            existing_status = await self._fail_missing_pending_execution(execution_id)
             if existing_status is not None:
                 logger.info(
                     f"No pending execution found in Redis for {execution_id}, "
@@ -486,6 +645,33 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 f"pending execution not found in Redis: {execution_id}"
             )
 
+        attempt_id = await self._claim_durable_execution(
+            execution_id,
+            organization_id=(UUID(pending["org_id"]) if pending.get("org_id") else None),
+            message_id=message_data.get("message_id"),
+        )
+        if attempt_id is None:
+            raise DuplicateMessage(
+                f"workflow execution {execution_id} is not claimable"
+            )
+        pending["execution_attempt_id"] = str(attempt_id)
+        try:
+            updated = await self._redis_client.update_pending_execution(
+                execution_id=execution_id,
+                updates={"execution_attempt_id": str(attempt_id)},
+            )
+        except RedisError as exc:
+            await self._release_durable_execution_claim(execution_id, attempt_id)
+            raise RetryableConsumerError(
+                f"failed to persist durable execution claim in Redis: {exc}"
+            ) from exc
+        if not updated:
+            await self._release_durable_execution_claim(execution_id, attempt_id)
+            raise RetryableConsumerError(
+                f"failed to persist durable execution claim in Redis: {execution_id}"
+            )
+        pending_ready_ms = (time.perf_counter() - dispatch_started) * 1000
+
         # Extract context from Redis pending record
         parameters = pending["parameters"]
         org_id = pending["org_id"]
@@ -495,10 +681,14 @@ class WorkflowExecutionConsumer(BaseConsumer):
         form_id = pending.get("form_id")
         api_key_id = pending.get("api_key_id")  # Workflow ID whose API key triggered this
         startup = pending.get("startup")  # Launch workflow results
+        form_inputs = pending.get("form_inputs", {})
+        embed = pending.get("embed", {})
         event_data = pending.get("event")  # EventContext dict if event-triggered
+        artifact_workspace_id = pending.get("artifact_workspace_id")
 
         # Determine if this is a code or workflow execution
         is_script = bool(code_base64)
+        workflow_name = script_name or "inline_script"
 
         try:
             logger.info(
@@ -510,12 +700,6 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     "org_id": org_id,
                     "execution_model": "process",
                 },
-            )
-
-            from src.models.enums import ExecutionStatus
-            from src.repositories.executions import (
-                create_execution,
-                update_execution,
             )
 
             # Check if execution was cancelled in Redis before we started
@@ -533,6 +717,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     status=ExecutionStatus.CANCELLED,
                     execution_model="process",
                     workflow_id=workflow_id,
+                    check_existing=execution_record_exists,
                 )
                 await update_execution(
                     execution_id=execution_id,
@@ -540,6 +725,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     error_message="Execution was cancelled before it could start",
                     duration_ms=0,
                 )
+                await self._finish_attempt(attempt_id, status="cancelled")
                 await publish_execution_update(execution_id, "Cancelled")
                 await publish_history_update(
                     execution_id=execution_id,
@@ -560,7 +746,6 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 return
 
             # Get workflow metadata from database if this is a workflow execution
-            workflow_name = script_name or "inline_script"
             timeout_seconds = 1800  # Default 30 minutes
             roi_time_saved = 0
             roi_value = 0.0
@@ -573,14 +758,112 @@ class WorkflowExecutionConsumer(BaseConsumer):
             solution_deployment_id = pending.get("solution_deployment_id")
             runtime_mode = pending.get("runtime_mode") or "legacy"
             runtime_storage_prefix: str | None = None
+            workspace_release_id: str | None = None
+            workspace_release_source_hashes: dict[str, str] | None = None
+            runtime_max_duration_seconds: int | None = None
+            runtime_max_output_bytes: int | None = None
 
-            if not is_script and workflow_id:
+            if not is_script and runtime_mode == "workspace-canary-v1":
+                from src.models.orm.executions import Execution
+                from src.services.workspace_draft_canary import (
+                    WorkspaceDraftCanaryError,
+                    resolve_draft_runtime_evidence,
+                    workflow_data_from_draft_evidence,
+                )
+
+                try:
+                    async with get_db_context() as db:
+                        execution = await db.get(Execution, UUID(execution_id))
+                        if (
+                            execution is None
+                            or execution.workflow_id is not None
+                            or execution.runtime_mode != "workspace-canary-v1"
+                        ):
+                            raise WorkspaceDraftCanaryError(
+                                "draft canary is missing its durable execution pin"
+                            )
+                        evidence = await resolve_draft_runtime_evidence(
+                            db, pending.get("runtime_evidence"), execution
+                        )
+                    workflow_data = workflow_data_from_draft_evidence(evidence)
+                except WorkspaceDraftCanaryError as exc:
+                    raise RuntimeError(str(exc)) from exc
+                workflow_name = workflow_data["name"]
+                workflow_function_name = workflow_data["function_name"]
+                file_path = workflow_data["path"]
+                workflow_type = workflow_data["type"]
+                cache_ttl_seconds = workflow_data["cache_ttl_seconds"]
+                timeout_seconds = workflow_data["timeout_seconds"]
+                content_hash = workflow_data["content_hash"]
+                runtime_storage_prefix = workflow_data["runtime_storage_prefix"]
+                workspace_release_source_hashes = workflow_data["source_hashes"]
+                workspace_release_id = workflow_data["draft_runtime_id"]
+                runtime_max_duration_seconds = timeout_seconds
+                runtime_max_output_bytes = workflow_data["max_output_bytes"]
+            elif not is_script and workflow_id:
                 from src.services.execution.service import get_workflow_for_execution, WorkflowNotFoundError
 
                 try:
                     # Get workflow metadata (no code — worker loads via Redis→S3)
                     # Brief DB session for metadata read
-                    if solution_deployment_id:
+                    if runtime_mode == "workspace-release-v1":
+                        from src.models.orm.executions import Execution
+                        from src.services.workspace_release_runtime import (
+                            WorkspaceReleaseRuntimeError,
+                            resolve_pinned_workspace_runtime,
+                            verify_workspace_runtime_evidence,
+                            workflow_data_from_workspace_evidence,
+                        )
+
+                        try:
+                            queued_evidence = pending.get("runtime_evidence")
+                            release_id = (
+                                queued_evidence.get("workspace_release_id")
+                                if isinstance(queued_evidence, dict)
+                                else None
+                            )
+                            if not isinstance(release_id, str) or not release_id:
+                                raise WorkspaceReleaseRuntimeError(
+                                    "queued execution is missing its Workspace release id"
+                                )
+                            async with get_db_context() as db:
+                                execution = await db.get(Execution, UUID(execution_id))
+                                if (
+                                    execution is None
+                                    or execution.runtime_mode != "workspace-release-v1"
+                                ):
+                                    raise WorkspaceReleaseRuntimeError(
+                                        "Workspace release execution is missing durable pin evidence"
+                                    )
+                                pinned = await resolve_pinned_workspace_runtime(
+                                    db, queued_evidence, UUID(str(workflow_id))
+                                )
+                            authoritative_evidence = pinned.queue_evidence()
+                            verify_workspace_runtime_evidence(
+                                queued_evidence,
+                                execution.runtime_evidence,
+                                execution.runtime_evidence_hash,
+                                authoritative_evidence,
+                            )
+                            workflow_data = workflow_data_from_workspace_evidence(
+                                authoritative_evidence
+                            )
+                        except WorkspaceReleaseRuntimeError as exc:
+                            raise WorkflowNotFoundError(str(exc)) from exc
+                        workspace_release_id = workflow_data["workspace_release_id"]
+                        workspace_release_source_hashes = workflow_data[
+                            "workspace_release_source_hashes"
+                        ]
+                        runtime_storage_prefix = workflow_data[
+                            "workspace_release_runtime_storage_prefix"
+                        ]
+                        runtime_max_duration_seconds = workflow_data[
+                            "workflow_runtime_bounds"
+                        ]["max_duration_seconds"]
+                        runtime_max_output_bytes = workflow_data[
+                            "workspace_release_max_output_bytes"
+                        ]
+                    elif solution_deployment_id:
                         from src.services.solutions.deployment_runtime import (
                             DeploymentRuntimeError,
                             resolve_pinned_workflow_runtime,
@@ -685,6 +968,12 @@ class WorkflowExecutionConsumer(BaseConsumer):
                         result={"error": "WorkflowNotFound", "message": error_msg},
                         duration_ms=duration_ms,
                     )
+                    await self._finish_attempt(
+                        attempt_id,
+                        status="failed",
+                        failure_code="WorkflowNotFound",
+                        failure_message=error_msg,
+                    )
                     await publish_execution_update(execution_id, "Failed", {"error": error_msg})
                     await publish_history_update(
                         execution_id=execution_id,
@@ -705,6 +994,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                             duration_ms=duration_ms,
                         )
                     return
+            metadata_ready_ms = (time.perf_counter() - dispatch_started) * 1000
 
             # Store additional context in pending record for result handler
             # (needed when pool reports results asynchronously)
@@ -732,16 +1022,19 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 workflow_id=workflow_id,
                 solution_deployment_id=solution_deployment_id,
             )
-            await publish_execution_update(execution_id, "Running")
-            await publish_history_update(
-                execution_id=execution_id,
-                status="Running",
-                executed_by=user_id,
-                executed_by_name=user_name,
-                workflow_name=workflow_name,
-                org_id=org_id,
-                started_at=start_time,
-            )
+            execution_created_ms = (time.perf_counter() - dispatch_started) * 1000
+            if not is_sync:
+                await publish_execution_update(execution_id, "Running")
+                await publish_history_update(
+                    execution_id=execution_id,
+                    status="Running",
+                    executed_by=user_id,
+                    executed_by_name=user_name,
+                    workflow_name=workflow_name,
+                    org_id=org_id,
+                    started_at=start_time,
+                )
+            running_published_ms = (time.perf_counter() - dispatch_started) * 1000
 
             # Rehydrate the org from org_id (the enqueue boundary only carried
             # the scalar org_id, not the Organization object built API-side).
@@ -765,10 +1058,15 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     }
 
             # Mint engine token parent-side (consumer holds SECRET_KEY legitimately).
-            # The child receives the token via context_data and writes it to the
-            # credentials file directly — no SECRET_KEY needed in the child.
+            # The child receives it through context_data and installs it only in
+            # its one-shot process environment — no SECRET_KEY or persistent
+            # credential write is needed in the child.
             from src.core.security import mint_engine_token
             engine_token, engine_token_expires_at = mint_engine_token(
+                execution_id=execution_id,
+                solution_id=solution_id,
+                global_repo_access=solution_global_repo_access,
+                timeout_seconds=timeout_seconds,
                 organization_id=org_id,
                 delegated_user_id=user_id,
                 delegated_email=user_email,
@@ -800,6 +1098,8 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 "is_provider_org": pending.get("is_provider_org", False),
                 "is_external": pending.get("is_external", False),
                 "startup": startup,  # Launch workflow results (available via context.startup)
+                "form_inputs": form_inputs,
+                "embed": embed,
                 "roi": {
                     "time_saved": roi_time_saved,
                     "value": roi_value,
@@ -813,11 +1113,20 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 "deployment_source_hashes": (
                     pending.get("runtime_evidence") or {}
                 ).get("deployment_source_hashes"),
+                "workspace_release_id": workspace_release_id,
+                "workspace_release_runtime_storage_prefix": (
+                    runtime_storage_prefix if workspace_release_id else None
+                ),
+                "workspace_release_source_hashes": workspace_release_source_hashes,
+                "workspace_generation": workspace_release_id,
+                "runtime_mode": runtime_mode,
+                "runtime_max_duration_seconds": runtime_max_duration_seconds,
+                "runtime_max_output_bytes": runtime_max_output_bytes,
                 "solution_global_repo_access": solution_global_repo_access,
-                # Pre-minted engine token: child writes directly to credentials file,
-                # no SECRET_KEY required in child env.
+                "artifact_workspace_id": artifact_workspace_id,
+                # Pre-minted engine token: child uses process-scoped SDK
+                # credentials, with no SECRET_KEY in its environment.
                 "engine_token": engine_token,
-                "engine_token_expires_at": engine_token_expires_at,
             }
 
             # Route to process pool
@@ -825,6 +1134,16 @@ class WorkflowExecutionConsumer(BaseConsumer):
             await self._pool.route_execution(
                 execution_id=execution_id,
                 context=context_data,
+            )
+            logger.debug(
+                "Dispatch timing %s: pending=%.1fms metadata=%.1fms "
+                "execution_row=%.1fms running_events=%.1fms routed=%.1fms",
+                execution_id[:8],
+                pending_ready_ms,
+                metadata_ready_ms,
+                execution_created_ms,
+                running_published_ms,
+                (time.perf_counter() - dispatch_started) * 1000,
             )
             # Don't wait for result - pool will call back
 
@@ -841,6 +1160,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
             )
             # Don't mark as failed — the execution hasn't started yet.
             # Keep pending state intact so the requeued message can be routed later.
+            await self._release_durable_execution_claim(execution_id, attempt_id)
             # Re-raise so the consumer framework NACKs with requeue=True
             raise RetryableConsumerError(f"process pool admission rejected: {e}") from e
 
@@ -851,15 +1171,18 @@ class WorkflowExecutionConsumer(BaseConsumer):
             error_msg = str(e)
             error_type = type(e).__name__
 
-            from src.models.enums import ExecutionStatus
-            from src.repositories.executions import update_execution
-
             await update_execution(
                 execution_id=execution_id,
                 status=ExecutionStatus.FAILED,
                 error_message=error_msg,
                 error_type=error_type,
                 duration_ms=duration_ms,
+            )
+            await self._finish_attempt(
+                attempt_id,
+                status="failed",
+                failure_code=error_type,
+                failure_message=error_msg,
             )
 
             await publish_execution_update(
@@ -903,29 +1226,190 @@ class WorkflowExecutionConsumer(BaseConsumer):
             )
             raise DomainFailureHandled("workflow setup failure recorded") from e
 
-    async def _get_existing_execution_status(self, execution_id: str) -> str | None:
-        """Return existing durable execution status for duplicate classification."""
-        from uuid import UUID
+    async def _finalize_poison_delivery(
+        self,
+        context: DeliveryContext,
+        *,
+        reason: str,
+    ) -> None:
+        """Terminalize a poisoned execution before RabbitMQ acknowledges it."""
+        from src.services.execution.poison import (
+            PoisonFinalizationConflict,
+            finalize_poisoned_execution,
+        )
 
-        from sqlalchemy import select
+        execution_id = context.body.get("execution_id")
+        try:
+            UUID(str(execution_id))
+        except (TypeError, ValueError):
+            # Malformed messages have no durable execution to reconcile. The
+            # poison record is their terminal audit evidence; requeueing after
+            # it was published would manufacture duplicate poison messages.
+            logger.warning(
+                "Poisoned workflow delivery has no valid execution UUID; "
+                "skipping durable execution finalization",
+                extra={
+                    "queue": context.queue_name,
+                    "message_id": context.message_id,
+                    "reason": reason,
+                },
+            )
+            return
+        try:
+            await finalize_poisoned_execution(
+                execution_id=str(execution_id),
+                queue=context.queue_name,
+                reason=reason,
+                retry_count=context.retry_count,
+                replay_count=context.replay_count,
+                message_id=context.message_id,
+                sync=bool(context.body.get("sync")),
+            )
+        except PoisonFinalizationConflict as exc:
+            raise MalformedMessage(str(exc)) from exc
 
-        from src.core.database import get_session_factory
+    async def _fail_missing_pending_execution(
+        self,
+        execution_id: str,
+    ) -> str | None:
+        """Fail confirmed work whose required Redis context disappeared.
+
+        Taking the publisher's advisory transaction lock prevents observing
+        SCHEDULED while a confirmed publication is still advancing to PENDING.
+        Unconfirmed SCHEDULED and terminal rows remain untouched.
+        """
+        from src.core.database import get_db_context
+        from src.models.enums import ExecutionStatus
         from src.models.orm.executions import Execution
 
         try:
             execution_uuid = UUID(execution_id)
-        except ValueError as e:
-            raise MalformedMessage(f"invalid execution_id UUID: {execution_id}") from e
+        except ValueError as exc:
+            raise MalformedMessage(
+                f"invalid execution_id UUID: {execution_id}"
+            ) from exc
 
-        session_factory = get_session_factory()
-        async with session_factory() as session:
-            result = await session.execute(
-                select(Execution.status).where(Execution.id == execution_uuid)
+        async with get_db_context() as db:
+            await db.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtext('bifrost:workflow-execution:' || :execution_id))"
+                ),
+                {"execution_id": execution_id},
             )
-            status = result.scalar_one_or_none()
+            execution = await db.get(Execution, execution_uuid)
+            if execution is None:
+                return None
+            if execution.status == ExecutionStatus.PENDING:
+                execution.status = ExecutionStatus.FAILED
+                execution.error_message = (
+                    "Execution context was unavailable before execution"
+                )
+                execution.completed_at = datetime.now(timezone.utc)
+                await db.commit()
+            return execution.status.value
 
-        if status is None:
-            return None
-        if hasattr(status, "value"):
-            return status.value
-        return str(status)
+    async def _claim_durable_execution(
+        self,
+        execution_id: str,
+        *,
+        organization_id: UUID | None,
+        message_id: str | None,
+    ) -> UUID | None:
+        """Claim a published durable execution before any execution side effects.
+
+        The publisher holds the same advisory transaction lock through broker
+        confirmation and its SCHEDULED -> PENDING transition. A fast consumer
+        therefore waits for that transaction, then advances only PENDING to
+        RUNNING. SCHEDULED means publication was not durably confirmed; any
+        other state is a redelivery or an already-finished execution.
+
+        Rows are absent for legacy inline-code dispatch, which retains its
+        existing Redis-first creation path.
+        """
+        from src.core.database import get_db_context
+        from src.models.enums import ExecutionStatus
+        from src.models.orm.executions import Execution
+
+        try:
+            execution_uuid = UUID(execution_id)
+        except ValueError as exc:
+            raise MalformedMessage(
+                f"invalid execution_id UUID: {execution_id}"
+            ) from exc
+
+        async with get_db_context() as db:
+            await db.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtext('bifrost:workflow-execution:' || :execution_id))"
+                ),
+                {"execution_id": execution_id},
+            )
+            execution = await db.get(Execution, execution_uuid)
+            if execution is not None:
+                if execution.status != ExecutionStatus.PENDING:
+                    return None
+                execution.status = ExecutionStatus.RUNNING
+            attempt = await start_execution_attempt(
+                db,
+                logical_job_type="workflow_execution",
+                logical_job_id=execution_uuid,
+                organization_id=organization_id,
+                policy=self._workflow_operations_policy,
+                status="running",
+                queue_name=self.queue_name,
+                message_id=message_id,
+                worker_id=f"{socket.gethostname()}:{os.getpid()}",
+                process_id=os.getpid(),
+            )
+            await db.commit()
+            return attempt.id
+
+    async def _release_durable_execution_claim(
+        self,
+        execution_id: str,
+        attempt_id: UUID,
+    ) -> None:
+        """Make an admission-rejected claim retryable without undoing cancellation."""
+        from src.core.database import get_db_context
+        from src.models.enums import ExecutionStatus
+        from src.models.orm.executions import Execution
+
+        async with get_db_context() as db:
+            await db.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtext('bifrost:workflow-execution:' || :execution_id))"
+                ),
+                {"execution_id": execution_id},
+            )
+            execution = await db.get(Execution, UUID(execution_id))
+            if execution is not None and execution.status == ExecutionStatus.RUNNING:
+                execution.status = ExecutionStatus.PENDING
+            await transition_execution_attempt(
+                db,
+                attempt_id=attempt_id,
+                status="admission_deferred",
+                failure_code="admission_rejected",
+                failure_message="The local process pool could not admit the work.",
+            )
+            await db.commit()
+
+    async def _finish_attempt(
+        self,
+        attempt_id: UUID,
+        *,
+        status: str,
+        failure_code: str | None = None,
+        failure_message: str | None = None,
+    ) -> None:
+        async with get_db_context() as db:
+            await transition_execution_attempt(
+                db,
+                attempt_id=attempt_id,
+                status=status,
+                failure_code=failure_code,
+                failure_message=failure_message,
+            )
+            await db.commit()

@@ -12,7 +12,7 @@ registration against a fresh, committed snapshot.
 This test exercises the full path:
     POST /api/workflows/register  (registers a @tool function as type=tool)
     POST /api/agents              (attaches the new tool to an agent)
-    POST /mcp  tools/list         (must include the new tool name)
+    POST /mcp/{agent_id} tools/list (must include the new tool name)
 
 Without the fix, tools/list omits the new tool because FastMCP's in-memory
 registry has no entry for it — middleware filters on `tool.name in all_tools`,
@@ -28,6 +28,7 @@ import requests
 from tests.fixtures.auth import create_test_jwt
 
 TEST_API_URL = os.getenv("TEST_API_URL", "http://api:8000")
+MCP_RESOURCE = f"{TEST_API_URL}/mcp"
 MCP_ACCEPT_HEADER = "application/json, text/event-stream"
 
 
@@ -58,7 +59,9 @@ class TestMCPRefreshAfterRegister:
 
         admin_token = create_test_jwt(is_superuser=True)
         admin_h = _admin_headers(admin_token)
-        mcp_h = _mcp_headers(admin_token)
+        mcp_h = _mcp_headers(
+            create_test_jwt(is_superuser=True, mcp_resource=MCP_RESOURCE)
+        )
 
         agent_id: str | None = None
         workflow_id: str | None = None
@@ -86,6 +89,7 @@ def {function_name}(message: str) -> dict:
             assert reg_resp.status_code == 201, reg_resp.text
             reg = reg_resp.json()
             workflow_id = reg["id"]
+            exposed_tool_name = f"{function_name}__{uuid.UUID(workflow_id).hex}"
             assert reg["type"] == "tool", f"expected type=tool, got {reg}"
 
             agent_resp = requests.post(
@@ -102,7 +106,7 @@ def {function_name}(message: str) -> dict:
             agent_id = agent_resp.json()["id"]
 
             init_resp = requests.post(
-                f"{TEST_API_URL}/mcp",
+                f"{TEST_API_URL}/mcp/{agent_id}",
                 json={
                     "jsonrpc": "2.0",
                     "id": 1,
@@ -118,7 +122,7 @@ def {function_name}(message: str) -> dict:
             assert init_resp.status_code == 200, init_resp.text
 
             list_resp = requests.post(
-                f"{TEST_API_URL}/mcp",
+                f"{TEST_API_URL}/mcp/{agent_id}",
                 json={
                     "jsonrpc": "2.0",
                     "id": 2,
@@ -133,10 +137,8 @@ def {function_name}(message: str) -> dict:
             tools = payload["result"]["tools"]
             tool_names = [t["name"] for t in tools]
 
-            # The MCP tool name comes from _normalize_tool_name(workflow.name),
-            # and workflow.name == function_name on register.
-            assert function_name in tool_names, (
-                f"Newly registered tool {function_name!r} missing from MCP "
+            assert exposed_tool_name in tool_names, (
+                f"Newly registered tool {exposed_tool_name!r} missing from MCP "
                 f"tools/list — refresh_workflow_tools() likely ran before the "
                 f"register transaction committed. Tools returned: {tool_names}"
             )
@@ -165,7 +167,9 @@ def {function_name}(message: str) -> dict:
 
         admin_token = create_test_jwt(is_superuser=True)
         admin_h = _admin_headers(admin_token)
-        mcp_h = _mcp_headers(admin_token)
+        mcp_h = _mcp_headers(
+            create_test_jwt(is_superuser=True, mcp_resource=MCP_RESOURCE)
+        )
 
         agent_id: str | None = None
         workflow_id: str | None = None
@@ -193,6 +197,7 @@ def {function_name}(message: str) -> dict:
             assert reg_resp.status_code == 201, reg_resp.text
             reg = reg_resp.json()
             workflow_id = reg["id"]
+            identity_suffix = uuid.UUID(workflow_id).hex
             assert reg["name"] == function_name
             assert reg["type"] == "tool", reg
 
@@ -218,7 +223,7 @@ def {function_name}(message: str) -> dict:
             assert patch_resp.json()["name"] == renamed_tool_name
 
             list_resp = requests.post(
-                f"{TEST_API_URL}/mcp",
+                f"{TEST_API_URL}/mcp/{agent_id}",
                 json={
                     "jsonrpc": "2.0",
                     "id": 2,
@@ -232,8 +237,8 @@ def {function_name}(message: str) -> dict:
             assert "result" in payload, payload
             tool_names = [t["name"] for t in payload["result"]["tools"]]
 
-            assert renamed_tool_name in tool_names
-            assert function_name not in tool_names
+            assert f"{renamed_tool_name}__{identity_suffix}" in tool_names
+            assert f"{function_name}__{identity_suffix}" not in tool_names
         finally:
             if agent_id:
                 requests.delete(

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import {
 	Database,
 	Pencil,
@@ -68,7 +68,6 @@ export function Tables() {
 	const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 	const [isImportOpen, setIsImportOpen] = useState(false);
 	const [isExporting, setIsExporting] = useState(false);
-	const [showOrphaned, setShowOrphaned] = useState(false);
 
 	// Convert filterOrgId to scope for API: undefined = all, null = global only, string = org UUID
 	const apiScope =
@@ -78,7 +77,7 @@ export function Tables() {
 				? "global"
 				: filterOrgId;
 
-	const { data, isLoading, refetch } = useTables(apiScope, showOrphaned);
+	const { data, isLoading, refetch } = useTables(apiScope);
 	const deleteTable = useDeleteTable();
 
 	// Fetch organizations for the org name lookup (platform admins only)
@@ -221,13 +220,19 @@ export function Tables() {
 				</div>
 			</div>
 
-			<Tabs defaultValue="tables" className="flex flex-1 min-h-0 flex-col">
+			<Tabs
+				defaultValue="tables"
+				className="flex flex-1 min-h-0 flex-col"
+			>
 				<TabsList className="w-fit">
 					<TabsTrigger value="tables">Tables</TabsTrigger>
 					<TabsTrigger value="claims">Custom Claims</TabsTrigger>
 				</TabsList>
 
-				<TabsContent value="tables" className="flex flex-1 min-h-0 flex-col space-y-6">
+				<TabsContent
+					value="tables"
+					className="flex flex-1 min-h-0 flex-col space-y-6"
+				>
 					{/* Search and Filters */}
 					<div className="flex items-center gap-4">
 						<SearchBox
@@ -247,16 +252,6 @@ export function Tables() {
 								/>
 							</div>
 						)}
-						<label className="flex items-center gap-2 whitespace-nowrap text-sm text-muted-foreground">
-							<Checkbox
-								checked={showOrphaned}
-								onCheckedChange={(checked) =>
-									setShowOrphaned(checked === true)
-								}
-								aria-label="Show orphaned"
-							/>
-							Show orphaned
-						</label>
 						{isPlatformAdmin && (
 							<div className="flex items-center gap-2 ml-auto">
 								{selectedIds.size > 0 && (
@@ -347,7 +342,9 @@ export function Tables() {
 																table.id,
 															)
 														}
-														onClick={(e: React.MouseEvent) =>
+														onClick={(
+															e: React.MouseEvent,
+														) =>
 															e.stopPropagation()
 														}
 													/>
@@ -381,7 +378,9 @@ export function Tables() {
 													{table.name}
 													{table.is_solution_managed && (
 														<SolutionManagedBadge
-															solutionId={table.solution_id}
+															solutionId={
+																table.solution_id
+															}
 														/>
 													)}
 												</span>
@@ -393,20 +392,16 @@ export function Tables() {
 												{formatDate(table.created_at)}
 											</DataTableCell>
 											<DataTableCell className="w-0 whitespace-nowrap text-right">
-												<div
-													className="flex justify-end gap-2"
-													onClick={(e: React.MouseEvent) =>
-														e.stopPropagation()
-													}
-												>
+												<div className="flex justify-end gap-2">
 													<Button
 														variant="ghost"
 														size="icon"
-														onClick={() =>
+														onClick={(event) => {
+															event.stopPropagation();
 															handleViewDocuments(
 																table,
-															)
-														}
+															);
+														}}
 														title="View documents"
 														aria-label="View documents"
 													>
@@ -415,9 +410,10 @@ export function Tables() {
 													<Button
 														variant="ghost"
 														size="icon"
-														onClick={() =>
-															handleEdit(table)
-														}
+														onClick={(event) => {
+															event.stopPropagation();
+															handleEdit(table);
+														}}
 														disabled={
 															table.is_solution_managed
 														}
@@ -433,9 +429,10 @@ export function Tables() {
 													<Button
 														variant="ghost"
 														size="icon"
-														onClick={() =>
-															handleDelete(table)
-														}
+														onClick={(event) => {
+															event.stopPropagation();
+															handleDelete(table);
+														}}
 														disabled={
 															table.is_solution_managed
 														}

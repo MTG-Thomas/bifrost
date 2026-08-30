@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import {
 	Inbox,
 	Clock,
@@ -323,6 +323,16 @@ export function EventsTable({ sourceId, initialEventId }: EventsTableProps) {
 											{event.failed_count > 0 && (
 												<span className="text-destructive">
 													{event.failed_count} failed
+												</span>
+											)}
+											{((event as Event & { skipped_count?: number }).skipped_count ?? 0) > 0 && (
+												<span className="text-amber-600">
+													{(event as Event & { skipped_count?: number }).skipped_count} skipped
+												</span>
+											)}
+											{((event as Event & { evaluation_error_count?: number }).evaluation_error_count ?? 0) > 0 && (
+												<span className="text-destructive">
+													{(event as Event & { evaluation_error_count?: number }).evaluation_error_count} criteria errors
 												</span>
 											)}
 											{event.delivery_count === 0 && (

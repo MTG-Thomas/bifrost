@@ -2,7 +2,8 @@
  * Tests for FleetPage.
  *
  * The page composes hooks from `@/hooks/useAgents` (list) and
- * `@/services/agents` (fleet + per-agent stats). We mock both at module
+ * `@/services/agents` (fleet stats). Per-agent stats arrive on each list item.
+ * We mock both modules at module
  * scope so we can control loading / data states deterministically.
  */
 
@@ -15,13 +16,14 @@ import { fireEvent, renderWithProviders, screen, within } from "@/test-utils";
 
 const mockUseAgents = vi.fn();
 vi.mock("@/hooks/useAgents", () => ({
-	useAgents: () => mockUseAgents(),
+	useAgents: (
+		filterScope?: string | null,
+		options?: { includeInactive?: boolean; includeStats?: boolean },
+	) => mockUseAgents(filterScope, options),
 }));
 
-const mockUseAgentStats = vi.fn();
 const mockUseFleetStats = vi.fn();
 vi.mock("@/services/agents", () => ({
-	useAgentStats: (id: string | undefined) => mockUseAgentStats(id),
 	useFleetStats: () => mockUseFleetStats(),
 }));
 
@@ -66,6 +68,8 @@ function makeAgent(overrides: Partial<Record<string, unknown>> = {}) {
 		owner_user_id: null,
 		created_at: "2026-04-01T00:00:00Z",
 		dependency_count: 0,
+		logo_url: null,
+		stats: baseStats,
 		...overrides,
 	};
 }
@@ -85,7 +89,6 @@ const baseStats = {
 beforeEach(() => {
 	mockUseAgents.mockReturnValue({ data: [], isLoading: false });
 	mockUseFleetStats.mockReturnValue({ data: fleetStats, isLoading: false });
-	mockUseAgentStats.mockReturnValue({ data: baseStats, isLoading: false });
 	mockUseAuth.mockReturnValue({ isPlatformAdmin: false });
 });
 
@@ -124,7 +127,9 @@ describe("FleetPage — header + fleet stats", () => {
 			isLoading: false,
 		});
 		await renderPage();
-		expect(screen.getByTestId("mobile-fleet-metrics")).toHaveClass("md:hidden");
+		expect(screen.getByTestId("mobile-fleet-metrics")).toHaveClass(
+			"md:hidden",
+		);
 		expect(screen.getByTestId("desktop-fleet-stats")).toHaveClass(
 			"hidden",
 			"md:grid",
@@ -169,6 +174,23 @@ describe("FleetPage — header + fleet stats", () => {
 });
 
 describe("FleetPage — agent cards (grid)", () => {
+	it("hides inactive agents by default and includes them when requested", async () => {
+		const { user } = await renderPage();
+
+		expect(mockUseAgents).toHaveBeenLastCalledWith(undefined, {
+			includeInactive: false,
+			includeStats: true,
+		});
+
+		const toggle = screen.getByRole("switch", { name: "Show Inactive" });
+		await user.click(toggle);
+
+		expect(mockUseAgents).toHaveBeenLastCalledWith(undefined, {
+			includeInactive: true,
+			includeStats: true,
+		});
+	});
+
 	it("renders one card per agent in grid view by default", async () => {
 		mockUseAgents.mockReturnValue({
 			data: [
@@ -211,6 +233,7 @@ describe("FleetPage — solution-managed badge", () => {
 		const badge = screen.getByTestId("solution-managed-badge");
 		expect(badge).toBeInTheDocument();
 		expect(badge).toHaveAttribute("href", "/solutions/s1");
+		expect(badge.parentElement?.closest("a")).toBeNull();
 	});
 
 	it("does not show the badge on a non-managed agent", async () => {
@@ -295,7 +318,10 @@ describe("FleetPage — agent MCP URL copy badge", () => {
 		});
 		await renderPage();
 		const badge = screen.getByTestId("agent-mcp-copy");
-		const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+		const event = new MouseEvent("click", {
+			bubbles: true,
+			cancelable: true,
+		});
 		badge.dispatchEvent(event);
 		expect(writeText).toHaveBeenCalledTimes(1);
 		expect(event.defaultPrevented).toBe(true);
@@ -347,17 +373,38 @@ describe("FleetPage — view toggle", () => {
 		expect(within(table!).getByText(/runs \(7d\)/i)).toBeInTheDocument();
 		expect(within(table!).getByText("Alpha")).toBeInTheDocument();
 	});
+
+	it("keeps the agent icon in table view", async () => {
+		mockUseAgents.mockReturnValue({
+			data: [
+				makeAgent({
+					id: "a",
+					name: "Alpha",
+					logo_url: "/api/agents/a/logo",
+				}),
+			],
+			isLoading: false,
+		});
+		const { user } = await renderPage();
+		await user.click(screen.getByLabelText(/table view/i));
+		expect(
+			document.querySelector('img[src="/api/agents/a/logo"]'),
+		).not.toBeNull();
+	});
 });
 
 describe("FleetPage — loading state", () => {
-	it("renders skeletons while fleet stats and agents are loading", async () => {
+	it("shows a loading indicator while agents are loading", async () => {
 		mockUseAgents.mockReturnValue({ data: undefined, isLoading: true });
 		mockUseFleetStats.mockReturnValue({
 			data: undefined,
 			isLoading: true,
 		});
 		const { container } = await renderPage();
-		// Skeleton renders divs with the .animate-pulse class.
+		expect(
+			screen.getByRole("status", { name: /loading agents/i }),
+		).toBeInTheDocument();
+		// Fleet metrics retain compact placeholders while their separate request loads.
 		expect(
 			container.querySelectorAll(".animate-pulse").length,
 		).toBeGreaterThan(0);

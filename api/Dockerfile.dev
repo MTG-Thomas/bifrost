@@ -6,7 +6,7 @@
 # Stage 1: Builder
 # =============================================================================
 # python:3.14-slim
-FROM python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1 AS builder
+FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4 AS builder
 
 WORKDIR /app
 
@@ -33,13 +33,15 @@ RUN pip install --no-cache-dir --only-binary :all: --require-hashes -r requireme
 # Stage 2: Runtime
 # =============================================================================
 # python:3.14-slim
-FROM python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1 AS runtime
+FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4 AS runtime
 
 WORKDIR /app
+ARG BIFROST_VERSION=unknown
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
+    libcairo2 \
     curl \
     gosu \
     git \
@@ -50,6 +52,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy installed packages from builder
 COPY --from=builder /usr/local/lib/python3.14/site-packages /usr/local/lib/python3.14/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
+COPY api/_bifrost_workspace_effects.py /app/
 
 # Install `bifrost` CLI shim. The bifrost Python package is mounted at
 # /app/bifrost/ via PYTHONPATH=/app, so `python -m bifrost` works. The shim
@@ -104,8 +107,22 @@ COPY client/src/lib/app-sdk/index.v2.ts /app/src/services/sdk_package/sdk_src/in
 COPY client/src/lib/app-sdk/sdk-contract.json /app/src/services/sdk_package/sdk_src/sdk-contract.json
 RUN chmod -R a+rX /app/src/services/sdk_package
 
+# Source is bind-mounted at runtime in development, but the downloadable CLI
+# is deliberately frozen at image-build time just as it is in production.
+COPY api/bifrost/ /tmp/cli-build/bifrost/
+COPY api/_bifrost_workspace_effects.py /tmp/cli-build/
+COPY api/shared/cli_artifact.py /tmp/cli-build/shared/cli_artifact.py
+COPY api/scripts/build_cli_artifact.py /tmp/cli-build/build_cli_artifact.py
+RUN PYTHONPATH=/tmp/cli-build python /tmp/cli-build/build_cli_artifact.py \
+      --source /tmp/cli-build/bifrost \
+      --output /app/artifacts \
+      --version "${BIFROST_VERSION}" \
+    && rm -rf /tmp/cli-build
+
 # Copy entrypoint script
 COPY api/entrypoint.sh /entrypoint.sh
+COPY assets/ /app/assets/
+RUN chmod -R a+rX /app/assets
 RUN chmod 755 /entrypoint.sh
 
 # Don't switch to bifrost here - entrypoint handles user switching
@@ -117,7 +134,6 @@ ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-ARG BIFROST_VERSION=unknown
 ENV BIFROST_VERSION=${BIFROST_VERSION}
 
 # No default CMD - let docker-compose specify the command per service

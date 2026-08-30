@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router";
 import {
 	Crown,
 	RefreshCw,
@@ -473,7 +473,7 @@ export function Users() {
 						htmlFor="show-disabled"
 						className="text-sm text-muted-foreground cursor-pointer"
 					>
-						Show disabled
+						Show Inactive
 					</Label>
 				</div>
 			</div>

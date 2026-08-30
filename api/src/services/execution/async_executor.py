@@ -16,9 +16,12 @@ For sync execution (sync=True):
 
 import logging
 import uuid
+import dataclasses
 from typing import Any
 
+from fastapi.encoders import jsonable_encoder
 from opentelemetry import trace
+from sqlalchemy import text, update
 
 from src.core.constants import SYSTEM_USER_ID, SYSTEM_USER_EMAIL
 from src.core.log_safety import log_safe
@@ -31,6 +34,141 @@ logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
 QUEUE_NAME = "workflow-executions"
+PENDING_DISPATCH_SCHEMA = "bifrost.workflow-pending-dispatch/v1"
+
+
+def _dispatch_request_identity(
+    context: ExecutionContext,
+    execution_id: str,
+    workflow_id: str,
+    parameters: dict[str, Any],
+    *,
+    form_id: str | None,
+    sync: bool,
+    api_key_id: str | None,
+    file_path: str | None,
+    org_id_override: str | None,
+    dispatch_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    event = dataclasses.asdict(context.event) if context.event is not None else None
+    identity: dict[str, Any] = {
+        "schema_version": PENDING_DISPATCH_SCHEMA,
+        "execution_id": execution_id,
+        "workflow_id": workflow_id,
+        "parameters": parameters,
+        "org_id": org_id_override or context.org_id,
+        "user_id": context.user_id,
+        "user_name": context.name,
+        "user_email": context.email,
+        "form_id": form_id,
+        "startup": context.startup,
+        "form_inputs": context.form_inputs,
+        "embed": context.embed,
+        "api_key_id": api_key_id,
+        "sync": sync,
+        "is_platform_admin": context.is_platform_admin,
+        "is_provider_org": getattr(context, "is_provider_org", False),
+        "is_external": getattr(context, "is_external", False),
+        "file_path": file_path,
+        "event": event,
+        "caller_solution_deployment_id": context.solution_deployment_id,
+    }
+    if dispatch_metadata is not None:
+        identity["dispatch_metadata"] = dispatch_metadata
+    artifact_workspace_id = getattr(context, "artifact_workspace_id", None)
+    if artifact_workspace_id is not None:
+        identity["artifact_workspace_id"] = artifact_workspace_id
+    return jsonable_encoder(identity)
+
+
+def _pending_dispatch_envelope(
+    request_identity: dict[str, Any],
+    *,
+    solution_deployment_id: str | None,
+    runtime_evidence: dict[str, Any] | None,
+    runtime_mode: str,
+) -> dict[str, Any]:
+    from src.services.solutions.deployment_manifest import canonical_json, sha256_digest
+
+    publish = {
+        key: value
+        for key, value in request_identity.items()
+        if key
+        not in {
+            "schema_version",
+            "caller_solution_deployment_id",
+        }
+    }
+    publish.update(
+        {
+            "solution_deployment_id": solution_deployment_id,
+            "runtime_evidence": runtime_evidence,
+            "runtime_mode": runtime_mode,
+            "execution_record_exists": True,
+        }
+    )
+    return {
+        "schema_version": PENDING_DISPATCH_SCHEMA,
+        "request": request_identity,
+        "request_hash": sha256_digest(canonical_json(request_identity)),
+        "publish": publish,
+        "publish_hash": sha256_digest(canonical_json(publish)),
+    }
+
+
+def _validated_pending_dispatch(
+    execution: Any,
+    request_identity: dict[str, Any],
+) -> dict[str, Any]:
+    from src.services.solutions.deployment_manifest import canonical_json, sha256_digest
+
+    envelope = execution.dispatch_evidence
+    if not isinstance(envelope, dict) or set(envelope) != {
+        "schema_version",
+        "request",
+        "request_hash",
+        "publish",
+        "publish_hash",
+    }:
+        raise ValueError("existing execution has no durable pending dispatch")
+    stored_request = envelope.get("request")
+    publish = envelope.get("publish")
+    if (
+        envelope.get("schema_version") != PENDING_DISPATCH_SCHEMA
+        or stored_request != request_identity
+        or not isinstance(publish, dict)
+        or envelope.get("request_hash") != sha256_digest(canonical_json(stored_request))
+        or envelope.get("publish_hash") != sha256_digest(canonical_json(publish))
+        or execution.dispatch_evidence_hash != sha256_digest(canonical_json(envelope))
+        or publish.get("execution_id") != str(execution.id)
+        or publish.get("workflow_id") != str(execution.workflow_id)
+        or publish.get("parameters") != execution.parameters
+        or publish.get("org_id")
+        != (str(execution.organization_id) if execution.organization_id else None)
+        or publish.get("user_id")
+        != (str(execution.executed_by) if execution.executed_by else "")
+        or publish.get("user_name") != execution.executed_by_name
+        or publish.get("form_id")
+        != (str(execution.form_id) if execution.form_id else None)
+        or publish.get("api_key_id")
+        != (str(execution.api_key_id) if execution.api_key_id else None)
+        or publish.get("runtime_evidence") != execution.runtime_evidence
+        or execution.runtime_evidence_hash
+        != (
+            sha256_digest(canonical_json(execution.runtime_evidence))
+            if execution.runtime_evidence is not None
+            else None
+        )
+        or publish.get("runtime_mode") != execution.runtime_mode
+        or publish.get("solution_deployment_id")
+        != (
+            str(execution.solution_deployment_id)
+            if execution.solution_deployment_id
+            else None
+        )
+    ):
+        raise ValueError("execution id belongs to different dispatch evidence")
+    return dict(publish)
 
 
 async def _persist_execution_pin(
@@ -39,15 +177,52 @@ async def _persist_execution_pin(
     workflow_id: str,
     parameters: dict[str, Any],
     org_id_override: str | None,
-) -> tuple[Any | None, dict[str, Any] | None, str]:
+    *,
+    form_id: str | None,
+    sync: bool,
+    api_key_id: str | None,
+    file_path: str | None,
+    dispatch_metadata: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], bool]:
     """Persist immutable runtime evidence before anything enters the queue."""
     from src.core.database import get_db_context
     from src.models.enums import ExecutionStatus
     from src.models.orm.executions import Execution
     from src.services.solutions.deployment_manifest import canonical_json, sha256_digest
     from src.services.solutions.deployment_runtime import pin_workflow_runtime
+    from src.services.workspace_release_runtime import pin_workspace_runtime
 
     async with get_db_context() as db:
+        request_identity = _dispatch_request_identity(
+            context,
+            execution_id,
+            workflow_id,
+            parameters,
+            form_id=form_id,
+            sync=sync,
+            api_key_id=api_key_id,
+            file_path=file_path,
+            org_id_override=org_id_override,
+            dispatch_metadata=dispatch_metadata,
+        )
+        # A caller-supplied execution identity is also the canonical
+        # idempotency boundary for workflow dispatch. Serialize contenders on
+        # that identity before checking/inserting the durable execution row.
+        await db.execute(
+            text(
+                "SELECT pg_advisory_xact_lock("
+                "hashtext('bifrost:workflow-execution:' || :execution_id))"
+            ),
+            {"execution_id": execution_id},
+        )
+        existing = await db.get(Execution, uuid.UUID(execution_id))
+        if existing is not None:
+            # Scheduled rows are deliberately created before their queue
+            # message. Every other existing state proves this execution was
+            # already dispatched (or completed), so publishing again would
+            # duplicate side effects after an HTTP retry.
+            return _validated_pending_dispatch(existing, request_identity), False
+
         caller_deployment_id = (
             uuid.UUID(context.solution_deployment_id)
             if context.solution_deployment_id
@@ -56,36 +231,98 @@ async def _persist_execution_pin(
         pinned_runtime = await pin_workflow_runtime(
             db, uuid.UUID(workflow_id), caller_deployment_id=caller_deployment_id
         )
+        if pinned_runtime is None:
+            pinned_runtime = await pin_workspace_runtime(db, uuid.UUID(workflow_id))
         runtime_evidence = pinned_runtime.queue_evidence() if pinned_runtime else None
-        runtime_mode = "deployment-v1" if pinned_runtime else "repo-v1"
-        existing = await db.get(Execution, uuid.UUID(execution_id))
-        if existing is not None:
-            return pinned_runtime, runtime_evidence, runtime_mode
+        runtime_mode = (
+            pinned_runtime.runtime_mode
+            if pinned_runtime is not None and hasattr(pinned_runtime, "runtime_mode")
+            else ("deployment-v1" if pinned_runtime else "repo-v1")
+        )
 
         evidence_hash = (
-            sha256_digest(canonical_json(runtime_evidence)) if runtime_evidence else None
+            sha256_digest(canonical_json(runtime_evidence))
+            if runtime_evidence
+            else None
         )
         org_value = org_id_override or context.org_id
+        solution_deployment_id = (
+            str(getattr(pinned_runtime, "deployment_id", None))
+            if getattr(pinned_runtime, "deployment_id", None) is not None
+            else None
+        )
+        dispatch = _pending_dispatch_envelope(
+            request_identity,
+            solution_deployment_id=solution_deployment_id,
+            runtime_evidence=runtime_evidence,
+            runtime_mode=runtime_mode,
+        )
         db.add(
             Execution(
                 id=uuid.UUID(execution_id),
                 workflow_name=pinned_runtime.name if pinned_runtime else "pending",
                 workflow_id=uuid.UUID(workflow_id),
                 solution_deployment_id=(
-                    pinned_runtime.deployment_id if pinned_runtime else None
+                    getattr(pinned_runtime, "deployment_id", None)
+                    if pinned_runtime
+                    else None
                 ),
                 runtime_mode=runtime_mode,
                 runtime_evidence=runtime_evidence,
                 runtime_evidence_hash=evidence_hash,
-                status=ExecutionStatus.PENDING,
+                dispatch_evidence=dispatch,
+                dispatch_evidence_hash=sha256_digest(canonical_json(dispatch)),
+                # SCHEDULED is the durable, retryable pre-publication state.
+                # The queue claimant atomically advances it to PENDING only
+                # after RabbitMQ confirms publication.
+                status=ExecutionStatus.SCHEDULED,
                 parameters=parameters,
+                form_id=uuid.UUID(form_id) if form_id else None,
+                api_key_id=uuid.UUID(api_key_id) if api_key_id else None,
                 executed_by=uuid.UUID(context.user_id),
                 executed_by_name=context.name,
                 organization_id=(uuid.UUID(org_value) if org_value else None),
             )
         )
         await db.commit()
-        return pinned_runtime, runtime_evidence, runtime_mode
+        return dict(dispatch["publish"]), True
+
+
+async def _publish_scheduled_once(
+    *,
+    execution_id: str,
+    publish_kwargs: dict[str, Any],
+) -> bool:
+    """Serialize publication and leave failures retryable as SCHEDULED."""
+    from src.core.database import get_db_context
+    from src.models.enums import ExecutionStatus
+    from src.models.orm.executions import Execution
+
+    async with get_db_context() as db:
+        await db.execute(
+            text(
+                "SELECT pg_advisory_xact_lock("
+                "hashtext('bifrost:workflow-execution:' || :execution_id))"
+            ),
+            {"execution_id": execution_id},
+        )
+        execution = await db.get(Execution, uuid.UUID(execution_id))
+        if execution is None or execution.status != ExecutionStatus.SCHEDULED:
+            return False
+
+        # Hold the transaction-scoped claim through broker confirmation. A
+        # failure rolls the transaction back, so a retry can claim SCHEDULED.
+        await _publish_pending(**publish_kwargs)
+        await db.execute(
+            update(Execution)
+            .where(
+                Execution.id == uuid.UUID(execution_id),
+                Execution.status == ExecutionStatus.SCHEDULED,
+            )
+            .values(status=ExecutionStatus.PENDING)
+        )
+        await db.commit()
+        return True
 
 
 async def _publish_pending(
@@ -97,7 +334,9 @@ async def _publish_pending(
     user_name: str,
     user_email: str,
     form_id: str | None,
-    startup: dict[str, Any] | None,
+    startup: Any | None,
+    form_inputs: dict[str, Any],
+    embed: dict[str, Any],
     api_key_id: str | None,
     sync: bool,
     is_platform_admin: bool,
@@ -108,6 +347,9 @@ async def _publish_pending(
     solution_deployment_id: str | None = None,
     runtime_evidence: dict[str, Any] | None = None,
     runtime_mode: str = "legacy",
+    execution_record_exists: bool = False,
+    dispatch_metadata: dict[str, Any] | None = None,
+    artifact_workspace_id: str | None = None,
 ) -> None:
     """
     Write a pending-execution blob to Redis, register with the queue tracker,
@@ -128,9 +370,13 @@ async def _publish_pending(
         "messaging.destination.name": QUEUE_NAME,
     }
     if event:
-        span_attributes["bifrost.execution.event.source"] = str(event.get("source") or "")
+        span_attributes["bifrost.execution.event.source"] = str(
+            event.get("source") or ""
+        )
 
-    with tracer.start_as_current_span("bifrost.workflow.enqueue", attributes=span_attributes) as span:
+    with tracer.start_as_current_span(
+        "bifrost.workflow.enqueue", attributes=span_attributes
+    ) as span:
         try:
             redis_client = get_redis_client()
 
@@ -145,6 +391,8 @@ async def _publish_pending(
                 user_email=user_email,
                 form_id=form_id,
                 startup=startup,
+                form_inputs=form_inputs,
+                embed=embed,
                 api_key_id=api_key_id,
                 sync=sync,
                 is_platform_admin=is_platform_admin,
@@ -154,17 +402,23 @@ async def _publish_pending(
                 solution_deployment_id=solution_deployment_id,
                 runtime_evidence=runtime_evidence,
                 runtime_mode=runtime_mode,
+                artifact_workspace_id=artifact_workspace_id,
             )
 
-            # Add to queue tracking (publishes position updates to all queued executions)
-            await add_to_queue(execution_id)
+            # Sync callers wait on a private result list and cannot consume
+            # queue-position events. RabbitMQ still provides admission control.
+            if not sync:
+                await add_to_queue(execution_id)
 
             # Prepare queue message (minimal - worker reads full context from Redis)
             message: dict[str, Any] = {
                 "execution_id": execution_id,
                 "workflow_id": workflow_id,
                 "sync": sync,
+                "execution_record_exists": execution_record_exists,
             }
+            if dispatch_metadata is not None:
+                message["dispatch_metadata"] = dispatch_metadata
             if solution_deployment_id is not None:
                 message["solution_deployment_id"] = solution_deployment_id
 
@@ -181,7 +435,7 @@ async def _publish_pending(
             raise
 
 
-async def enqueue_workflow_execution(
+async def enqueue_workflow_execution_once(
     context: ExecutionContext,
     workflow_id: str,
     parameters: dict[str, Any],
@@ -191,7 +445,8 @@ async def enqueue_workflow_execution(
     api_key_id: str | None = None,
     file_path: str | None = None,
     org_id_override: str | None = None,
-) -> str:
+    dispatch_metadata: dict[str, Any] | None = None,
+) -> tuple[str, bool]:
     """
     Enqueue a workflow for async execution.
 
@@ -215,39 +470,22 @@ async def enqueue_workflow_execution(
     if execution_id is None:
         execution_id = str(uuid.uuid4())
 
-    pinned_runtime, runtime_evidence, runtime_mode = await _persist_execution_pin(
-        context, execution_id, workflow_id, parameters, org_id_override
-    )
-    solution_deployment_id = str(pinned_runtime.deployment_id) if pinned_runtime else None
-
-    # Serialize event context for cross-process transit. EventContext is a
-    # dataclass with primitive fields, so dict serialization is lossless and
-    # JSON-safe for Redis storage.
-    event_payload: dict[str, Any] | None = None
-    if context.event is not None:
-        import dataclasses
-        event_payload = dataclasses.asdict(context.event)
-
-    await _publish_pending(
-        execution_id=execution_id,
-        workflow_id=workflow_id,
-        parameters=parameters,
-        org_id=org_id_override or context.org_id,
-        user_id=context.user_id,
-        user_name=context.name,
-        user_email=context.email,
+    publish_kwargs, created = await _persist_execution_pin(
+        context,
+        execution_id,
+        workflow_id,
+        parameters,
+        org_id_override,
         form_id=form_id,
-        startup=context.startup,
-        api_key_id=api_key_id,
         sync=sync,
-        is_platform_admin=context.is_platform_admin,
-        is_provider_org=getattr(context, "is_provider_org", False),
-        is_external=getattr(context, "is_external", False),
+        api_key_id=api_key_id,
         file_path=file_path,
-        event=event_payload,
-        solution_deployment_id=solution_deployment_id,
-        runtime_evidence=runtime_evidence,
-        runtime_mode=runtime_mode,
+        dispatch_metadata=dispatch_metadata,
+    )
+
+    await _publish_scheduled_once(
+        execution_id=execution_id,
+        publish_kwargs=publish_kwargs,
     )
 
     logger.info(
@@ -255,11 +493,39 @@ async def enqueue_workflow_execution(
         extra={
             "execution_id": execution_id,
             "workflow_id": workflow_id,
-            "org_id": context.org_id
-        }
+            "org_id": context.org_id,
+        },
     )
 
-    return execution_id
+    return execution_id, not created
+
+
+async def enqueue_workflow_execution(
+    context: ExecutionContext,
+    workflow_id: str,
+    parameters: dict[str, Any],
+    form_id: str | None = None,
+    execution_id: str | None = None,
+    sync: bool = False,
+    api_key_id: str | None = None,
+    file_path: str | None = None,
+    org_id_override: str | None = None,
+    dispatch_metadata: dict[str, Any] | None = None,
+) -> str:
+    """Compatibility wrapper returning only the canonical execution ID."""
+    queued_id, _reused = await enqueue_workflow_execution_once(
+        context=context,
+        workflow_id=workflow_id,
+        parameters=parameters,
+        form_id=form_id,
+        execution_id=execution_id,
+        sync=sync,
+        api_key_id=api_key_id,
+        file_path=file_path,
+        org_id_override=org_id_override,
+        dispatch_metadata=dispatch_metadata,
+    )
+    return queued_id
 
 
 async def enqueue_code_execution(
@@ -269,6 +535,7 @@ async def enqueue_code_execution(
     parameters: dict[str, Any],
     execution_id: str | None = None,
     sync: bool = False,
+    queue_name: str = QUEUE_NAME,
 ) -> str:
     """
     Enqueue inline code for async execution.
@@ -304,6 +571,7 @@ async def enqueue_code_execution(
         user_name=context.name,
         user_email=context.email,
         form_id=None,
+        sync=sync,
         is_platform_admin=context.is_platform_admin,
         is_provider_org=getattr(context, "is_provider_org", False),
         is_external=getattr(context, "is_external", False),
@@ -321,15 +589,15 @@ async def enqueue_code_execution(
     }
 
     # Enqueue message via RabbitMQ
-    await publish_message(QUEUE_NAME, message)
+    await publish_message(queue_name, message)
 
     logger.info(
         f"Enqueued async code execution: {log_safe(script_name)}",
         extra={
             "execution_id": execution_id,
             "script_name": log_safe(script_name),
-            "org_id": context.org_id
-        }
+            "org_id": context.org_id,
+        },
     )
 
     return execution_id

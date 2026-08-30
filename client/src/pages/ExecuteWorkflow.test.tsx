@@ -9,6 +9,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderWithProviders, screen, waitFor } from "@/test-utils";
+import { ExecuteWorkflow } from "./ExecuteWorkflow";
 
 // -----------------------------------------------------------------------------
 // Mocks
@@ -26,9 +27,9 @@ vi.mock("@/hooks/useWorkflows", () => ({
 }));
 
 const mockNavigate = vi.fn();
-vi.mock("react-router-dom", async () => {
-	const actual = await vi.importActual<typeof import("react-router-dom")>(
-		"react-router-dom",
+vi.mock("react-router", async () => {
+	const actual = await vi.importActual<typeof import("react-router")>(
+		"react-router",
 	);
 	return {
 		...actual,
@@ -71,7 +72,6 @@ beforeEach(() => {
 });
 
 async function renderPage() {
-	const { ExecuteWorkflow } = await import("./ExecuteWorkflow");
 	return renderWithProviders(<ExecuteWorkflow />);
 }
 

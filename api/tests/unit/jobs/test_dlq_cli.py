@@ -1,7 +1,9 @@
 """Tests for the DLQ operational CLI helpers."""
 
+import json
+
 import pytest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from src.jobs import dlq_cli
 from src.jobs.dlq_cli import (
@@ -11,7 +13,9 @@ from src.jobs.dlq_cli import (
     _fetch_poison_messages,
     _requeue_messages,
     replay,
+    reconcile_discard,
 )
+from src.services.execution.poison import PoisonFinalizationResult
 
 
 class FakePoisonMessage:
@@ -134,7 +138,10 @@ async def test_replay_dry_run_describes_and_requeues_without_publish(monkeypatch
     channel = FakeChannel(messages)
     monkeypatch.setattr(dlq_cli, "_connect", AsyncMock(return_value=FakeConnection(channel)))
 
-    rows = await replay("workflow-executions", limit=1, dry_run=True)
+    rows = await replay(
+        "workflow-executions", limit=1, dry_run=True,
+        actor="operator@example.com", reason="verify replay",
+    )
 
     assert rows[0]["message_id"] == "one"
     assert messages[0].nacked is True
@@ -148,8 +155,13 @@ async def test_replay_publishes_with_incremented_replay_headers(monkeypatch):
     messages = [FakeMessage("one", body=b'{"execution_id":"one"}')]
     channel = FakeChannel(messages)
     monkeypatch.setattr(dlq_cli, "_connect", AsyncMock(return_value=FakeConnection(channel)))
+    record = AsyncMock()
+    monkeypatch.setattr(dlq_cli, "_record_disposition", record)
 
-    rows = await replay("workflow-executions", limit=1, dry_run=False)
+    rows = await replay(
+        "workflow-executions", limit=1, dry_run=False,
+        actor="operator@example.com", reason="retry delivery",
+    )
 
     assert rows[0]["message_id"] == "one"
     assert messages[0].acked is True
@@ -158,6 +170,7 @@ async def test_replay_publishes_with_incremented_replay_headers(monkeypatch):
     assert published.headers["x-replayed-count"] == 3
     assert published.headers["x-retry-count"] == 0
     assert published.headers["x-original-message-id"] == "one"
+    record.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -166,8 +179,129 @@ async def test_discard_dry_run_requeues_without_ack(monkeypatch):
     channel = FakeChannel(messages)
     monkeypatch.setattr(dlq_cli, "_connect", AsyncMock(return_value=FakeConnection(channel)))
 
-    rows = await discard("workflow-executions", limit=2, reason="bad payload", dry_run=True)
+    rows = await discard(
+        "workflow-executions", limit=2, reason="bad payload", dry_run=True,
+        actor="operator@example.com",
+    )
 
     assert [row["message_id"] for row in rows] == ["one", "two"]
     assert all(message.nacked for message in messages)
     assert not any(message.acked for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_discard_validates_exact_message_without_mutation(monkeypatch):
+    execution_id = "8b29d604-9fe6-4cd7-9cbd-a9861d1348da"
+    reason = "retry attempts exhausted: Redis DNS unavailable"
+    message = FakeMessage(
+        "exact-message",
+        body=json.dumps({"execution_id": execution_id, "sync": False}).encode(),
+    )
+    message.headers["x-poison-reason"] = reason
+    channel = FakeChannel([message])
+    monkeypatch.setattr(
+        dlq_cli,
+        "_connect",
+        AsyncMock(return_value=FakeConnection(channel)),
+    )
+
+    rows = await reconcile_discard(
+        "workflow-executions",
+        message_id="exact-message",
+        execution_id=execution_id,
+        expected_reason=reason,
+        limit=10,
+        dry_run=True,
+        actor="operator@example.com",
+        reason="verified stale poison message",
+    )
+
+    assert rows[0]["reconciliation"] == "validated_dry_run"
+    assert message.nacked is True
+    assert message.acked is False
+
+
+@pytest.mark.asyncio
+async def test_reconcile_discard_terminalizes_before_exact_ack(monkeypatch):
+    execution_id = "8b29d604-9fe6-4cd7-9cbd-a9861d1348da"
+    reason = "retry attempts exhausted: Redis DNS unavailable"
+    message = FakeMessage(
+        "exact-message",
+        body=json.dumps({"execution_id": execution_id, "sync": False}).encode(),
+    )
+    message.headers["x-poison-reason"] = reason
+    channel = FakeChannel([message])
+    call_order: list[str] = []
+    message.ack = AsyncMock(side_effect=lambda: call_order.append("acked"))
+    finalize = AsyncMock(
+        side_effect=lambda **_kwargs: (
+            call_order.append("terminalized")
+            or PoisonFinalizationResult(
+                disposition="terminalized",
+                execution_id=execution_id,
+                status="Failed",
+                transient_state_cleaned=True,
+            )
+        )
+    )
+    record_disposition = AsyncMock(
+        side_effect=lambda *_args, **_kwargs: call_order.append("audited")
+    )
+    monkeypatch.setattr(
+        dlq_cli,
+        "_connect",
+        AsyncMock(return_value=FakeConnection(channel)),
+    )
+
+    with (
+        patch(
+            "src.services.execution.poison.finalize_poisoned_execution",
+            finalize,
+        ),
+        patch.object(dlq_cli, "_record_disposition", record_disposition),
+    ):
+        rows = await reconcile_discard(
+            "workflow-executions",
+            message_id="exact-message",
+            execution_id=execution_id,
+            expected_reason=reason,
+            limit=10,
+            dry_run=False,
+            actor="operator@example.com",
+            reason="verified stale poison message",
+        )
+
+    assert call_order == ["terminalized", "audited", "acked"]
+    assert rows[0]["reconciliation"]["disposition"] == "terminalized"
+    assert finalize.await_args.kwargs["require_matching_terminal"] is True
+    assert finalize.await_args.kwargs["require_transient_cleanup"] is True
+
+
+@pytest.mark.asyncio
+async def test_reconcile_discard_fails_closed_on_reason_mismatch(monkeypatch):
+    message = FakeMessage(
+        "exact-message",
+        body=b'{"execution_id":"8b29d604-9fe6-4cd7-9cbd-a9861d1348da"}',
+    )
+    message.headers["x-poison-reason"] = "different reason"
+    channel = FakeChannel([message])
+    monkeypatch.setattr(
+        dlq_cli,
+        "_connect",
+        AsyncMock(return_value=FakeConnection(channel)),
+    )
+
+    with pytest.raises(RuntimeError, match="CAS mismatch"):
+        await reconcile_discard(
+            "workflow-executions",
+            message_id="exact-message",
+            execution_id="8b29d604-9fe6-4cd7-9cbd-a9861d1348da",
+            expected_reason="expected reason",
+            limit=10,
+            dry_run=False,
+            actor="operator@example.com",
+            reason="verified stale poison message",
+        )
+
+    assert message.nacked is True
+    assert message.acked is False

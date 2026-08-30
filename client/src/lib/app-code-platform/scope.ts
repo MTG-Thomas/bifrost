@@ -10,7 +10,7 @@ import {
 	useResolvedPath,
 	Outlet,
 	useOutletContext,
-} from "react-router-dom";
+} from "react-router";
 import { useLocation } from "./useLocation";
 import { useWorkflowQuery } from "./useWorkflowQuery";
 import { useWorkflowMutation } from "./useWorkflowMutation";

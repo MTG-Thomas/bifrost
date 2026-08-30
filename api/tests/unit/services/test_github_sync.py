@@ -431,14 +431,16 @@ class TestGitHubSyncCommit:
 class TestGitHubSyncPreflight:
     @pytest.mark.asyncio
     async def test_run_preflight_reports_syntax_and_lint_issues(self, tmp_path, monkeypatch):
+        from src.services import github_sync
         from src.services.github_sync import GitHubSyncService
 
         (tmp_path / "workflows").mkdir()
         bad_file = tmp_path / "workflows" / "bad.py"
         bad_file.write_text("def broken(:\n")
 
-        def fake_run(*args, **kwargs):
-            assert kwargs["cwd"] == str(tmp_path)
+        async def fake_run(repo_dir, py_files):
+            assert repo_dir == tmp_path
+            assert str(bad_file) in py_files
             return type(
                 "Result",
                 (),
@@ -452,7 +454,7 @@ class TestGitHubSyncPreflight:
                 },
             )()
 
-        monkeypatch.setattr("src.services.github_sync.subprocess.run", fake_run)
+        monkeypatch.setattr(github_sync, "_run_ruff_check", fake_run)
 
         service = object.__new__(GitHubSyncService)
         result = await service._run_preflight(tmp_path)
@@ -466,15 +468,16 @@ class TestGitHubSyncPreflight:
 
     @pytest.mark.asyncio
     async def test_run_preflight_ignores_missing_ruff(self, tmp_path, monkeypatch):
+        from src.services import github_sync
         from src.services.github_sync import GitHubSyncService
 
         (tmp_path / "workflows").mkdir()
         (tmp_path / "workflows" / "ok.py").write_text("x = 1\n")
 
-        def fake_run(*args, **kwargs):
+        async def fake_run(*args, **kwargs):
             raise FileNotFoundError("ruff")
 
-        monkeypatch.setattr("src.services.github_sync.subprocess.run", fake_run)
+        monkeypatch.setattr(github_sync, "_run_ruff_check", fake_run)
 
         service = object.__new__(GitHubSyncService)
         result = await service._run_preflight(tmp_path)

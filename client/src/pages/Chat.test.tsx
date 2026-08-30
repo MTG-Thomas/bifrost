@@ -7,9 +7,9 @@ const storeState = {
 	reset: vi.fn(),
 };
 
-vi.mock("react-router-dom", async () => {
-	const actual = await vi.importActual<typeof import("react-router-dom")>(
-		"react-router-dom",
+vi.mock("react-router", async () => {
+	const actual = await vi.importActual<typeof import("react-router")>(
+		"react-router",
 	);
 	return {
 		...actual,
@@ -22,8 +22,8 @@ vi.mock("@/stores/chatStore", () => ({
 	useChatStore: () => storeState,
 }));
 
-vi.mock("@/hooks/useLLMConfig", () => ({
-	useLLMConfig: () => ({
+vi.mock("@/hooks/useChatAvailability", () => ({
+	useChatAvailability: () => ({
 		isConfigured: true,
 		isPlatformAdmin: true,
 		isLoading: false,

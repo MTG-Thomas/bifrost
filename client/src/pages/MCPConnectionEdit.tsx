@@ -10,7 +10,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Eye, EyeOff, Loader2, Trash2 } from "lucide-react";
 

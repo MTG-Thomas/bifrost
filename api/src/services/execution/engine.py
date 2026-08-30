@@ -122,7 +122,9 @@ class ExecutionRequest:
     parameters: dict[str, Any] = field(default_factory=dict)
 
     # Launch workflow results (available via context.startup)
-    startup: dict[str, Any] | None = None
+    startup: Any | None = None
+    form_inputs: dict[str, Any] = field(default_factory=dict)
+    embed: dict[str, Any] = field(default_factory=dict)
 
     # ROI initialization (from workflow defaults)
     roi: dict[str, Any] | None = None
@@ -288,6 +290,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
     # Resolve what we're executing
     func = None
     is_script = False
+    script_source: str | None = None
     is_data_provider = "data_provider" in request.tags
 
     if request.func and request.code:
@@ -298,9 +301,12 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
         # Direct function execution (from discovery)
         func = request.func
         is_script = False
-    elif request.code:
+    elif request.code is not None:
         # Executing inline script
+        if not request.code:
+            raise ValueError("Script execution requires source code")
         is_script = True
+        script_source = request.code
         func = None
     else:
         raise ValueError("Must provide either func or code")
@@ -330,6 +336,8 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
         workflow_name=request.name or "",  # Workflow/script name for context
         public_url=get_settings().public_url,
         startup=request.startup,  # Launch workflow results (from form execution)
+        form_inputs=request.form_inputs,
+        embed=request.embed,
         roi=roi,
         event=request.event,
         solution_id=request.solution_id,  # install scope for SDK name lookups
@@ -357,7 +365,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
     cache_expires_at_str: str | None = None  # For data providers
 
     # Note: SDK authentication is handled by authenticate_engine() in worker.py
-    # which creates credentials in ~/.bifrost/credentials.json before each execution.
+    # which installs process-scoped SDK credentials for this one-shot child.
     # The SDK's get_client() finds these credentials automatically.
 
     try:
@@ -378,12 +386,12 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
                     )
 
             # Convert scripts to callables for unified execution
-            if is_script:
-                assert request.code is not None
-                func = _script_to_callable(request.code, request.name or "script")
+            if script_source is not None:
+                func = _script_to_callable(script_source, request.name or "script")
 
             # Unified execution path for both workflows and scripts
-            assert func is not None
+            if func is None:
+                raise ValueError("Execution requires a workflow or script callable")
 
             # Always capture logs AND variables for all executions
             # Filtering based on permissions happens at API response level

@@ -111,6 +111,9 @@ class ExecutionContext:
     is_external: bool = False
     workflow_name: str = field(default="")  # Name of the executing workflow
     is_agent: bool = False  # True when triggered by an autonomous agent
+    # Shared file workspace inherited by nested tools. Chat uses the
+    # conversation id; autonomous/coding runs use their root run id.
+    artifact_workspace_id: str | None = field(default=None)
     # The install this execution belongs to, when the workflow is solution-managed.
     # The SDK appends it to name lookups (tables/configs) so they resolve the
     # install's OWN entity first, then _repo/. None for plain _repo/ executions.
@@ -134,7 +137,14 @@ class ExecutionContext:
     # ==================== LAUNCH WORKFLOW DATA ====================
     # Results from the launch workflow (pre-execution context population)
     # Access via context.startup (None if no launch workflow)
-    startup: dict[str, Any] | None = field(default=None)
+    startup: Any | None = field(default=None)
+
+    # Validated values submitted through a form. These remain separate from
+    # signed embed context so browser fields can never overwrite trusted data.
+    form_inputs: dict[str, Any] = field(default_factory=dict)
+
+    # HMAC-verified embed values. Empty for authenticated and public forms.
+    embed: dict[str, Any] = field(default_factory=dict)
 
     # ==================== EVENT ====================
     # Populated when a workflow is triggered by an Event row (topic, webhook, schedule).
@@ -242,9 +252,12 @@ class ExecutionContext:
             "execution_id": self.execution_id,
             "workflow_name": self.workflow_name,
             "is_agent": self.is_agent,
+            "artifact_workspace_id": self.artifact_workspace_id,
             "public_url": self.public_url,
             "parameters": self.parameters,
             "startup": self.startup,
+            "form_inputs": self.form_inputs,
+            "embed": self.embed,
             "roi": {
                 "time_saved": self.roi.time_saved,
                 "value": self.roi.value,

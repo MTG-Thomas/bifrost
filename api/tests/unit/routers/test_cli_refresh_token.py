@@ -108,6 +108,7 @@ class TestRefreshTokenClientCredentials:
             client_secret="decrypted-secret",
             scopes="read write",
             audience=None,
+            resource=None,
         )
         # Token should be persisted (new record since no existing token)
         mock_db.add.assert_called_once()
@@ -258,6 +259,8 @@ class TestRefreshTokenAuthorizationCode:
             result = await sdk_integrations_refresh_token(request, mock_user, mock_db)
 
         assert result.refreshed is True
+        token_query = str(mock_db.execute.call_args_list[1].args[0])
+        assert "FOR UPDATE" in token_query
         response_payload = result.model_dump()
         assert "access_token" not in response_payload
         assert "refresh_token" not in response_payload

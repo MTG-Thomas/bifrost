@@ -1,32 +1,50 @@
 """
 Execution Cleanup Scheduler
 
-Cleans up stuck executions that remain in PENDING, RUNNING, or CANCELLING
-status for too long.
+Cleans up stuck workflow executions and stale autonomous agent runs that
+remain in in-progress states for too long.
 
 Runs every 5 minutes to find and timeout stuck executions.
 """
 
-import logging
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select, and_
+from sqlalchemy import and_, func, select
 
 from src.core.database import get_session_factory
-from src.core.pubsub import publish_execution_update, publish_history_update
+from src.core.pubsub import (
+    publish_agent_run_update,
+    publish_execution_update,
+    publish_history_update,
+)
 from src.core.redis_client import get_redis_client
+from src.models.orm.agent_runs import AgentRun
+from src.models.orm.agents import Agent
 from src.models import Execution as ExecutionModel, ExecutionLog
 from src.models.orm.workflows import Workflow
+from src.services.execution_attempts import transition_execution_attempt
 
 logger = logging.getLogger(__name__)
 
 # Timeout thresholds
 PENDING_TIMEOUT_MINUTES = 10  # If PENDING for 10+ minutes, it's stuck in queue
+SCHEDULED_TIMEOUT_MINUTES = 24 * 60  # Leave a full day for deferred recovery
 RUNNING_TIMEOUT_MINUTES = 30  # If RUNNING for 30+ minutes, worker likely crashed
 CANCELLING_TIMEOUT_MINUTES = 3  # If CANCELLING for 3+ minutes, worker failed to cancel
 RESTART_ORPHAN_GRACE_SECONDS = 120
+DEFAULT_AGENT_RUN_TIMEOUT_SECONDS = 30 * 60
+AGENT_RUN_TIMEOUT_GRACE_SECONDS = 5 * 60
+
+
+def _execution_age_anchor(execution: ExecutionModel) -> datetime:
+    """Return the timestamp that represents when active work became due."""
+    anchor = execution.started_at or execution.scheduled_at or execution.created_at
+    if anchor.tzinfo is None:
+        return anchor.replace(tzinfo=timezone.utc)
+    return anchor.astimezone(timezone.utc)
 
 
 async def _load_worker_heartbeat_state(now: datetime) -> dict[str, Any]:
@@ -40,29 +58,54 @@ async def _load_worker_heartbeat_state(now: datetime) -> dict[str, Any]:
     if not redis_client:
         return state
 
-    cursor = 0
-    while True:
-        cursor, keys = await redis_client.scan(cursor, match="bifrost:pool:*:heartbeat", count=100)
-        for key in keys:
-            raw = await redis_client.get(key)
-            if not raw:
-                continue
-            try:
-                heartbeat = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            state["heartbeat_count"] += 1
-            started_at = _parse_heartbeat_time(heartbeat.get("started_at"))
-            if started_at is not None:
-                oldest = state["oldest_worker_started_at"]
-                state["oldest_worker_started_at"] = started_at if oldest is None else min(oldest, started_at)
-            for process in heartbeat.get("processes") or []:
-                execution = process.get("execution") if isinstance(process, dict) else None
-                execution_id = execution.get("execution_id") if isinstance(execution, dict) else None
-                if execution_id:
-                    state["active_execution_ids"].add(str(execution_id))
-        if cursor == 0:
-            break
+    try:
+        cursor = 0
+        while True:
+            cursor, keys = await redis_client.scan(
+                cursor,
+                match="bifrost:pool:*:heartbeat",
+                count=100,
+            )
+            for key in keys:
+                raw = await redis_client.get(key)
+                if not raw:
+                    continue
+                try:
+                    heartbeat = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                state["heartbeat_count"] += 1
+                started_at = _parse_heartbeat_time(heartbeat.get("started_at"))
+                if started_at is not None:
+                    oldest = state["oldest_worker_started_at"]
+                    state["oldest_worker_started_at"] = (
+                        started_at if oldest is None else min(oldest, started_at)
+                    )
+                for process in heartbeat.get("processes") or []:
+                    execution = (
+                        process.get("execution")
+                        if isinstance(process, dict)
+                        else None
+                    )
+                    execution_id = (
+                        execution.get("execution_id")
+                        if isinstance(execution, dict)
+                        else None
+                    )
+                    if execution_id:
+                        state["active_execution_ids"].add(str(execution_id))
+            if cursor == 0:
+                break
+    except Exception as exc:
+        logger.warning(
+            "Worker heartbeat state is unavailable; continuing with age-based execution cleanup: %s",
+            exc,
+        )
+        return {
+            "active_execution_ids": set(),
+            "oldest_worker_started_at": None,
+            "heartbeat_count": 0,
+        }
 
     return state
 
@@ -120,11 +163,16 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
     from src.models.enums import ExecutionStatus
 
     results = {
+        "scheduled_timeouts": 0,
         "pending_timeouts": 0,
         "running_timeouts": 0,
         "cancelling_timeouts": 0,
         "total_cleaned": 0,
         "errors": [],
+        "agent_run_queued_timeouts": 0,
+        "agent_run_running_timeouts": 0,
+        "agent_run_total_cleaned": 0,
+        "agent_run_errors": [],
     }
 
     now = datetime.now(timezone.utc)
@@ -137,13 +185,36 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
 
         session_factory = get_session_factory()
         async with session_factory() as db:
+            # A SCHEDULED row can be created well before its due time. Only
+            # consider it orphaned after scheduled_at, falling back to
+            # created_at for immediate rows that never received a due time.
+            scheduled_cutoff = now - timedelta(minutes=SCHEDULED_TIMEOUT_MINUTES)
+            scheduled_result = await db.execute(
+                select(ExecutionModel).where(
+                    and_(
+                        ExecutionModel.status == ExecutionStatus.SCHEDULED.value,
+                        func.coalesce(
+                            ExecutionModel.scheduled_at,
+                            ExecutionModel.created_at,
+                        )
+                        < scheduled_cutoff,
+                    )
+                )
+            )
+            scheduled_stuck = list(scheduled_result.scalars().all())
+
             # Find stuck PENDING executions
             pending_cutoff = now - timedelta(minutes=PENDING_TIMEOUT_MINUTES)
             pending_result = await db.execute(
                 select(ExecutionModel).where(
                     and_(
                         ExecutionModel.status == ExecutionStatus.PENDING.value,
-                        ExecutionModel.started_at < pending_cutoff,
+                        func.coalesce(
+                            ExecutionModel.started_at,
+                            ExecutionModel.scheduled_at,
+                            ExecutionModel.created_at,
+                        )
+                        < pending_cutoff,
                     )
                 )
             )
@@ -165,12 +236,17 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
                 if _is_restart_orphan(execution, now=now, heartbeat_state=heartbeat_state):
                     running_stuck.append(execution)
                     continue
+                age_anchor = _execution_age_anchor(execution)
+                if execution.started_at is None:
+                    if (now - age_anchor).total_seconds() > RUNNING_TIMEOUT_MINUTES * 60:
+                        running_stuck.append(execution)
+                    continue
                 # timeout_seconds == 0 means no timeout — skip entirely
                 if wf_timeout is not None and wf_timeout == 0:
                     continue
                 # Use per-workflow timeout + 5 min grace, or fallback
                 effective_timeout_s = (wf_timeout + 300) if wf_timeout else (RUNNING_TIMEOUT_MINUTES * 60)
-                elapsed = (now - execution.started_at).total_seconds()
+                elapsed = (now - age_anchor).total_seconds()
                 if elapsed > effective_timeout_s:
                     running_stuck.append(execution)
 
@@ -180,19 +256,40 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
                 select(ExecutionModel).where(
                     and_(
                         ExecutionModel.status == ExecutionStatus.CANCELLING.value,
-                        ExecutionModel.started_at < cancelling_cutoff,
+                        func.coalesce(
+                            ExecutionModel.started_at,
+                            ExecutionModel.scheduled_at,
+                            ExecutionModel.created_at,
+                        )
+                        < cancelling_cutoff,
                     )
                 )
             )
             cancelling_stuck = list(cancelling_result.scalars().all())
 
-            all_stuck = pending_stuck + running_stuck + cancelling_stuck
+            all_stuck = (
+                scheduled_stuck
+                + pending_stuck
+                + running_stuck
+                + cancelling_stuck
+            )
             logger.info(f"Found {len(all_stuck)} stuck executions to clean up")
 
             for execution in all_stuck:
                 try:
                     # Determine timeout reason and final status
-                    if execution.status == ExecutionStatus.PENDING.value:
+                    original_status = ExecutionStatus(execution.status)
+                    age_anchor = _execution_age_anchor(execution)
+
+                    if execution.status == ExecutionStatus.SCHEDULED.value:
+                        timeout_reason = (
+                            f"SCHEDULED execution was not enqueued within "
+                            f"{SCHEDULED_TIMEOUT_MINUTES}+ minutes of its due time."
+                        )
+                        final_status = ExecutionStatus.FAILED
+                        results["scheduled_timeouts"] += 1
+
+                    elif execution.status == ExecutionStatus.PENDING.value:
                         timeout_reason = (
                             f"Stuck in PENDING status for {PENDING_TIMEOUT_MINUTES}+ minutes. "
                             "Likely queue processing issue or worker not running."
@@ -201,7 +298,7 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
                         results["pending_timeouts"] += 1
 
                     elif execution.status == ExecutionStatus.RUNNING.value:
-                        elapsed_min = int((now - execution.started_at).total_seconds() / 60) if execution.started_at else RUNNING_TIMEOUT_MINUTES
+                        elapsed_min = int((now - age_anchor).total_seconds() / 60)
                         if _is_restart_orphan(execution, now=now, heartbeat_state=heartbeat_state):
                             timeout_reason = (
                                 f"Stuck in RUNNING status for {elapsed_min}+ minutes. "
@@ -227,7 +324,7 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
                         continue
 
                     # Log orphan execution being swept (before status update, to capture original status)
-                    stuck_for_seconds = int((now - execution.started_at).total_seconds()) if execution.started_at else 0
+                    stuck_for_seconds = int((now - age_anchor).total_seconds())
                     logger.warning(
                         "orphan_execution_swept",
                         extra={
@@ -251,6 +348,22 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
                     execution.status = final_status.value  # type: ignore[assignment]
                     execution.error_message = timeout_reason
                     execution.completed_at = now
+                    if original_status in {
+                        ExecutionStatus.RUNNING,
+                        ExecutionStatus.CANCELLING,
+                    }:
+                        await transition_execution_attempt(
+                            db,
+                            logical_job_type="workflow_execution",
+                            logical_job_id=execution.id,
+                            status=(
+                                "cancelled"
+                                if final_status == ExecutionStatus.CANCELLED
+                                else "worker_lost"
+                            ),
+                            failure_code="automatic_cleanup",
+                            failure_message=timeout_reason,
+                        )
 
                     # Add timeout log entry
                     log_entry = ExecutionLog(
@@ -259,7 +372,8 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
                         message=timeout_reason,
                         log_metadata={
                             "timeout_type": "automatic_cleanup",
-                            "original_status": execution.status,
+                            "original_status": original_status.value,
+                            "age_anchor": age_anchor.isoformat(),
                         },
                         timestamp=now,
                     )
@@ -293,6 +407,23 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
             # Commit all changes
             await db.commit()
 
+        # Remove transient queue/context state after the terminal DB commit.
+        # Redis may be the failed dependency, so each cleanup remains
+        # best-effort and the next scheduler pass can converge it.
+        from src.services.execution.queue_tracker import remove_from_queue
+
+        redis_client = get_redis_client()
+        for update in pubsub_updates:
+            try:
+                await remove_from_queue(update["execution_id"])
+                await redis_client.delete_pending_execution(update["execution_id"])
+            except Exception as e:
+                logger.warning(
+                    "Durable execution cleanup completed but transient state cleanup failed for %s: %s",
+                    update["execution_id"],
+                    e,
+                )
+
         # Publish WebSocket updates AFTER session is closed (no DB connection held)
         for update in pubsub_updates:
             try:
@@ -318,6 +449,7 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
             "Execution cleanup completed",
             extra={
                 "pending_timeouts": results["pending_timeouts"],
+                "scheduled_timeouts": results["scheduled_timeouts"],
                 "running_timeouts": results["running_timeouts"],
                 "cancelling_timeouts": results["cancelling_timeouts"],
                 "total_cleaned": results["total_cleaned"],
@@ -327,5 +459,150 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
     except Exception as e:
         logger.error("Error in execution cleanup", extra={"error": str(e)}, exc_info=True)
         results["errors"].append({"error": str(e)})
+    finally:
+        try:
+            agent_run_results = await _cleanup_stale_agent_runs(now)
+            results.update(agent_run_results)
+        except Exception as e:
+            logger.error("Error in agent run cleanup", extra={"error": str(e)}, exc_info=True)
+            results["agent_run_errors"].append({"error": str(e)})
+        else:
+            logger.info(
+                "Agent run cleanup completed",
+                extra={
+                    "agent_run_queued_timeouts": results["agent_run_queued_timeouts"],
+                    "agent_run_running_timeouts": results["agent_run_running_timeouts"],
+                    "agent_run_total_cleaned": results["agent_run_total_cleaned"],
+                },
+            )
 
     return results
+
+
+def _agent_run_timeout_seconds(agent: Agent | None) -> int:
+    """Return the configured timeout for an agent, falling back to the shared default."""
+    configured = getattr(agent, "max_run_timeout", None)
+    if configured is not None and configured > 0:
+        return configured
+    return DEFAULT_AGENT_RUN_TIMEOUT_SECONDS
+
+
+async def _cleanup_stale_agent_runs(now: datetime) -> dict[str, Any]:
+    """Terminalize stale queued/running AgentRun rows without replaying them."""
+    session_factory = get_session_factory()
+    updates: list[dict[str, Any]] = []
+    results: dict[str, Any] = {
+        "agent_run_queued_timeouts": 0,
+        "agent_run_running_timeouts": 0,
+        "agent_run_total_cleaned": 0,
+        "agent_run_errors": [],
+    }
+
+    try:
+        async with session_factory() as db:
+            query = (
+                select(AgentRun, Agent)
+                .join(Agent, AgentRun.agent_id == Agent.id)
+                .where(AgentRun.status.in_(("queued", "running")))
+                .order_by(AgentRun.created_at.asc())
+            )
+            runs = (await db.execute(query)).all()
+
+            for candidate, agent in runs:
+                timeout_seconds = _agent_run_timeout_seconds(agent)
+                timeout_with_grace = timeout_seconds + AGENT_RUN_TIMEOUT_GRACE_SECONDS
+                reference_time = (
+                    candidate.created_at
+                    if candidate.status == "queued"
+                    else (candidate.started_at or candidate.created_at)
+                )
+                if reference_time is None:
+                    continue
+
+                elapsed = (now - reference_time).total_seconds()
+                if elapsed <= timeout_with_grace:
+                    continue
+
+                # Lock only the row already identified as stale. The status
+                # predicate is a compare-and-set guard against a worker that
+                # completed between the candidate read and this lock.
+                run = (
+                    await db.execute(
+                        select(AgentRun)
+                        .where(
+                            AgentRun.id == candidate.id,
+                            AgentRun.status == candidate.status,
+                        )
+                        .with_for_update(skip_locked=True, of=AgentRun)
+                    )
+                ).scalar_one_or_none()
+                if run is None:
+                    continue
+
+                reference_time = (
+                    run.created_at
+                    if run.status == "queued"
+                    else (run.started_at or run.created_at)
+                )
+                if reference_time is None:
+                    continue
+                elapsed = (now - reference_time).total_seconds()
+                if elapsed <= timeout_with_grace:
+                    continue
+
+                agent_name = agent.name
+                if run.status == "queued":
+                    final_status = "failed"
+                    timeout_reason = (
+                        f"Agent run timed out waiting in queue after "
+                        f"{timeout_with_grace} seconds."
+                    )
+                    results["agent_run_queued_timeouts"] += 1
+                else:
+                    final_status = "timeout"
+                    timeout_reason = (
+                        f"Agent run timed out after {timeout_with_grace} seconds."
+                    )
+                    results["agent_run_running_timeouts"] += 1
+
+                logger.warning(
+                    "agent_run_swept",
+                    extra={
+                        "agent_run_id": str(run.id),
+                        "agent_id": str(run.agent_id),
+                        "agent_name": agent_name,
+                        "stuck_status": run.status,
+                        "stuck_for_seconds": int(elapsed),
+                        "timeout_seconds": timeout_seconds,
+                        "timeout_with_grace": timeout_with_grace,
+                    },
+                )
+
+                run.status = final_status
+                run.error = timeout_reason
+                run.completed_at = now
+                updates.append(
+                    {
+                        "run": run,
+                        "agent_name": agent_name,
+                    }
+                )
+                results["agent_run_total_cleaned"] += 1
+
+            await db.commit()
+
+        for update in updates:
+            try:
+                await publish_agent_run_update(update["run"], update["agent_name"])
+            except Exception:
+                logger.warning(
+                    "Failed to publish agent run update",
+                    extra={"agent_run_id": str(update["run"].id)},
+                    exc_info=True,
+                )
+
+        return results
+    except Exception as e:
+        logger.error("Error in agent run cleanup", extra={"error": str(e)}, exc_info=True)
+        results["agent_run_errors"].append({"error": str(e)})
+        return results

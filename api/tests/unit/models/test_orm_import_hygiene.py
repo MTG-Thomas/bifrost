@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 
@@ -23,16 +24,33 @@ CODEQL_UNSAFE_CYCLIC_IMPORT_MODULES = [
     "workflow_roles.py",
     "workflows.py",
 ]
+CODEQL_UNSAFE_CYCLIC_IMPORT_NAMES = {
+    f"src.models.orm.{Path(filename).stem}"
+    for filename in CODEQL_UNSAFE_CYCLIC_IMPORT_MODULES
+}
 
 
-def test_codeql_cyclic_import_cluster_uses_string_forward_refs() -> None:
-    """Alerted ORM peers should stay as string refs, without static imports."""
+def test_codeql_cyclic_import_cluster_has_no_runtime_peer_imports() -> None:
+    """ORM peers may be imported for typing, but never during module execution."""
 
     for filename in CODEQL_UNSAFE_CYCLIC_IMPORT_MODULES:
         source = (ORM_DIR / filename).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        runtime_imports: list[str] = []
+        for node in tree.body:
+            if (
+                isinstance(node, ast.ImportFrom)
+                and (node.module or "") in CODEQL_UNSAFE_CYCLIC_IMPORT_NAMES
+            ):
+                runtime_imports.append(node.module or "")
+            elif isinstance(node, ast.Import):
+                runtime_imports.extend(
+                    alias.name
+                    for alias in node.names
+                    if alias.name in CODEQL_UNSAFE_CYCLIC_IMPORT_NAMES
+                )
 
-        assert "TYPE_CHECKING" not in source
-        assert "if TYPE_CHECKING:" not in source
+        assert runtime_imports == [], f"{filename} imports ORM peers at runtime"
 
 
 def test_orm_package_exports_still_import() -> None:

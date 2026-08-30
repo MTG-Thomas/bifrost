@@ -2,17 +2,16 @@
 Worker process entry point for isolated execution.
 
 This module runs in a separate process and:
-1. Reads execution context from Redis
+1. Receives execution context from its parent (legacy entry points use Redis)
 2. Runs the workflow/script
 3. Writes logs to Redis Stream (already handled by engine)
-4. Writes result to Redis (including resource metrics)
+4. Returns a result with resource metrics
 5. Exits cleanly (or gets killed on timeout)
 
 The worker imports minimal dependencies to keep memory footprint low.
 
-IMPORTANT: The virtual import hook is installed at module load time
-(before any workspace imports can occur) to enable loading Python
-modules from Redis cache instead of the filesystem.
+IMPORTANT: The virtual import hook is installed for each execution after its
+credentials and source context are active, but before workspace code loads.
 """
 
 from __future__ import annotations
@@ -29,15 +28,31 @@ from typing import Any
 
 from opentelemetry import trace
 
-# Install virtual import hook IMMEDIATELY at module load time.
-# This must happen before any workspace imports (e.g., from shared import ...)
-# The hook intercepts imports and loads modules from Redis cache.
-from src.services.execution.virtual_import import install_virtual_import_hook
-
-install_virtual_import_hook()
+from src.services.execution.draft_limits import enforce_draft_output_limit
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
+
+
+def _set_process_engine_credentials(context_data: dict[str, Any]) -> bool:
+    """Install the handed-down engine token for this one-shot process."""
+    engine_token = context_data.get("engine_token")
+    if not engine_token:
+        return False
+
+    import os
+
+    # The fallback is the private Compose service endpoint. TLS terminates at
+    # the ingress, and this traffic never leaves the container network.
+    api_url = os.getenv("BIFROST_API_URL", "http://api:8000")  # NOSONAR
+    # The SDK's process backend takes precedence over keyring or JSON
+    # persistence and supports refresh-on-401 by updating this tuple. Avoiding
+    # persistence also prevents headless keyring probes from importing optional
+    # DBus/desktop modules through the virtual importer on every execution.
+    os.environ["BIFROST_API_URL"] = api_url
+    os.environ["BIFROST_ACCESS_TOKEN"] = engine_token
+    os.environ["BIFROST_REFRESH_TOKEN"] = engine_token
+    return True
 
 
 @dataclass
@@ -118,6 +133,35 @@ def _queue_wait_ms(created_at: str | None, now: datetime | None = None) -> int |
     return max(0, int((observed_at - enqueued_at).total_seconds() * 1000))
 
 
+def _load_workspace_workflow(
+    *,
+    file_path: str,
+    function_name: str,
+    workspace_generation: str | None,
+) -> tuple[Any, Any, str | None, str | None]:
+    """Load one entry workflow only while its pinned generation remains current."""
+    from src.core.module_cache_sync import (
+        assert_workspace_generation,
+        get_module_sync,
+    )
+    from src.services.execution.module_loader import load_workflow_from_db
+
+    assert_workspace_generation(workspace_generation)
+    cached = get_module_sync(file_path)
+    if not cached:
+        return None, None, None, None
+
+    loaded_code = cached["content"]
+    workflow_func, metadata, load_error = load_workflow_from_db(
+        code=loaded_code,
+        path=file_path,
+        function_name=function_name,
+        workspace_generation=workspace_generation,
+    )
+    assert_workspace_generation(workspace_generation)
+    return workflow_func, metadata, load_error, loaded_code
+
+
 def _setup_signal_handlers():
     """Set up signal handlers for graceful shutdown."""
     def handle_sigterm(signum, frame):
@@ -153,27 +197,16 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
     from src.sdk.context import Caller, Organization
     from src.services.execution.engine import ExecutionRequest, execute
     from src.models.enums import ExecutionStatus
-    from bifrost.credentials import is_token_expired, save_credentials
+    from bifrost.credentials import is_token_expired
 
     # Engine credentials: prefer the pre-minted token handed down from the
     # consumer via context_data["engine_token"].  This keeps SECRET_KEY out of
     # the child process entirely.
     # Fall back to authenticate_engine() only for callers (e.g. direct engine
     # tests) that bypass the consumer and do not supply a pre-minted token.
-    engine_token = context_data.get("engine_token")
-    if engine_token:
-        import os
-        scheme = "".join(chr(c) for c in (104, 116, 116, 112))
-        default_api_url = f"{scheme}://api:8000"
-        api_url = os.getenv("BIFROST_API_URL", default_api_url)
-        expires_at = context_data.get("engine_token_expires_at", "")
-        save_credentials(
-            api_url=api_url,
-            access_token=engine_token,
-            refresh_token=engine_token,  # Not used but required by schema
-            expires_at=expires_at,
-        )
-    elif is_token_expired(buffer_seconds=3600):
+    if not _set_process_engine_credentials(context_data) and is_token_expired(
+        buffer_seconds=3600
+    ):
         from src.core.security import authenticate_engine
         authenticate_engine()
 
@@ -186,9 +219,23 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
     # loads. With no solution_id this is a no-op (plain _repo/ behavior). The
     # finally below always clears it so a forked worker reused for the next
     # execution never inherits a stale root. See module_cache_sync.
-    from src.core.module_cache_sync import clear_solution_context, set_solution_context
+    from src.core.module_cache_sync import (
+        clear_solution_context,
+        clear_workspace_release_context,
+        clear_workspace_generation_context,
+        set_solution_context,
+        set_workspace_release_context,
+        set_workspace_generation_context,
+    )
+
+    set_workspace_generation_context(context_data.get("workspace_generation"))
 
     _exec_solution_id = context_data.get("solution_id")
+    _workspace_release_id = context_data.get("workspace_release_id")
+    if _exec_solution_id and _workspace_release_id:
+        raise RuntimeError(
+            "execution cannot pin a Solution and Workspace release together"
+        )
     if _exec_solution_id:
         set_solution_context(
             _exec_solution_id,
@@ -196,6 +243,30 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
             runtime_storage_prefix=context_data.get("runtime_storage_prefix"),
             source_hashes=context_data.get("deployment_source_hashes"),
         )
+
+    if _workspace_release_id:
+        set_workspace_release_context(
+            _workspace_release_id,
+            runtime_storage_prefix=str(
+                context_data.get("workspace_release_runtime_storage_prefix") or ""
+            ),
+            source_hashes=dict(
+                context_data.get("workspace_release_source_hashes") or {}
+            ),
+        )
+
+    # Install the hook only after this execution's credentials and source root
+    # are active. Importing this module also happens in the API process and in
+    # test collection, where a process-global finder would redirect unrelated
+    # optional imports without an execution-scoped resolver.
+    from src.services.execution.virtual_import import (
+        get_virtual_finder,
+        install_virtual_import_hook,
+        remove_virtual_import_hook,
+    )
+
+    owns_virtual_import_hook = get_virtual_finder() is None
+    install_virtual_import_hook()
 
     span_attributes = {
         "bifrost.execution.id": execution_id,
@@ -244,8 +315,6 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
         is_script = bool(context_data.get("code"))
 
         if not is_script:
-            from src.services.execution.module_loader import load_workflow_from_db
-
             name = context_data["name"]
             function_name = context_data.get("function_name")
             file_path = context_data.get("file_path")
@@ -256,16 +325,19 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
             # Consumer provides metadata only; worker is self-sufficient for code loading.
             if function_name and file_path:
                 try:
-                    from src.core.module_cache_sync import get_module_sync
-
-                    cached = get_module_sync(file_path)
-                    if cached:
-                        loaded_code = cached["content"]
-                        workflow_func, metadata, load_error = load_workflow_from_db(
-                            code=loaded_code,
-                            path=file_path,
-                            function_name=function_name,
-                        )
+                    (
+                        workflow_func,
+                        metadata,
+                        load_error,
+                        loaded_code,
+                    ) = _load_workspace_workflow(
+                        file_path=file_path,
+                        function_name=function_name,
+                        workspace_generation=context_data.get(
+                            "workspace_generation"
+                        ),
+                    )
+                    if loaded_code:
                         logger.info(
                             f"Loaded workflow '{name}' from cache (path={file_path})"
                         )
@@ -297,6 +369,10 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
                     raise RuntimeError(
                         f"deployment source integrity mismatch for {file_path}"
                     )
+
+            from src.core.module_cache_sync import assert_workspace_generation
+
+            assert_workspace_generation(context_data.get("workspace_generation"))
 
             if workflow_func is None:
                 metrics = _capture_metrics(start_rss, start_utime, start_stime)
@@ -339,6 +415,8 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
             cache_ttl_seconds=context_data.get("cache_ttl_seconds", 300),
             parameters=context_data.get("parameters", {}),
             startup=context_data.get("startup"),  # Launch workflow results
+            form_inputs=context_data.get("form_inputs", {}),
+            embed=context_data.get("embed", {}),
             roi=context_data.get("roi"),  # ROI initialization
             transient=context_data.get("transient", False),
             no_cache=context_data.get("no_cache", False),
@@ -353,6 +431,10 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
 
         # Execute
         exec_result = await execute(request)
+
+        # A draft cannot report success with a payload larger than the bound
+        # captured in its immutable server-issued execution evidence.
+        enforce_draft_output_limit(context_data, exec_result.result)
 
         # Capture resource metrics after execution
         metrics = _capture_metrics(start_rss, start_utime, start_stime)
@@ -409,6 +491,10 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
         # Always clear the solution import root — a forked worker is reused for
         # later executions and must not inherit this one's root.
         clear_solution_context()
+        clear_workspace_release_context()
+        clear_workspace_generation_context()
+        if owns_virtual_import_hook:
+            remove_virtual_import_hook()
 
 
 async def worker_main(execution_id: str):
@@ -450,6 +536,13 @@ async def worker_main(execution_id: str):
                 "metrics": None,
             })
             return
+
+        if not context_data.get("workspace_generation"):
+            from src.core.module_cache_sync import wait_for_workspace_generation_sync
+
+            context_data["workspace_generation"] = await asyncio.to_thread(
+                wait_for_workspace_generation_sync
+            )
 
         # Run the execution
         result = await _run_execution(execution_id, context_data)

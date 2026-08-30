@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import {
 	ChevronDown,
 	LogOut,
@@ -31,6 +31,7 @@ import { useProfile } from "@/hooks/useProfile";
 import { profileService } from "@/services/profile";
 import { FileActivityIndicator } from "@/components/layout/FileActivityIndicator";
 import { PasskeySetupBadge } from "@/components/PasskeySetupBadge";
+import { BifrostRunMenu } from "@/components/layout/BifrostRunMenu";
 
 interface HeaderProps {
 	onMobileMenuToggle?: () => void;
@@ -123,6 +124,9 @@ export function Header({
 
 				{/* File Activity Indicator (Platform Admin only) */}
 				{isPlatformAdmin && <FileActivityIndicator />}
+
+				{/* AI assistant connection — only renders while MCP is enabled */}
+				<BifrostRunMenu />
 
 				{/* Search Button */}
 				<Button

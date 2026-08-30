@@ -1,11 +1,24 @@
 """Tests for bifrost.credentials backend abstraction and multi-record store."""
 
 import os
+from collections.abc import Iterator
 
 import pytest
 
 from bifrost import credentials as creds_mod
 from bifrost.credentials import Credentials, EnvBackend, JsonBackend
+
+
+@pytest.fixture(autouse=True)
+def restore_auth_environment() -> Iterator[None]:
+    """Keep direct dotenv imports from leaking into later unit tests."""
+    original = {key: os.environ.get(key) for key in creds_mod.AUTH_ENV_KEYS}
+    yield
+    for key, value in original.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
 
 
 # ---------- Credentials dataclass ----------
@@ -64,6 +77,8 @@ class TestEnvBackend:
         assert backend.get("http://localhost:38421") is None
 
     def test_save_is_noop(self, monkeypatch):
+        monkeypatch.delenv("BIFROST_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("BIFROST_REFRESH_TOKEN", raising=False)
         backend = EnvBackend()
         # Should not raise; env backend is read-only
         backend.save(Credentials("http://x", "at", "rt", "2030-01-01T00:00:00+00:00"))

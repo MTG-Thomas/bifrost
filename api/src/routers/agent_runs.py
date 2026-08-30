@@ -10,9 +10,9 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import desc, func, literal_column, or_, select
-from sqlalchemy.orm import selectinload
+from fastapi import APIRouter, HTTPException, Query, Response, status
+from sqlalchemy import desc, func, literal_column, or_, select, text
+from sqlalchemy.orm import joinedload, selectinload
 
 from src.core.auth import CurrentActiveUser
 from src.core.cache.keys import agent_run_steps_stream_key
@@ -22,7 +22,6 @@ from src.core.db_deps import DbSession
 from src.core.log_safety import log_safe
 from src.services.agent_run_access import (
     apply_agent_run_access,
-    load_agent_by_name_for_user,
     load_agent_for_user,
     load_agent_run_for_user,
 )
@@ -32,7 +31,10 @@ from src.models.contracts.agent_run_flag_conversations import (
 )
 from src.models.contracts.agent_runs import (
     AgentRunCreateRequest,
+    AgentRunChildResponse,
     AgentRunDetailResponse,
+    AgentRunEnqueueRequest,
+    AgentRunEnqueueResponse,
     AgentRunListResponse,
     AgentRunRerunResponse,
     AgentRunResponse,
@@ -44,6 +46,7 @@ from src.models.contracts.agent_runs import (
     DryRunResponse,
     MetadataKeysResponse,
     MetadataValuesResponse,
+    PausedResponse,
     SummaryBackfillJobListResponse,
     SummaryBackfillJobResponse,
     VerdictRequest,
@@ -53,11 +56,12 @@ from src.models.contracts.executions import AIUsagePublicSimple, AIUsageTotalsSi
 from src.models.orm.agent_run_verdict_history import AgentRunVerdictHistory
 from src.models.orm.agent_runs import AgentRun
 from src.models.orm.ai_usage import AIUsage
-from src.models.orm.solutions import Solution
 from src.models.orm.summary_backfill_job import SummaryBackfillJob
 from src.core.redis_client import get_redis_client
+from src.services.execution.agent_run_access import agent_run_visibility_conditions
 from src.services.execution.agent_run_service import (
     enqueue_agent_run,
+    get_executable_agent,
     wait_for_agent_run_result,
 )
 from src.services.execution.dry_run import evaluate_against_prompt
@@ -147,8 +151,16 @@ async def list_agent_runs(
     offset: int = Query(0, ge=0),
 ) -> AgentRunListResponse:
     """List agent runs with optional filters."""
-    # Build base query — exclude delegation sub-runs from top-level list
-    query = select(AgentRun).where(AgentRun.parent_run_id.is_(None))
+    # Global history stays root-only so one orchestration is counted once.
+    # An individual agent's history includes delegated runs because those are
+    # real executions of that agent and should not disappear from its Runs tab.
+    query = select(AgentRun)
+    if agent_id is None:
+        query = query.where(
+            AgentRun.parent_run_id.is_(None),
+            AgentRun.trigger_type != "delegation",
+        )
+
     query = apply_agent_run_access(query, user)
 
     # Apply optional filters
@@ -288,6 +300,7 @@ async def get_metadata_keys(
     conditions = [AgentRun.agent_id == agent_id]
     if not user.is_superuser and user.organization_id:
         conditions.append(AgentRun.org_id == user.organization_id)
+    conditions.extend(agent_run_visibility_conditions(user))
 
     # jsonb_object_keys explodes the top-level keys of each row's metadata;
     # DISTINCT + ORDER BY gives the UI a stable, deduped list.
@@ -322,6 +335,7 @@ async def get_metadata_values(
     conditions = [AgentRun.agent_id == agent_id]
     if not user.is_superuser and user.organization_id:
         conditions.append(AgentRun.org_id == user.organization_id)
+    conditions.extend(agent_run_visibility_conditions(user))
 
     value_col = AgentRun.run_metadata[key].astext
     stmt = (
@@ -468,6 +482,9 @@ async def get_agent_run(
                 model=entry.model,
                 input_tokens=entry.input_tokens,
                 output_tokens=entry.output_tokens,
+                cache_read_tokens=entry.cache_read_tokens,
+                cache_write_tokens=entry.cache_write_tokens,
+                provider_cost=(str(entry.provider_cost) if entry.provider_cost is not None else None),
                 cost=str(entry.cost) if entry.cost else None,
                 duration_ms=entry.duration_ms,
                 timestamp=entry.timestamp.isoformat(),
@@ -481,6 +498,9 @@ async def get_agent_run(
             select(
                 func.sum(AIUsage.input_tokens).label("total_input"),
                 func.sum(AIUsage.output_tokens).label("total_output"),
+                func.sum(AIUsage.cache_read_tokens).label("total_cache_read"),
+                func.sum(AIUsage.cache_write_tokens).label("total_cache_write"),
+                func.sum(AIUsage.provider_cost).label("total_provider_cost"),
                 func.sum(AIUsage.cost).label("total_cost"),
                 func.sum(AIUsage.duration_ms).label("total_duration"),
                 func.count(AIUsage.id).label("call_count"),
@@ -490,22 +510,47 @@ async def get_agent_run(
         ai_totals_response = AIUsageTotalsSimple(
             total_input_tokens=int(totals_row.total_input or 0),
             total_output_tokens=int(totals_row.total_output or 0),
+            total_cache_read_tokens=int(totals_row.total_cache_read or 0),
+            total_cache_write_tokens=int(totals_row.total_cache_write or 0),
+            total_provider_cost=str(totals_row.total_provider_cost or Decimal("0")),
             total_cost=str(totals_row.total_cost or Decimal("0")),
             total_duration_ms=int(totals_row.total_duration or 0),
             call_count=int(totals_row.call_count or 0),
         )
 
-    # Fetch child run IDs for delegation sub-runs
-    child_ids_result = await db.execute(
-        select(AgentRun.id)
+    # Fetch delegation sub-runs and their agents in one ordered query. Keep the
+    # legacy ID list while also returning enough context for a user-facing view.
+    child_runs_result = await db.execute(
+        select(AgentRun)
+        .options(joinedload(AgentRun.agent))
         .where(AgentRun.parent_run_id == run_id)
-        .order_by(AgentRun.created_at)
+        .order_by(AgentRun.created_at, AgentRun.id)
     )
-    child_run_ids = [row[0] for row in child_ids_result.all()]
+    child_runs = child_runs_result.scalars().all()
+    child_run_ids = [child.id for child in child_runs]
+    child_runs_response = [
+        AgentRunChildResponse(
+            id=child.id,
+            agent_id=child.agent_id,
+            agent_name=child.agent.name,
+            status=child.status,
+            asked=child.asked,
+            did=child.did,
+            answered=child.answered,
+            duration_ms=child.duration_ms,
+            created_at=child.created_at,
+        )
+        for child in child_runs
+    ]
 
     # Dual-read steps: Redis Stream when in-progress, DB when complete
     steps_response: list[AgentRunStepResponse] = []
-    is_in_progress = run.status in ("queued", "running", "cancelling")
+    is_in_progress = run.status in (
+        "scheduled",
+        "queued",
+        "running",
+        "cancelling",
+    )
 
     if is_in_progress:
         # Read from Redis Stream (steps are uncommitted in DB during execution)
@@ -589,6 +634,7 @@ async def get_agent_run(
         completed_at=run.completed_at,
         parent_run_id=run.parent_run_id,
         child_run_ids=child_run_ids,
+        child_runs=child_runs_response,
         steps=steps_response,
         ai_usage=ai_usage_list,
         ai_totals=ai_totals_response,
@@ -626,7 +672,14 @@ async def rerun_agent_run(
     return AgentRunRerunResponse(run_id=UUID(new_run_id))
 
 
-TERMINAL_STATUSES = {"completed", "failed", "cancelled", "budget_exceeded", "timeout"}
+TERMINAL_STATUSES = {
+    "completed",
+    "failed",
+    "cancelled",
+    "paused",
+    "budget_exceeded",
+    "timeout",
+}
 
 
 @router.post("/{run_id}/cancel")
@@ -636,6 +689,13 @@ async def cancel_agent_run(
     user: CurrentActiveUser,
 ) -> dict:
     """Cancel a queued or running agent run."""
+    await db.execute(
+        text(
+            "SELECT pg_advisory_xact_lock("
+            "hashtext('bifrost:agent-run:' || :run_id))"
+        ),
+        {"run_id": str(run_id)},
+    )
     agent_run = await load_agent_run_for_user(db, run_id, user)
 
     if not agent_run:
@@ -656,13 +716,13 @@ async def cancel_agent_run(
 
     redis_client = get_redis_client()
 
-    if agent_run.status == "queued":
+    if agent_run.status in ("scheduled", "queued"):
         # Not yet picked up by worker — cancel directly
         agent_run.status = "cancelled"
         agent_run.completed_at = datetime.now(timezone.utc)
         await db.commit()
 
-        # Also mark the Redis context so worker skips if it picks up concurrently
+        # Also mark the Redis context so a worker holding the message skips it.
         from src.core.cache.redis_client import get_redis
         redis_key = f"bifrost:agent_run:{run_id}:context"
         async with get_redis() as r:
@@ -929,6 +989,41 @@ async def dry_run_agent_run(
     )
 
 
+@router.post(
+    "/enqueue",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=AgentRunEnqueueResponse | PausedResponse,
+)
+async def enqueue_agent_run_request(
+    request: AgentRunEnqueueRequest,
+    response: Response,
+    db: DbSession,
+    user: CurrentActiveUser,
+) -> AgentRunEnqueueResponse | PausedResponse:
+    """Queue an agent run and return without waiting for execution."""
+    agent = await get_executable_agent(db, request.agent_name, user)
+
+    if not agent.is_active:
+        response.status_code = status.HTTP_200_OK
+        return PausedResponse(
+            message=f"Agent '{agent.name}' is paused. Request not processed.",
+            agent_id=agent.id,
+        )
+
+    run_id = await enqueue_agent_run(
+        agent_id=str(agent.id),
+        trigger_type="api",
+        input_data=request.input,
+        output_schema=request.output_schema,
+        org_id=str(user.organization_id) if user.organization_id else None,
+        caller_user_id=str(user.user_id),
+        caller_email=user.email,
+        caller_name=getattr(user, "name", None),
+        sync=False,
+    )
+    return AgentRunEnqueueResponse(run_id=UUID(run_id))
+
+
 @router.post("/execute")
 async def execute_agent_run(
     request: AgentRunCreateRequest,
@@ -936,13 +1031,7 @@ async def execute_agent_run(
     user: CurrentActiveUser,
 ) -> dict:
     """Execute an agent synchronously via the SDK."""
-    agent = await load_agent_by_name_for_user(db, request.agent_name, user)
-
-    if not agent:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Agent '{request.agent_name}' not found",
-        )
+    agent = await get_executable_agent(db, request.agent_name, user)
 
     # Paused agents short-circuit gracefully — HTTP 200 with structured body.
     # Downstream consumers (webhook senders, SDK) discriminate on status="paused".
@@ -953,22 +1042,6 @@ async def execute_agent_run(
             "message": f"Agent '{agent.name}' is paused. Request not processed.",
             "agent_id": str(agent.id),
         }
-
-    # Inactive-solution gate: an agent belonging to an inactive solution must not
-    # execute (mirrors the worker-side gate in get_workflow_for_execution).
-    if agent.solution_id is not None:
-        sol_result = await db.execute(
-            select(Solution.status).where(Solution.id == agent.solution_id)
-        )
-        sol_status = sol_result.scalar_one_or_none()
-        if sol_status != "active":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    f"Agent '{agent.name}' belongs to an inactive solution. "
-                    "Reinstall the solution to execute this agent."
-                ),
-            )
 
     # Enqueue the agent run for sync execution
     run_id = await enqueue_agent_run(
@@ -1095,7 +1168,11 @@ async def backfill_summaries(
         )
 
     # Persist the orchestration row first so the worker can increment counters.
+    from uuid import uuid4
+
+    central_job_id = uuid4()
     job = SummaryBackfillJob(
+        id=central_job_id,
         agent_id=request.agent_id,
         requested_by=user.user_id,
         status="running",
@@ -1113,19 +1190,30 @@ async def backfill_summaries(
         .where(AgentRun.id.in_(run_ids))
         .values(summary_status="pending", summary_error=None)
     )
+    from src.jobs.platform.summary_backfill import (
+        SUMMARY_BACKFILL_DEFINITION,
+        SummaryBackfillPayload,
+    )
+    from src.services.platform_jobs import enqueue_platform_job, publish_platform_job_update
+
+    platform_job, _ = await enqueue_platform_job(
+        db,
+        SUMMARY_BACKFILL_DEFINITION,
+        SummaryBackfillPayload(backfill_job_id=job.id, run_ids=run_ids),
+        dedupe_key=str(job.id),
+        priority=100,
+        organization_id=None,
+        requested_by_user_id=user.user_id,
+        requested_by_email=user.email,
+        requested_by_name=user.name or user.email or "Unknown",
+        resource_type="summary_backfill",
+        resource_id=str(job.id),
+        title=f"Summarizing {eligible} agent runs",
+        action_url="/agents",
+        job_id=central_job_id,
+    )
     await db.commit()
-
-    # Now enqueue one message per run, tagged with the job id. Backfills go
-    # to a dedicated queue so a 2000-run bulk operation doesn't starve the
-    # live ``agent-summarization`` path that serves just-finished runs.
-    from src.jobs.rabbitmq import publish_message
-    from src.services.execution.run_summarizer import SUMMARIZE_BACKFILL_QUEUE
-
-    for rid in run_ids:
-        await publish_message(
-            SUMMARIZE_BACKFILL_QUEUE,
-            {"run_id": str(rid), "backfill_job_id": str(job.id)},
-        )
+    await publish_platform_job_update(platform_job)
 
     return BackfillSummariesResponse(
         job_id=job.id,
@@ -1209,6 +1297,13 @@ async def cancel_backfill_job(
     job.status = "cancelled"
     job.completed_at = datetime.now(timezone.utc)
     await db.commit()
+
+    from src.models.orm.platform_jobs import PlatformJob
+    from src.services.platform_jobs import request_platform_job_cancel
+
+    platform_job = await db.get(PlatformJob, job_id)
+    if platform_job is not None:
+        await request_platform_job_cancel(db, platform_job)
 
     # Broadcast so any attached progress card dismisses itself.
     from src.core.pubsub import publish_summary_backfill_update

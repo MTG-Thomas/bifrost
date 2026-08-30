@@ -1,16 +1,12 @@
-"""CLI-side mirror of the contract version (baked into the wheel).
+"""CLI mirror of the frozen legacy contract bridge.
 
-Must equal ``api/shared/contract_version.py::CONTRACT_VERSION``. The runtime
-gate in ``cli.py`` compares this baked value against the ``contract_version``
-the server reports at ``GET /api/version``; a mismatch hard-blocks every
-command until the user upgrades.
-
-**Bump this together with the server constant on a BREAKING contract change
-only.** The tripwire in ``tests/unit/test_contract_version.py`` asserts the two
-integers agree and fails if a CLI-consumed contract changed without a decision.
+Version 10 makes CLIs released before server-controlled minimum gating upgrade
+once. CLIs containing this module no longer compare the value at runtime; they
+honor ``min_cli_version`` instead. Keep this mirror frozen and equal to
+``api/shared/contract_version.py`` while the server exposes the bridge field.
 """
 
-#: Must equal shared.contract_version.CONTRACT_VERSION. See module docstring.
+#: Frozen legacy bridge; must equal shared.contract_version.CONTRACT_VERSION.
 # v2: claims organization_id widened to nullable for global/solution-managed claims (2026-06-13)
 # v4: unified --org standard — SolutionCreate/SolutionBase drop `scope` (install
 #     kind is derived from organization_id); SolutionRepoPreviewRequest gains
@@ -23,14 +19,27 @@ integers agree and fails if a CLI-consumed contract changed without a decision.
 #     /install/from-repo return 202 + deploy_job_id (was 200/201 + Solution);
 #     callers poll SolutionDeployJobStatus (install_id now nullable) for the
 #     solution_id (2026-07-02)
-CONTRACT_VERSION: int = 7
+# v8: Application publish is async: POST /api/applications/{id}/publish returns
+#     202 + PlatformJobAccepted (was 200 + ApplicationPublic); callers poll the
+#     standardized PlatformJobPublic contract (2026-07-28)
+# v9: PlatformJobStatus gained the waiting state used by durable parent jobs;
+#     stale CLIs cannot parse that enum value and must upgrade (2026-08-07)
+# v10: Solution deploy enqueue responses require candidate_id so the CLI can
+#      prove the accepted job is bound to the exact reviewed bundle (2026-08-12)
+# v11: Workspace promotion preview uses immutable artifact v2: production
+#      source is bound to protected Git commit/tree, the server fetches reviewed
+#      closure bytes, and response identities cover effective files and
+#      registrations; server canaries accept reviewed artifacts only; prepare
+#      emits an immutable authorization challenge, and activation accepts only
+#      its tagged canary or exact risk-acknowledgement authorization
+#      (2026-08-19)
+CONTRACT_VERSION: int = 11
 
 
 def get_contract_version() -> int:
-    """Return the CLI's baked contract version.
+    """Return the CLI's frozen legacy bridge version.
 
-    Mirrors ``shared.contract_version.get_contract_version``. The runtime gate in
-    ``cli.py`` uses this so the value has a single read site rather than a bare
-    global reference.
+    Mirrors ``shared.contract_version.get_contract_version`` for packaging and
+    transition tests. New CLI runtime gating does not consume this value.
     """
     return CONTRACT_VERSION

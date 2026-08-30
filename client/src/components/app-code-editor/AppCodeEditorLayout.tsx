@@ -8,7 +8,7 @@
  */
 
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
-import { useLocation } from "react-router-dom";
+import { useLocation } from "react-router";
 import { Button } from "@/components/ui/button";
 import {
 	FileTree,

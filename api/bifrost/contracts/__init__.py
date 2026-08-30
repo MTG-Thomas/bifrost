@@ -4,7 +4,7 @@ The CLI's entity commands (``bifrost/commands/*.py``) build flags and
 request bodies from Pydantic ``XxxCreate`` / ``XxxUpdate`` DTOs via
 ``bifrost.dto_flags.build_cli_flags`` / ``assemble_body``. Those DTOs
 originally live in ``src.models.contracts.*`` on the server side, but the
-CLI tarball shipped by ``/api/cli/download`` does **not** include ``src/``
+CLI tarball shipped by ``/api/cli/download/bifrost-cli.tar.gz`` does **not** include ``src/``
 — so a fresh ``pip install`` of that tarball produced a CLI where every
 ``bifrost <entity> <verb>`` crashed with ``ModuleNotFoundError: No module
 named 'src'``.
@@ -51,6 +51,7 @@ from bifrost.contracts.integrations import (
     IntegrationUpdate,
 )
 from bifrost.contracts.organizations import OrganizationCreate, OrganizationUpdate
+from bifrost.contracts.solutions import SolutionCandidateDeployEnqueued
 from bifrost.contracts.tables import TableCreate, TableUpdate
 from bifrost.contracts.users import RoleCreate, RoleUpdate
 from bifrost.contracts.workflows import WorkflowUpdateRequest
@@ -65,6 +66,8 @@ __all__ = [
     # Organizations
     "OrganizationCreate",
     "OrganizationUpdate",
+    # Solutions
+    "SolutionCandidateDeployEnqueued",
     # Roles / users
     "RoleCreate",
     "RoleUpdate",

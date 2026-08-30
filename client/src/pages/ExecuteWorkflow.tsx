@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useParams, useNavigate, useLocation } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router";
 import { parseSolutionFrom } from "@/lib/solution-back-nav";
 import { ArrowLeft, Loader2, Play, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";

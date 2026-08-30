@@ -6,7 +6,7 @@
 # Stage 1: Builder
 # =============================================================================
 # python:3.14-slim
-FROM python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1 AS builder
+FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4 AS builder
 
 WORKDIR /app
 
@@ -32,13 +32,15 @@ RUN pip install --no-cache-dir --only-binary :all: --require-hashes -r requireme
 # Stage 2: Runtime
 # =============================================================================
 # python:3.14-slim
-FROM python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1 AS runtime
+FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4 AS runtime
 
 WORKDIR /app
+ARG BIFROST_VERSION=unknown
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
+    libcairo2 \
     curl \
     gosu \
     git \
@@ -62,11 +64,21 @@ RUN printf '#!/bin/sh\nexec python -m bifrost "$@"\n' > /usr/local/bin/bifrost \
 # Copy application code (paths relative to root context)
 COPY api/src/ /app/src/
 COPY api/shared/ /app/shared/
+COPY api/_bifrost_workspace_effects.py /app/
 COPY api/alembic/ /app/alembic/
 COPY api/alembic.ini /app/
 COPY api/bifrost/ /app/bifrost/
 COPY api/bifrost.py /app/
 COPY api/scripts/ /app/scripts/
+COPY assets/ /app/assets/
+RUN chmod -R a+rX /app/assets
+
+# Build the CLI once as an immutable image artifact. The API serves this file;
+# it never packages the live source tree in a request handler.
+RUN PYTHONPATH=/app python /app/scripts/build_cli_artifact.py \
+      --source /app/bifrost \
+      --output /app/artifacts \
+      --version "${BIFROST_VERSION}"
 
 # Install app compiler Node.js dependencies
 COPY api/src/services/app_compiler/package.json api/src/services/app_compiler/package-lock.json* /app/src/services/app_compiler/
@@ -109,7 +121,8 @@ RUN useradd --no-log-init -m -u 1000 bifrost && \
 
 # Create directories for workspace and temp
 RUN mkdir -p /workspace /tmp/bifrost && \
-    chown -R bifrost:bifrost /workspace /tmp/bifrost
+    chown -R bifrost:bifrost /workspace /tmp/bifrost && \
+    chmod 700 /tmp/bifrost
 
 # Copy entrypoint script
 COPY api/entrypoint.sh /entrypoint.sh
@@ -123,8 +136,8 @@ ENTRYPOINT ["/entrypoint.sh"]
 # Environment variables
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
+ENV BIFROST_RUNTIME_DIR=/tmp/bifrost
 
-ARG BIFROST_VERSION=unknown
 ENV BIFROST_VERSION=${BIFROST_VERSION}
 
 # No default CMD - let docker-compose specify the command per service

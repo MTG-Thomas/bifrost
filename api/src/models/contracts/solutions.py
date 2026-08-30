@@ -127,6 +127,8 @@ class Solution(BaseModel):
     # (status flip only — data frozen in place under solution_id, dormant).
     status: str = "active"
     entity_counts: SolutionEntityCounts = Field(default_factory=SolutionEntityCounts)
+    logo_url: str | None = None
+    logo_version: str | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -175,6 +177,8 @@ class SolutionEntitySummary(BaseModel):
     app_model: str | None = None
     is_active: bool | None = None
     logo: str | None = None
+    logo_url: str | None = None
+    logo_version: str | None = None
     source_table: str | None = None
     select: str | None = None
     created_at: datetime | None = None
@@ -450,6 +454,12 @@ class SolutionDeployEnqueued(BaseModel):
     the caller polls ``GET /deploy-jobs/{deploy_job_id}`` for the result."""
 
     deploy_job_id: UUID
+
+
+class SolutionCandidateDeployEnqueued(SolutionDeployEnqueued):
+    """Deploy enqueue response bound to the exact uploaded Solution bundle."""
+
+    candidate_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
 
 class SolutionDeployJobStatus(BaseModel):

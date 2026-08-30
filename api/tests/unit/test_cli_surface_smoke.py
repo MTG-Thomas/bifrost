@@ -135,11 +135,11 @@ def test_top_level_help_explains_repo_and_solution_file_targets(
     assert "Solution source files" in captured.out
     assert "Solution runtime files" in captured.out
     assert "bifrost files list --solution" in captured.out
-    assert "Push vs files write" in captured.out
-    assert "same relative" in captured.out
-    assert "path under _repo" in captured.out
-    assert "writes exactly one" in captured.out
-    assert "arbitrary local-to-remote path" in captured.out
+    assert "Direct files vs bulk local sync" in captured.out
+    assert "bifrost files stat" in captured.out
+    assert "default _repo authoring surface" in captured.out
+    assert "version-guarded changes" in captured.out
+    assert "optional bulk local-directory workflows" in captured.out
 
 
 def test_nested_help_does_not_check_cli_version(
@@ -159,7 +159,7 @@ EXPECTED_CRUD_COMMANDS: dict[str, set[str]] = {
     "roles": {"list", "get", "create", "update", "delete"},
     "forms": {"list", "get", "create", "update", "delete"},
     "agents": {"list", "get", "create", "update", "delete"},
-    "apps": {"list", "get", "create", "update", "delete"},
+    "apps": {"list", "get", "create", "update", "publish", "delete"},
     "configs": {"list", "get", "create", "update", "delete"},
     "tables": {"list", "get", "create", "update", "delete"},
     "integrations": {"list", "get", "create", "update"},

@@ -7,45 +7,23 @@
  * This spec runs under the org-user storage state and verifies neither
  * appears.
  *
- * `beforeAll` seeds an authenticated-access agent from a throwaway admin
- * browser context so the org-user has something to navigate to.
+ * The org user seeds a private agent so the settings surface is reachable
+ * without weakening the current owner-only access contract.
  */
 
-import { test, expect, chromium } from "@playwright/test";
-import * as path from "path";
+import { test, expect } from "@playwright/test";
 import { seedAgentViaPage } from "./setup/seed-agent";
 
-const ADMIN_STATE = path.resolve(
-	process.cwd(),
-	"e2e",
-	".auth",
-	"platform_admin.json",
-);
-
-let seededAgentId: string | null = null;
-
 test.describe("Agent Settings — Budget Visibility (non-admin user)", () => {
-	test.beforeAll(async () => {
-		const browser = await chromium.launch();
-		const ctx = await browser.newContext({ storageState: ADMIN_STATE });
-		const adminPage = await ctx.newPage();
-		try {
-			const agent = await seedAgentViaPage(adminPage, {
-				namePrefix: "Budget Vis Spec",
-			});
-			seededAgentId = agent.id;
-		} finally {
-			await ctx.close();
-			await browser.close();
-		}
-	});
-
 	test("budget fields are not visible to non-admin users", async ({
 		page,
 	}) => {
-		expect(seededAgentId).not.toBeNull();
+		const seededAgent = await seedAgentViaPage(page, {
+			namePrefix: "Budget Vis Spec",
+			accessLevel: "private",
+		});
 
-		await page.goto(`/agents/${seededAgentId}`);
+		await page.goto(`/agents/${seededAgent.id}`);
 		await page.getByRole("tab", { name: /settings/i }).click();
 		await expect(
 			page.getByRole("textbox", { name: /name/i }).first(),

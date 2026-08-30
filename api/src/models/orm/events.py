@@ -268,9 +268,7 @@ class EventSubscription(Base):
     event_type: Mapped[str | None] = mapped_column(
         String(255), default=None
     )  # e.g., "ticket.created"
-    filter_expression: Mapped[str | None] = mapped_column(
-        Text, default=None
-    )  # JSONPath or simple expression (future)
+    criteria: Mapped[dict | None] = mapped_column(JSONB, default=None)
 
     # Input mapping for workflow parameters
     # Maps event payload fields to workflow inputs
@@ -428,10 +426,14 @@ class EventDelivery(Base):
         default=EventDeliveryStatus.PENDING,
     )
     error_message: Mapped[str | None] = mapped_column(Text, default=None)
+    rule_decision: Mapped[dict | None] = mapped_column(JSONB, default=None)
 
     # Retry tracking (for future use)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)
     next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    attempt_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     # Audit

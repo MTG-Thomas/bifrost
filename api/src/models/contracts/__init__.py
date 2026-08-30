@@ -10,6 +10,24 @@ from src.models.contracts.base import (
     generate_entity_id,
 )
 
+from src.models.contracts.ai_models import (
+    AIConnectionTestResponse,
+    AIModelAssignmentKey,
+    AIModelAssignmentResponse,
+    AIModelAssignmentUpdate,
+    AIModelProfileCreate,
+    AIModelProfileMergeRequest,
+    AIModelProfileMergeResponse,
+    AIModelProfileResponse,
+    AIModelProfileUpdate,
+    AIModelsResponse,
+    AIProviderConnectionCreate,
+    AIProviderConnectionResponse,
+    AIProviderConnectionSummary,
+    AIProviderConnectionUpdate,
+    AIProviderKind,
+)
+
 # Organizations
 from src.models.contracts.organizations import (
     CreateOrganizationRequest,
@@ -107,11 +125,21 @@ from src.models.contracts.passkeys import (
 from src.models.contracts.forms import (
     CreateFormRequest,
     DataProviderInputConfig,
+    FormCaptchaChallenge,
     FormCreate,
-    FormExecuteRequest,
+    FormConfirmationResponse,
+    FormExecutionResponse,
+    FormFieldOptionsRequest,
+    FormFieldOptionsResponse,
     FormFieldValidation,
+    FormPublicationPublic,
+    FormPublicationReview,
+    FormPublicationUpdate,
     FormPublic,
+    FormRuntimeDefinition,
     FormSchema,
+    FormSubmissionRequest,
+    FormSubmissionResponse,
     FormStartupResponse,
     FormUpdate,
     UpdateFormRequest,
@@ -133,6 +161,26 @@ from src.models.contracts.applications import (
     ApplicationUpdate,
     VersionHistoryEntry,
     VersionHistoryResponse,
+)
+
+# Durable scheduler-owned platform jobs
+from src.models.contracts.platform_jobs import (
+    PlatformJobAccepted,
+    PlatformJobCancelResponse,
+    PlatformJobError,
+    PlatformJobListResponse,
+    PlatformJobProgress,
+    PlatformJobPublic,
+    PlatformJobStatus,
+)
+from src.models.contracts.scheduler_diagnostics import (
+    SchedulerCapacityStatus,
+    SchedulerDiagnosticsResponse,
+    SchedulerLeaderStatus,
+    SchedulerReplicaStatus,
+    SchedulerTaskRunStatus,
+    SchedulerTaskStatus,
+    SystemDiagnosticLogPublic,
 )
 
 # Agents & Chat
@@ -255,6 +303,8 @@ from src.models.contracts.dashboard import (
     DailyMetricsEntry,
     DailyMetricsResponse,
     DashboardMetricsResponse,
+    ExecutionTimeSeriesBucket,
+    ExecutionTimeSeriesResponse,
     ROISnapshot,
     ExecutionStats,
     OrganizationMetricsResponse,
@@ -284,6 +334,7 @@ from src.models.contracts.editor import (
     FileDiagnostic,
     FileMetadata,
     FileType,
+    FileStatResponse,
     PendingDeactivation,
     ScriptExecutionRequest,
     ScriptExecutionResponse,
@@ -314,6 +365,7 @@ from src.models.contracts.common import (
     InstalledPackage,
     InstalledPackagesResponse,
     PackageInstallResponse,
+    PackageInstallationProgressResponse,
     PackageUpdate,
     PackageUpdatesResponse,
     UploadedFileMetadata,
@@ -446,6 +498,25 @@ from src.models.contracts.profile import (
     ProfileUpdate,
 )
 
+# Memory
+from src.models.contracts.memory import (
+    MemoryDeleteResponse,
+    MemoryEntryList,
+    MemoryEntryPublic,
+    MemoryPlatformSettings,
+    MemoryPlatformSettingsUpdate,
+    MemorySaveRequest,
+    MemorySearchRequest,
+    MemorySearchResponse,
+    MemorySearchResult,
+    MemoryUserSettings,
+    MemoryUserSettingsUpdate,
+)
+from src.models.contracts.required_instructions import (
+    RequiredInstructionsResponse,
+    RequiredInstructionsSettings,
+)
+
 # Notifications
 from src.models.contracts.notifications import (
     JobDispatchResponse,
@@ -456,15 +527,6 @@ from src.models.contracts.notifications import (
     NotificationStatus,
     NotificationUpdate,
     UploadLockInfo,
-)
-
-# LLM Configuration
-from src.models.contracts.llm import (
-    LLMConfigRequest,
-    LLMConfigResponse,
-    LLMModelsResponse,
-    LLMTestRequest,
-    LLMTestResponse,
 )
 
 # External MCP client (server template + per-org connection + tool catalog)
@@ -690,11 +752,21 @@ __all__ = [
     "FormSchema",
     "CreateFormRequest",
     "UpdateFormRequest",
-    "FormExecuteRequest",
+    "FormConfirmationResponse",
+    "FormExecutionResponse",
+    "FormFieldOptionsRequest",
+    "FormFieldOptionsResponse",
     "FormStartupResponse",
+    "FormSubmissionRequest",
+    "FormSubmissionResponse",
     "FormCreate",
     "FormUpdate",
     "FormPublic",
+    "FormCaptchaChallenge",
+    "FormRuntimeDefinition",
+    "FormPublicationPublic",
+    "FormPublicationReview",
+    "FormPublicationUpdate",
     # Agents & Chat - use AgentPublic for responses
     "AgentCreate",
     "AgentUpdate",
@@ -754,6 +826,8 @@ __all__ = [
     "RecentFailure",
     "ROISnapshot",
     "DashboardMetricsResponse",
+    "ExecutionTimeSeriesBucket",
+    "ExecutionTimeSeriesResponse",
     "PlatformMetricsResponse",
     "DailyMetricsEntry",
     "DailyMetricsResponse",
@@ -814,6 +888,7 @@ __all__ = [
     "FileContentRequest",
     "FileContentResponse",
     "FileConflictResponse",
+    "FileStatResponse",
     "FileDiagnostic",
     "WorkflowIdConflict",
     "AffectedEntity",
@@ -827,6 +902,7 @@ __all__ = [
     "ScriptExecutionResponse",
     "InstallPackageRequest",
     "PackageInstallResponse",
+    "PackageInstallationProgressResponse",
     "InstalledPackage",
     "InstalledPackagesResponse",
     "PackageUpdate",
@@ -947,12 +1023,20 @@ __all__ = [
     "ProfileUpdate",
     "PasswordChange",
     "ProfileResponse",
-    # LLM Configuration
-    "LLMConfigRequest",
-    "LLMConfigResponse",
-    "LLMTestRequest",
-    "LLMTestResponse",
-    "LLMModelsResponse",
+    # Memory
+    "MemoryDeleteResponse",
+    "MemoryEntryList",
+    "MemoryEntryPublic",
+    "MemoryPlatformSettings",
+    "MemoryPlatformSettingsUpdate",
+    "MemorySaveRequest",
+    "MemorySearchRequest",
+    "MemorySearchResponse",
+    "MemorySearchResult",
+    "MemoryUserSettings",
+    "MemoryUserSettingsUpdate",
+    "RequiredInstructionsResponse",
+    "RequiredInstructionsSettings",
     # External MCP client
     "MCPServerCreate",
     "MCPServerUpdate",
@@ -1054,6 +1138,21 @@ __all__ = [
     "AppFileUpdate",
     "AppFileResponse",
     "AppFileListResponse",
+    # Durable scheduler-owned platform jobs
+    "PlatformJobAccepted",
+    "PlatformJobCancelResponse",
+    "PlatformJobError",
+    "PlatformJobListResponse",
+    "PlatformJobProgress",
+    "PlatformJobPublic",
+    "PlatformJobStatus",
+    "SchedulerCapacityStatus",
+    "SchedulerDiagnosticsResponse",
+    "SchedulerLeaderStatus",
+    "SchedulerReplicaStatus",
+    "SchedulerTaskRunStatus",
+    "SchedulerTaskStatus",
+    "SystemDiagnosticLogPublic",
     # Platform Admin
     "PoolDetail",
     "PoolsListResponse",
@@ -1079,4 +1178,20 @@ __all__ = [
     "BulkExportRequest",
     "ImportResult",
     "ImportResultItem",
+    # AI Model Settings
+    "AIConnectionTestResponse",
+    "AIModelAssignmentKey",
+    "AIModelAssignmentResponse",
+    "AIModelAssignmentUpdate",
+    "AIModelProfileCreate",
+    "AIModelProfileMergeRequest",
+    "AIModelProfileMergeResponse",
+    "AIModelProfileResponse",
+    "AIModelProfileUpdate",
+    "AIModelsResponse",
+    "AIProviderConnectionCreate",
+    "AIProviderConnectionResponse",
+    "AIProviderConnectionSummary",
+    "AIProviderConnectionUpdate",
+    "AIProviderKind",
 ]

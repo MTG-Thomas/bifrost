@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException, status
+from sqlalchemy.exc import IntegrityError
 
 from src.models.contracts.workflows import (
     RegisterWorkflowRequest,
@@ -36,12 +37,13 @@ class _ScalarResult:
 
 
 class _Db:
-    def __init__(self, *values):
+    def __init__(self, *values, flush_error=None):
         self.values = list(values)
         self.added = []
         self.flushed = False
         self.committed = False
         self.rolled_back = False
+        self.flush_error = flush_error
 
     async def execute(self, _stmt):
         if not self.values:
@@ -53,6 +55,10 @@ class _Db:
 
     async def flush(self):
         self.flushed = True
+        if self.flush_error is not None:
+            error = self.flush_error
+            self.flush_error = None
+            raise error
 
     async def commit(self):
         self.committed = True
@@ -62,6 +68,16 @@ class _Db:
 
     async def refresh(self, _value):
         return None
+
+    def begin_nested(self):
+        class _Savepoint:
+            async def __aenter__(self):
+                return None
+
+            async def __aexit__(self, *_args):
+                return None
+
+        return _Savepoint()
 
 
 class _CancelDb:
@@ -132,6 +148,23 @@ def _workflow(**overrides):
     return SimpleNamespace(**data)
 
 
+def _dispatch_metadata(workflow):
+    return {
+        "name": workflow.name,
+        "function_name": "run",
+        "path": "workflows/run.py",
+        "timeout_seconds": 1800,
+        "time_saved": 0,
+        "value": 0.0,
+        "execution_mode": "sync",
+        "organization_id": workflow.organization_id,
+        "solution_id": None,
+        "type": workflow.type,
+        "cache_ttl_seconds": workflow.cache_ttl_seconds,
+        "can_access_global_repo": False,
+    }
+
+
 class _WorkflowRepo:
     def __init__(self, workflow=None, access_error: Exception | None = None):
         self.workflow = workflow
@@ -190,7 +223,14 @@ async def test_validate_workflow_returns_service_response_and_maps_errors() -> N
 async def test_register_workflow_reports_missing_file_and_non_python_path() -> None:
     missing_service = SimpleNamespace(read_file=AsyncMock(side_effect=FileNotFoundError()))
 
-    with patch("src.services.file_storage.FileStorageService", return_value=missing_service):
+    with (
+        patch("src.services.file_storage.FileStorageService", return_value=missing_service),
+        patch.object(
+            workflows,
+            "_guard_workflow_registration_mutation",
+            new=AsyncMock(),
+        ),
+    ):
         with pytest.raises(HTTPException) as exc:
             await workflows.register_workflow(
                 RegisterWorkflowRequest(path="workflows/missing.py", function_name="run"),
@@ -202,7 +242,14 @@ async def test_register_workflow_reports_missing_file_and_non_python_path() -> N
     assert exc.value.detail == "File not found: workflows/missing.py"
 
     service = SimpleNamespace(read_file=AsyncMock(return_value=(b"def run(): pass", None)))
-    with patch("src.services.file_storage.FileStorageService", return_value=service):
+    with (
+        patch("src.services.file_storage.FileStorageService", return_value=service),
+        patch.object(
+            workflows,
+            "_guard_workflow_registration_mutation",
+            new=AsyncMock(),
+        ),
+    ):
         with pytest.raises(HTTPException) as exc:
             await workflows.register_workflow(
                 RegisterWorkflowRequest(path="workflows/plain.txt", function_name="run"),
@@ -218,7 +265,14 @@ async def test_register_workflow_reports_missing_file_and_non_python_path() -> N
 async def test_register_workflow_reports_syntax_and_missing_decorator() -> None:
     service = SimpleNamespace(read_file=AsyncMock(return_value=(b"def run(: pass", None)))
 
-    with patch("src.services.file_storage.FileStorageService", return_value=service):
+    with (
+        patch("src.services.file_storage.FileStorageService", return_value=service),
+        patch.object(
+            workflows,
+            "_guard_workflow_registration_mutation",
+            new=AsyncMock(),
+        ),
+    ):
         with pytest.raises(HTTPException) as exc:
             await workflows.register_workflow(
                 RegisterWorkflowRequest(path="workflows/bad.py", function_name="run"),
@@ -230,7 +284,14 @@ async def test_register_workflow_reports_syntax_and_missing_decorator() -> None:
     assert "Syntax error:" in exc.value.detail
 
     service = SimpleNamespace(read_file=AsyncMock(return_value=(b"def run(): pass", None)))
-    with patch("src.services.file_storage.FileStorageService", return_value=service):
+    with (
+        patch("src.services.file_storage.FileStorageService", return_value=service),
+        patch.object(
+            workflows,
+            "_guard_workflow_registration_mutation",
+            new=AsyncMock(),
+        ),
+    ):
         with pytest.raises(HTTPException) as exc:
             await workflows.register_workflow(
                 RegisterWorkflowRequest(path="workflows/plain.py", function_name="run"),
@@ -288,6 +349,134 @@ async def test_register_workflow_rejects_invalid_access_role_and_duplicate() -> 
 
     assert exc.value.status_code == status.HTTP_409_CONFLICT
     assert exc.value.detail == "Workflow already registered"
+
+
+@pytest.mark.asyncio
+async def test_register_workflow_validates_and_preserves_promoted_uuid() -> None:
+    content = b"@workflow\ndef run(): pass"
+    service = SimpleNamespace(read_file=AsyncMock(return_value=(content, None)))
+    invalid_request = RegisterWorkflowRequest(
+        path="workflows/run.py",
+        function_name="run",
+        id="not-a-uuid",
+    )
+
+    with patch("src.services.file_storage.FileStorageService", return_value=service):
+        with pytest.raises(HTTPException) as exc:
+            await workflows.register_workflow(
+                invalid_request,
+                _Db(None),
+                _admin(),
+            )
+
+    assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+    assert "Invalid workflow ID" in exc.value.detail
+
+    empty_request = RegisterWorkflowRequest(
+        path="workflows/run.py",
+        function_name="run",
+        id="",
+    )
+    with patch("src.services.file_storage.FileStorageService", return_value=service):
+        with pytest.raises(HTTPException) as exc:
+            await workflows.register_workflow(
+                empty_request,
+                _Db(None),
+                _admin(),
+            )
+
+    assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+    assert "Invalid workflow ID" in exc.value.detail
+
+    requested_id = uuid4()
+    collision = SimpleNamespace(
+        id=requested_id,
+        path="workflows/other.py",
+        function_name="other",
+    )
+    collision_request = RegisterWorkflowRequest(
+        path="workflows/run.py",
+        function_name="run",
+        id=str(requested_id),
+    )
+    with patch("src.services.file_storage.FileStorageService", return_value=service):
+        with pytest.raises(HTTPException) as exc:
+            await workflows.register_workflow(
+                collision_request,
+                _Db(None, collision),
+                _admin(),
+            )
+
+    assert exc.value.status_code == status.HTTP_409_CONFLICT
+    assert "already used by workflows/other.py::other" in exc.value.detail
+
+    path_owner = SimpleNamespace(
+        id=uuid4(),
+        path="workflows/run.py",
+        function_name="run",
+    )
+    with patch("src.services.file_storage.FileStorageService", return_value=service):
+        with pytest.raises(HTTPException) as exc:
+            await workflows.register_workflow(
+                collision_request,
+                _Db(path_owner),
+                _admin(),
+            )
+
+    assert exc.value.status_code == status.HTTP_409_CONFLICT
+    assert f"already registered with UUID {path_owner.id}" in exc.value.detail
+
+    race_owner = SimpleNamespace(
+        id=requested_id,
+        path="workflows/racing.py",
+        function_name="racing",
+    )
+    race_error = IntegrityError("INSERT", {}, Exception("duplicate key"))
+    with patch("src.services.file_storage.FileStorageService", return_value=service):
+        with pytest.raises(HTTPException) as exc:
+            await workflows.register_workflow(
+                collision_request,
+                _Db(None, None, race_owner, flush_error=race_error),
+                _admin(),
+            )
+
+    assert exc.value.status_code == status.HTTP_409_CONFLICT
+    assert "already used by workflows/racing.py::racing" in exc.value.detail
+
+    created = SimpleNamespace(
+        id=requested_id,
+        name="run",
+        function_name="run",
+        path="workflows/run.py",
+        type="workflow",
+        description=None,
+        organization_id=None,
+    )
+    db = _Db(None, None, created)
+    indexer = SimpleNamespace(index_python_file=AsyncMock())
+    with (
+        patch("src.services.file_storage.FileStorageService", return_value=service),
+        patch(
+            "src.services.file_storage.indexers.workflow.WorkflowIndexer",
+            return_value=indexer,
+        ),
+        patch("src.services.mcp_server.server.refresh_workflow_tools", AsyncMock()),
+    ):
+        result = await workflows.register_workflow(
+            RegisterWorkflowRequest(
+                path="workflows/run.py",
+                function_name="run",
+                id=str(requested_id),
+                organization_id=None,
+            ),
+            db,
+            _admin(),
+        )
+
+    assert result.id == str(requested_id)
+    assert db.added[0].id == requested_id
+    assert db.committed is True
+    indexer.index_python_file.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -467,6 +656,10 @@ async def test_execute_workflow_propagates_new_submission_identity() -> None:
             "src.services.execution.service.run_workflow",
             AsyncMock(return_value=service_result),
         ) as run_workflow,
+        patch(
+            "src.services.execution.service.get_workflow_for_execution",
+            AsyncMock(return_value=_dispatch_metadata(workflow)),
+        ),
         patch.object(workflows, "publish_execution_update", AsyncMock()),
         patch.object(workflows, "publish_history_update", AsyncMock()),
     ):
@@ -531,6 +724,10 @@ async def test_execute_workflow_runs_data_provider_without_cache() -> None:
 
     with (
         patch("src.repositories.WorkflowRepository", return_value=repo),
+        patch(
+            "src.services.execution.service.get_workflow_for_execution",
+            AsyncMock(return_value=_dispatch_metadata(workflow)),
+        ),
         patch("src.services.execution.service.run_workflow", AsyncMock(return_value=service_result)) as run_workflow,
     ):
         result = await workflows.execute_workflow(
@@ -554,7 +751,7 @@ async def test_execute_workflow_runs_data_provider_without_cache() -> None:
 
 
 @pytest.mark.asyncio
-async def test_execute_workflow_runs_as_user_and_publishes_terminal_result() -> None:
+async def test_execute_workflow_runs_as_user_without_duplicate_terminal_publish() -> None:
     admin = _exec_user(is_superuser=True)
     run_as = SimpleNamespace(
         id=uuid4(),
@@ -577,6 +774,10 @@ async def test_execute_workflow_runs_as_user_and_publishes_terminal_result() -> 
 
     with (
         patch("src.repositories.WorkflowRepository", return_value=repo),
+        patch(
+            "src.services.execution.service.get_workflow_for_execution",
+            AsyncMock(return_value=_dispatch_metadata(workflow)),
+        ),
         patch("src.services.execution.service.run_workflow", AsyncMock(return_value=service_result)) as run_workflow,
         patch.object(workflows, "publish_execution_update", AsyncMock()) as publish_execution_update,
         patch.object(workflows, "publish_history_update", AsyncMock()) as publish_history_update,
@@ -602,8 +803,8 @@ async def test_execute_workflow_runs_as_user_and_publishes_terminal_result() -> 
     assert shared_ctx.is_platform_admin is False
     assert run_workflow.await_args.kwargs["input_data"] == {"ticket": "123"}
     assert run_workflow.await_args.kwargs["sync"] is True
-    publish_execution_update.assert_awaited_once()
-    publish_history_update.assert_awaited_once()
+    publish_execution_update.assert_not_awaited()
+    publish_history_update.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -712,6 +913,7 @@ async def test_execute_workflow_translates_execution_service_errors() -> None:
     service_mod = types.ModuleType("src.services.execution.service")
     service_mod.WorkflowNotFoundError = WorkflowNotFoundError
     service_mod.WorkflowLoadError = WorkflowLoadError
+    service_mod.get_workflow_for_execution = AsyncMock()
     service_mod.run_code = fail_not_found
     service_mod.run_workflow = AsyncMock()
 
@@ -824,3 +1026,12 @@ async def test_cancel_scheduled_execution_handles_success_and_race_conflict() ->
     assert exc.value.detail == "Execution is not Scheduled (current status: Pending)"
     assert conflict_db.committed is True
     assert conflict_db.refreshed is True
+
+@pytest.fixture(autouse=True)
+def bypass_live_registration_authority(monkeypatch):
+    """Router examples isolate request behavior from Workspace Live state."""
+    monkeypatch.setattr(
+        workflows,
+        "_guard_workflow_registration_mutation",
+        AsyncMock(),
+    )

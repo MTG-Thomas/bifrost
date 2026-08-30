@@ -5,19 +5,23 @@ Pure functions for loading workflows, data providers, and forms at runtime.
 Note: Metadata discovery (for DB sync) is handled by FileStorageService at write time.
 This module is only for runtime loading of Python code for execution.
 
-Since all workflow/data provider executions run in fresh subprocess workers,
-we don't need any module cache clearing - sys.modules starts empty.
+Workflow/data-provider executions run in one-shot forked children, but those
+children inherit the long-lived template's ``sys.modules`` state. The worker
+load boundary therefore validates the shared workspace generation and clears
+the complete workspace import closure whenever that generation changes.
 """
 
 import importlib.util
 import logging
 import os
 import sys
-
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Callable, Literal
+from typing import Any, Literal
+
+from shared.workspace_effects import WorkflowBounds, WorkflowEffect
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +81,6 @@ class ExecutableMetadata:
     parameters: list[WorkflowParameter] = field(default_factory=list)
     function: Any = None
 
-
 @dataclass
 class WorkflowMetadata(ExecutableMetadata):
     """
@@ -109,6 +112,12 @@ class WorkflowMetadata(ExecutableMetadata):
     time_saved: int = 0  # Minutes saved per execution
     value: float = 0.0  # Flexible value unit (e.g., cost savings, revenue)
 
+    # Workspace promotion policy declarations. Appended for positional
+    # compatibility. None is undeclared; an empty tuple declares no effects.
+    effects: tuple[WorkflowEffect, ...] | None = None
+    enforced_bounds: WorkflowBounds | None = None
+    requested_bounds: WorkflowBounds | None = None
+
 
 @dataclass
 class DataProviderMetadata(ExecutableMetadata):
@@ -127,6 +136,12 @@ class DataProviderMetadata(ExecutableMetadata):
 
     # Source tracking (home, platform, workspace) - legacy field
     source: Literal["home", "platform", "workspace"] | None = None
+
+    # Workspace promotion policy declarations. Appended for positional
+    # compatibility. None is undeclared; an empty tuple declares no effects.
+    effects: tuple[WorkflowEffect, ...] | None = None
+    enforced_bounds: WorkflowBounds | None = None
+    requested_bounds: WorkflowBounds | None = None
 
 
 # ==================== WORKSPACE HELPERS ====================
@@ -159,9 +174,9 @@ def import_module(file_path: Path) -> ModuleType:
     """
     Import a Python module from a file path.
 
-    Since workflow executions run in fresh subprocess workers, sys.modules
-    starts empty - no cache clearing needed. Python's import machinery
-    handles .pyc files correctly (regenerates if stale).
+    The one-shot child may inherit modules from its long-lived fork template.
+    ``simple_worker`` validates and clears that inherited workspace closure
+    before this loader runs; Python then handles filesystem bytecode freshness.
 
     Args:
         file_path: Path to the Python file to import
@@ -218,6 +233,7 @@ def exec_from_db(
     code: str,
     path: str,
     function_name: str,
+    workspace_generation: str | None = None,
 ) -> ModuleType:
     """
     Execute workflow code from database and return the module.
@@ -261,6 +277,7 @@ def exec_from_db(
     module.__loader__ = None  # type: ignore[assignment]
     module.__package__ = package_name
     module.__spec__ = None
+    module.__workspace_generation__ = workspace_generation
 
     # Build execution namespace
     # The namespace includes __builtins__ and module-level attributes
@@ -272,6 +289,7 @@ def exec_from_db(
         "__doc__": None,
         "__loader__": None,
         "__spec__": None,
+        "__workspace_generation__": workspace_generation,
     }
 
     # Compile with filename for meaningful stack traces
@@ -307,6 +325,7 @@ def load_workflow_from_db(
     code: str,
     path: str,
     function_name: str,
+    workspace_generation: str | None = None,
 ) -> tuple[Callable[..., Any] | None, WorkflowMetadata | None, str | None]:
     """
     Load a workflow by executing code from the database.
@@ -325,7 +344,12 @@ def load_workflow_from_db(
         - On failure: (None, None, error_message)
     """
     try:
-        module = exec_from_db(code=code, path=path, function_name=function_name)
+        module = exec_from_db(
+            code=code,
+            path=path,
+            function_name=function_name,
+            workspace_generation=workspace_generation,
+        )
     except (SyntaxError, ImportError) as e:
         logger.error(f"Failed to execute workflow from DB: {e}")
         user_friendly_error = (
@@ -355,6 +379,9 @@ def load_workflow_from_db(
                         parameters=getattr(metadata, 'parameters', []),
                         timeout_seconds=getattr(metadata, 'timeout_seconds', 300),
                         type='data_provider',
+                        effects=getattr(metadata, 'effects', None),
+                        enforced_bounds=getattr(metadata, 'enforced_bounds', None),
+                        requested_bounds=getattr(metadata, 'requested_bounds', None),
                     )
                     return (attr, workflow_meta, None)
                 elif isinstance(metadata, WorkflowMetadata):
@@ -572,6 +599,9 @@ def _convert_workflow_metadata(old_metadata: Any) -> WorkflowMetadata:
         tags=getattr(old_metadata, 'tags', []),
         type=executable_type,
         timeout_seconds=getattr(old_metadata, 'timeout_seconds', 1800),
+        effects=getattr(old_metadata, 'effects', None),
+        enforced_bounds=getattr(old_metadata, 'enforced_bounds', None),
+        requested_bounds=getattr(old_metadata, 'requested_bounds', None),
         source_file_path=getattr(old_metadata, 'source_file_path', None),
         parameters=_convert_parameters(getattr(old_metadata, 'parameters', [])),
         function=getattr(old_metadata, 'function', None),
@@ -597,6 +627,9 @@ def _convert_data_provider_metadata(old_metadata: Any) -> DataProviderMetadata:
         tags=getattr(old_metadata, 'tags', []),
         type="data_provider",
         timeout_seconds=getattr(old_metadata, 'timeout_seconds', 300),
+        effects=getattr(old_metadata, 'effects', None),
+        enforced_bounds=getattr(old_metadata, 'enforced_bounds', None),
+        requested_bounds=getattr(old_metadata, 'requested_bounds', None),
         source_file_path=getattr(old_metadata, 'source_file_path', None),
         parameters=_convert_parameters(getattr(old_metadata, 'parameters', [])),
         function=getattr(old_metadata, 'function', None),

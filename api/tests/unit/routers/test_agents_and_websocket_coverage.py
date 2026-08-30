@@ -205,12 +205,15 @@ class TestAgentRouterCoverage:
             knowledge_sources=None,
             system_tools=["search", "unknown"],
             mcp_connections=[SimpleNamespace(id=connection_b), SimpleNamespace(id=connection_a)],
-            llm_model="gpt-test",
+            llm_profile_id=None,
             llm_max_tokens=100,
             max_iterations=3,
             max_token_budget=500,
             logo_data=b"logo",
             logo_content_type="image/png",
+            logo_thumbnail_data=None,
+            logo_thumbnail_content_type=None,
+            logo_thumbnail_version=None,
             solution_id=uuid4(),
         )
 

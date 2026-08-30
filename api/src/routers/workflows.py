@@ -59,8 +59,21 @@ from src.models.orm.forms import Form, FormField
 from src.models.orm.applications import Application
 from src.models.orm.agents import Agent, AgentTool
 from src.models.orm.users import Role
+from src.services.workflow_registration import (
+    WorkflowRegistrationConflict,
+    WorkflowRegistrationIdInvalid,
+    add_workflow_registration,
+    resolve_workflow_registration_id,
+)
+from src.services.workspace_release_registration_authority import (
+    WorkspaceReleaseRegistrationGoverned,
+    guard_workspace_registration_mutation,
+)
 from src.services.workflow_validation import _extract_relative_path
-from src.services.solution_scope import derive_execution_solution_scope
+from src.services.solution_scope import (
+    derive_execution_solution_scope,
+    solution_allows_global,
+)
 from src.services.solutions.guard import (
     assert_entity_id_not_solution_managed,
     assert_not_solution_managed,
@@ -82,16 +95,56 @@ router = APIRouter(prefix="/api/workflows", tags=["Workflows"])
 # =============================================================================
 
 
+def _should_publish_request_execution_update(status: ExecutionStatus) -> bool:
+    """The request owns initial state; the worker owns terminal fan-out."""
+    return status in (ExecutionStatus.PENDING, ExecutionStatus.RUNNING)
+
+
+def _is_uuid_workflow_ref(identifier: str) -> bool:
+    try:
+        UUID(identifier)
+    except ValueError:
+        return False
+    return True
+
+
+async def _guard_workflow_registration_mutation(
+    db: AsyncSession,
+    *,
+    operation: str,
+    paths: tuple[str, ...] = (),
+    workflows: tuple[WorkflowORM, ...] = (),
+) -> None:
+    try:
+        await guard_workspace_registration_mutation(
+            db,
+            operation=operation,
+            paths=paths,
+            workflows=workflows,
+        )
+    except WorkspaceReleaseRegistrationGoverned as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+
 def _convert_workflow_orm_to_schema(workflow: WorkflowORM, used_by_count: int = 0) -> WorkflowMetadata:
     """Convert ORM model to Pydantic schema for API response."""
     from typing import Literal
     from src.models.contracts.workflows import ExecutableType
+    from src.services.tool_registry import (
+        workflow_json_schema_to_parameter_records,
+    )
 
-    # Convert parameters from JSONB to WorkflowParameter objects
-    parameters = []
-    for param in workflow.parameters_schema or []:
-        if isinstance(param, dict):
-            parameters.append(WorkflowParameter(**param))
+    # Preserve the established list-shaped API contract while the JSONB source
+    # now retains a complete JSON Schema for MCP/OpenAPI consumers.
+    parameters = [
+        WorkflowParameter(**param)
+        for param in workflow_json_schema_to_parameter_records(
+            workflow.parameters_schema
+        )
+    ]
 
     # Validate execution_mode - default to "sync" if invalid
     raw_mode = workflow.execution_mode or "sync"
@@ -123,7 +176,10 @@ def _convert_workflow_orm_to_schema(workflow: WorkflowORM, used_by_count: int = 
         public_endpoint=workflow.public_endpoint or False,
         is_tool=workflow.type == "tool",  # Derive from type field
         tool_description=workflow.tool_description,
-        cache_ttl_seconds=workflow.cache_ttl_seconds or 300,
+        # NOT `or 300` — 0 means "never cache" and `or` would clobber it.
+        cache_ttl_seconds=(
+            workflow.cache_ttl_seconds if workflow.cache_ttl_seconds is not None else 300
+        ),
         time_saved=workflow.time_saved or 0,
         value=float(workflow.value or 0.0),
         used_by_count=used_by_count,
@@ -679,12 +735,19 @@ async def _insert_scheduled_execution(
 
     exec_id = execution_id or uuid4()
     from src.services.solutions.deployment_runtime import pin_workflow_runtime
+    from src.services.workspace_release_runtime import pin_workspace_runtime
 
     pinned_runtime = await pin_workflow_runtime(db, workflow_id)
+    if pinned_runtime is None:
+        pinned_runtime = await pin_workspace_runtime(db, workflow_id)
     runtime_evidence = pinned_runtime.queue_evidence() if pinned_runtime else None
     from src.services.solutions.deployment_manifest import canonical_json, sha256_digest
 
-    runtime_mode = "deployment-v1" if pinned_runtime else "repo-v1"
+    runtime_mode = (
+        pinned_runtime.runtime_mode
+        if pinned_runtime is not None and hasattr(pinned_runtime, "runtime_mode")
+        else ("deployment-v1" if pinned_runtime else "repo-v1")
+    )
     execution_context: dict[str, object] = {
         "is_platform_admin": is_platform_admin,
         "is_provider_org": is_provider_org,
@@ -705,7 +768,11 @@ async def _insert_scheduled_execution(
             executed_by_name=executed_by_name,
             form_id=form_id,
             api_key_id=None,
-            solution_deployment_id=pinned_runtime.deployment_id if pinned_runtime else None,
+            solution_deployment_id=(
+                getattr(pinned_runtime, "deployment_id", None)
+                if pinned_runtime
+                else None
+            ),
             runtime_mode=runtime_mode,
             runtime_evidence=runtime_evidence,
             runtime_evidence_hash=(
@@ -747,6 +814,7 @@ async def execute_workflow(
     from uuid import uuid4
     from src.sdk.context import ExecutionContext as SharedContext, Organization
     from src.services.execution.service import (
+        get_workflow_for_execution,
         run_workflow,
         run_code,
         WorkflowNotFoundError,
@@ -802,12 +870,18 @@ async def execute_workflow(
         form_id=request.form_id,
         app_id=request.app_id,
     )
+    allow_shared_workflow = (
+        solution_scope is None
+        or await solution_allows_global(db, solution_scope)
+    )
 
     # Look up workflow metadata for type checking (needed for data provider handling)
     workflow = None
     if request.workflow_id:
         workflow = await workflow_repo.resolve(
-            request.workflow_id, solution_scope=solution_scope
+            request.workflow_id,
+            solution_scope=solution_scope,
+            allow_shared_fallback=allow_shared_workflow,
         )
         if not workflow:
             # A resolution miss must identify its scope inputs: a dropped or
@@ -838,16 +912,18 @@ async def execute_workflow(
                 detail="Inline code execution requires platform admin access",
             )
     elif request.workflow_id:
-        # Workflow execution - check access via repository cascade scoping
-        # resolve() already checked scoping; use can_access with the resolved UUID
+        # UUID resolution already goes through repository.get(), including its
+        # org and role access checks. Portable name/path refs use specialized
+        # resolution and still need the explicit access assertion below.
         assert workflow is not None  # guaranteed by resolve() + 404 above
-        try:
-            await workflow_repo.can_access(id=workflow.id)
-        except AccessDeniedError:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied to execute this workflow",
-            )
+        if not _is_uuid_workflow_ref(request.workflow_id):
+            try:
+                await workflow_repo.can_access(id=workflow.id)
+            except AccessDeniedError:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied to execute this workflow",
+                )
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1041,6 +1117,14 @@ async def execute_workflow(
                         is_transient=True,
                     )
 
+            # Reuse one hardened dispatch snapshot for the queue boundary. It
+            # includes the active-Solution gate and global-repo policy, so the
+            # worker does not repeat this query after RabbitMQ delivery.
+            dispatch_metadata = await get_workflow_for_execution(
+                str(workflow.id),
+                db=db,
+            )
+
             # Data providers always run sync (small payloads, no UI poll flow),
             # but honor the caller's transient flag: dropdown-options pass
             # transient=True for the fast path, the manual Execute page passes
@@ -1051,6 +1135,7 @@ async def execute_workflow(
                 input_data=request.input_data,
                 transient=request.transient,
                 sync=True,
+                dispatch_metadata=dispatch_metadata,
             )
             return WorkflowExecutionResponse(
                 execution_id=result.execution_id,
@@ -1062,6 +1147,10 @@ async def execute_workflow(
             )
         elif workflow:
             # Execute workflow by ID
+            dispatch_metadata = await get_workflow_for_execution(
+                str(workflow.id),
+                db=db,
+            )
             result = await run_workflow(
                 context=shared_ctx,
                 workflow_id=str(workflow.id),
@@ -1069,6 +1158,7 @@ async def execute_workflow(
                 form_id=request.form_id,
                 transient=request.transient,
                 sync=request.sync or False,
+                dispatch_metadata=dispatch_metadata,
             )
         else:
             # This shouldn't happen due to earlier validation
@@ -1082,8 +1172,15 @@ async def execute_workflow(
         if result.status and result.status not in (ExecutionStatus.PENDING, ExecutionStatus.RUNNING):
             result.is_transient = True
 
-        # Publish execution update via WebSocket
-        if not request.transient and result.execution_id:
+        # Publish only the immediate non-terminal state here. The worker pushes
+        # a sync result before publishing its terminal execution/history events,
+        # so repeating terminal fan-out in this request adds latency and emits
+        # duplicate WebSocket events.
+        if (
+            not request.transient
+            and result.execution_id
+            and _should_publish_request_execution_update(result.status)
+        ):
             await publish_execution_update(
                 execution_id=result.execution_id,
                 status=result.status.value,
@@ -1266,16 +1363,24 @@ async def register_workflow(
     from src.services.file_storage import FileStorageService
     from src.services.file_storage.indexers.workflow import WorkflowIndexer
 
+    if not request.path.endswith(".py"):
+        raise HTTPException(status_code=400, detail="Path must be a .py file")
+
     service = FileStorageService(db)
+
+    # Guard before reading mutable storage. Governed paths must never be
+    # parsed or registered from a stale `_repo` projection.
+    await _guard_workflow_registration_mutation(
+        db,
+        operation="register or reactivate workflow",
+        paths=(request.path,),
+    )
 
     # 1. Verify file exists
     try:
         content_tuple = await service.read_file(request.path)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"File not found: {request.path}")
-
-    if not request.path.endswith(".py"):
-        raise HTTPException(status_code=400, detail="Path must be a .py file")
 
     # read_file returns tuple[bytes, None]
     content = content_tuple[0]
@@ -1314,7 +1419,7 @@ async def register_workflow(
             detail=f"No decorated function '{request.function_name}' found in {request.path}",
         )
 
-    # 3. Check if already registered (include inactive rows for reactivation)
+    # 3. Resolve the requested identity (including inactive reactivation rows).
     existing = await db.execute(
         select(WorkflowORM).where(
             WorkflowORM.path == request.path,
@@ -1322,6 +1427,26 @@ async def register_workflow(
         )
     )
     existing_wf = existing.scalar_one_or_none()
+    await _guard_workflow_registration_mutation(
+        db,
+        operation="register or reactivate workflow",
+        workflows=(existing_wf,) if existing_wf is not None else (),
+    )
+
+    try:
+        requested_workflow_id = await resolve_workflow_registration_id(
+            db, request.id, existing_wf
+        )
+    except WorkflowRegistrationIdInvalid as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except WorkflowRegistrationConflict as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
 
     wf_type = "data_provider" if target_decorator_type == "data_provider" else (
         "tool" if target_decorator_type == "tool" else "workflow"
@@ -1380,7 +1505,10 @@ async def register_workflow(
         await db.flush()
     else:
         # 4. Create minimal DB record
-        workflow_id = uuid4()
+        # A supplied ID must already have been assigned by another Bifrost
+        # instance and is used only for cross-instance promotion. Normal
+        # first-time registration still lets this instance assign the UUID.
+        workflow_id = requested_workflow_id or uuid4()
         new_wf = WorkflowORM(
             id=workflow_id,
             name=request.function_name,
@@ -1391,8 +1519,17 @@ async def register_workflow(
             organization_id=org_uuid,
             access_level=request.access_level if request.access_level is not None else "role_based",
         )
-        db.add(new_wf)
-        await db.flush()
+        try:
+            await add_workflow_registration(
+                db,
+                new_wf,
+                requested_workflow_id,
+            )
+        except WorkflowRegistrationConflict as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
 
     # Apply role assignments. Replaces any pre-existing rows when reactivating
     # an inactive workflow, so the caller's role list is authoritative.
@@ -1492,6 +1629,11 @@ async def update_workflow(
 
         # Solution-managed workflows are read-only here; deploy is the writer.
         assert_not_solution_managed(workflow)
+        await _guard_workflow_registration_mutation(
+            db,
+            operation="update workflow",
+            workflows=(workflow,),
+        )
 
         # Update organization_id - use model_fields_set to distinguish "not provided" from "explicitly null"
         if "organization_id" in request.model_fields_set:
@@ -1875,6 +2017,11 @@ async def replace_workflow(
             new_path=workflow.path,
         )
 
+    except WorkspaceReleaseRegistrationGoverned as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1991,6 +2138,11 @@ async def recreate_workflow_file(
             path=workflow.path,
         )
 
+    except WorkspaceReleaseRegistrationGoverned as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -2047,6 +2199,11 @@ async def deactivate_workflow(
             warning=warning,
         )
 
+    except WorkspaceReleaseRegistrationGoverned as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -2126,9 +2283,10 @@ async def assign_roles_to_workflow(
     """
     # Verify workflow exists
     result = await db.execute(
-        select(WorkflowORM.id).where(WorkflowORM.id == workflow_id)
+        select(WorkflowORM).where(WorkflowORM.id == workflow_id)
     )
-    if not result.scalar_one_or_none():
+    workflow = result.scalar_one_or_none()
+    if workflow is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Workflow with ID '{workflow_id}' not found",
@@ -2137,6 +2295,11 @@ async def assign_roles_to_workflow(
     # The before_flush backstop can't see this (we add WorkflowRole rows, never
     # dirtying the Workflow itself), so the explicit guard is load-bearing here.
     await assert_entity_id_not_solution_managed(db, WorkflowORM, workflow_id)
+    await _guard_workflow_registration_mutation(
+        db,
+        operation="assign workflow roles",
+        workflows=(workflow,),
+    )
 
     now = datetime.now(timezone.utc)
 
@@ -2198,6 +2361,20 @@ async def remove_role_from_workflow(
     # ORM unit-of-work, so the before_flush backstop never sees it — the guard
     # is the only protection here.
     await assert_entity_id_not_solution_managed(db, WorkflowORM, workflow_id)
+    workflow_result = await db.execute(
+        select(WorkflowORM).where(WorkflowORM.id == workflow_id)
+    )
+    workflow = workflow_result.scalar_one_or_none()
+    if workflow is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow with ID '{workflow_id}' not found",
+        )
+    await _guard_workflow_registration_mutation(
+        db,
+        operation="remove workflow role",
+        workflows=(workflow,),
+    )
     result = await db.execute(
         delete(WorkflowRole).where(
             WorkflowRole.workflow_id == workflow_id,
@@ -2262,6 +2439,11 @@ async def delete_workflow(
 
     # Solution-managed workflows are read-only here; deploy is the writer.
     assert_not_solution_managed(workflow)
+    await _guard_workflow_registration_mutation(
+        db,
+        operation="delete workflow",
+        workflows=(workflow,),
+    )
 
     if not workflow.path:
         raise HTTPException(

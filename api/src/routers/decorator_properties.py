@@ -23,12 +23,23 @@ from src.models import (
     UpdatePropertiesRequest,
     UpdatePropertiesResponse,
 )
-from src.services.decorator_property_service import DecoratorPropertyService
 from src.services.file_storage import FileStorageService
+from src.services.workspace_release_files import (
+    WorkspaceReleasePathGoverned,
+    active_workspace_release_file_view,
+    reject_release_governed_paths,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/decorator-properties", tags=["Decorator Properties"])
+
+
+def _decorator_property_service():
+    """Load the service against the currently installed LibCST module graph."""
+    from src.services.decorator_property_service import DecoratorPropertyService
+
+    return DecoratorPropertyService()
 
 
 @router.get(
@@ -59,11 +70,15 @@ async def get_decorator_properties(
         )
 
     try:
-        storage = FileStorageService(db)
-        content, _ = await storage.read_file(path)
+        release_view = await active_workspace_release_file_view(db, ctx.org_id)
+        if release_view is not None and release_view.governs(path):
+            content = await release_view.read(path)
+        else:
+            storage = FileStorageService(db)
+            content, _ = await storage.read_file(path)
         content_str = content.decode("utf-8", errors="replace")
 
-        service = DecoratorPropertyService()
+        service = _decorator_property_service()
         decorators = service.read_decorators(content_str)
 
         return DecoratorPropertiesResponse(
@@ -86,7 +101,10 @@ async def get_decorator_properties(
             detail=f"File not found: {path}",
         )
     except Exception as e:
-        logger.error(f"Error reading decorator properties from {log_safe(path)}: {log_safe(e)}", exc_info=True)
+        logger.error(
+            f"Error reading decorator properties from {log_safe(path)}: {log_safe(e)}",
+            exc_info=True,
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to read decorator properties",
@@ -124,6 +142,7 @@ async def update_decorator_properties(
         )
 
     try:
+        await reject_release_governed_paths(db, ctx.org_id, [request.path])
         storage = FileStorageService(db)
 
         # Read current content
@@ -151,7 +170,7 @@ async def update_decorator_properties(
         content_str = content.decode("utf-8", errors="replace")
 
         # Apply property changes
-        service = DecoratorPropertyService()
+        service = _decorator_property_service()
         result = service.write_properties(
             content_str,
             request.function_name,
@@ -187,6 +206,11 @@ async def update_decorator_properties(
             new_etag=new_etag,
         )
 
+    except WorkspaceReleasePathGoverned as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
     except HTTPException:
         raise
     except Exception as e:

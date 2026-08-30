@@ -1,6 +1,6 @@
 import { FolderOpen } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router";
 import { FilesExplorer } from "@/components/files/FilesExplorer";
 import { getSolution } from "@/services/solutions";
 

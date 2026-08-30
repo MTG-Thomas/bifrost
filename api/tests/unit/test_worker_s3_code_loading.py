@@ -1,13 +1,38 @@
 """Tests for worker loading code from S3 via Redis cache."""
 
+import hashlib
 import json
+import sys
+from types import SimpleNamespace
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+
+@pytest.fixture(autouse=True)
+def preserve_virtual_import_state():
+    """Importing the worker must not leak its global finder across unit tests."""
+    from src.services.execution import virtual_import
+
+    original_meta_path = list(sys.meta_path)
+    original_finder = virtual_import.get_virtual_finder()
+    try:
+        yield
+    finally:
+        virtual_import.remove_virtual_import_hook()
+        sys.meta_path[:] = original_meta_path
+        virtual_import._finder = original_finder  # noqa: SLF001
 
 
 class TestGetModuleSyncFromCache:
     """Test get_module_sync returns cached modules from Redis."""
+
+    @pytest.fixture(autouse=True)
+    def stable_workspace_generation(self, monkeypatch):
+        monkeypatch.setattr(
+            "src.core.module_cache_sync.workspace_generation_for_import",
+            lambda: "generation-1",
+        )
 
     def test_worker_loads_code_from_redis_cache(self):
         """Worker should load workflow code from Redis cache using path."""
@@ -16,11 +41,14 @@ class TestGetModuleSyncFromCache:
         with patch(
             "src.core.module_cache_sync._get_sync_redis"
         ) as mock_redis_factory:
+            content = "from bifrost import workflow\n@workflow\ndef test(): return {}"
+            content_hash = hashlib.sha256(content.encode()).hexdigest()
             cached = json.dumps(
                 {
-                    "content": "from bifrost import workflow\n@workflow\ndef test(): return {}",
+                    "content": content,
                     "path": "workflows/test.py",
-                    "hash": "abc123",
+                    "hash": content_hash,
+                    "generation": "generation-1",
                 }
             )
             mock_redis = MagicMock()
@@ -29,9 +57,42 @@ class TestGetModuleSyncFromCache:
 
             result = get_module_sync("workflows/test.py")
             assert result is not None
-            assert result["content"] == "from bifrost import workflow\n@workflow\ndef test(): return {}"
+            assert result["content"] == content
             assert result["path"] == "workflows/test.py"
-            assert result["hash"] == "abc123"
+            assert result["hash"] == content_hash
+
+    def test_worker_batch_loads_cached_modules_in_one_round_trip(self):
+        """Worker hash validation should batch Redis reads for loaded modules."""
+        from src.core.module_cache_sync import get_modules_sync
+
+        first_content = "x = 1"
+        second_content = "x = 2"
+        first = {
+            "content": first_content,
+            "path": "modules/a.py",
+            "hash": hashlib.sha256(first_content.encode()).hexdigest(),
+            "generation": "generation-1",
+        }
+        second = {
+            "content": second_content,
+            "path": "modules/b.py",
+            "hash": hashlib.sha256(second_content.encode()).hexdigest(),
+            "generation": "generation-1",
+        }
+        with patch(
+            "src.core.module_cache_sync._get_sync_redis"
+        ) as mock_redis_factory:
+            mock_redis = MagicMock()
+            mock_redis.mget.return_value = [json.dumps(first), json.dumps(second)]
+            mock_redis_factory.return_value = mock_redis
+
+            result = get_modules_sync(["modules/a.py", "modules/b.py"])
+
+        assert result == {"modules/a.py": first, "modules/b.py": second}
+        mock_redis.mget.assert_called_once_with(
+            ["bifrost:module:modules/a.py", "bifrost:module:modules/b.py"]
+        )
+        mock_redis.get.assert_not_called()
 
     def test_cache_miss_returns_none(self):
         """When both Redis and S3 miss, should return None."""
@@ -200,6 +261,63 @@ class TestWorkerCodeLoadingBranches:
 
         assert reached_else
 
+    def test_generation_is_validated_before_entry_source_loading(self):
+        from src.core.module_cache_sync import WorkspaceGenerationChangedError
+        from src.services.execution.worker import _load_workspace_workflow
+
+        with (
+            patch(
+                "src.core.module_cache_sync.assert_workspace_generation",
+                side_effect=WorkspaceGenerationChangedError("stale"),
+            ) as validate,
+            patch("src.core.module_cache_sync.get_module_sync") as get_module,
+            patch(
+                "src.services.execution.module_loader.load_workflow_from_db"
+            ) as load_workflow,
+        ):
+            with pytest.raises(WorkspaceGenerationChangedError, match="stale"):
+                _load_workspace_workflow(
+                    file_path="workflows/test.py",
+                    function_name="run",
+                    workspace_generation="generation-1",
+                )
+
+        validate.assert_called_once_with("generation-1")
+        get_module.assert_not_called()
+        load_workflow.assert_not_called()
+
+    def test_generation_is_validated_after_entry_source_loading(self):
+        from src.core.module_cache_sync import WorkspaceGenerationChangedError
+        from src.services.execution.worker import _load_workspace_workflow
+
+        with (
+            patch(
+                "src.core.module_cache_sync.assert_workspace_generation",
+                side_effect=[None, WorkspaceGenerationChangedError("stale")],
+            ) as validate,
+            patch(
+                "src.core.module_cache_sync.get_module_sync",
+                return_value={
+                    "content": "x = 1",
+                    "path": "workflows/test.py",
+                    "hash": "h",
+                },
+            ),
+            patch(
+                "src.services.execution.module_loader.load_workflow_from_db",
+                return_value=(MagicMock(), None, None),
+            ) as load_workflow,
+        ):
+            with pytest.raises(WorkspaceGenerationChangedError, match="stale"):
+                _load_workspace_workflow(
+                    file_path="workflows/test.py",
+                    function_name="run",
+                    workspace_generation="generation-1",
+                )
+
+        assert validate.call_count == 2
+        load_workflow.assert_called_once()
+
     @patch("src.core.module_cache_sync.get_module_sync")
     def test_cache_exception_sets_load_error(self, mock_cache):
         """When cache raises an exception, load_error should be set."""
@@ -222,3 +340,40 @@ class TestWorkerCodeLoadingBranches:
 
         assert load_error is not None
         assert "Redis connection refused" in load_error
+
+
+@pytest.mark.asyncio
+async def test_worker_main_pins_generation_before_execution():
+    from src.services.execution import worker
+
+    context = {"name": "test"}
+    redis_client = AsyncMock()
+    result = {"status": "Success", "metrics": None}
+    seen = {}
+
+    async def record_context(_execution_id, execution_context):
+        seen["generation"] = execution_context.get("workspace_generation")
+        return result
+
+    with (
+        patch("src.config.get_settings", return_value=SimpleNamespace(redis_url="redis://test")),
+        patch("redis.asyncio.from_url", return_value=redis_client),
+        patch.object(worker, "_setup_signal_handlers"),
+        patch.object(
+            worker,
+            "_read_execution_context",
+            new=AsyncMock(return_value=context),
+        ),
+        patch.object(worker, "_run_execution", new=AsyncMock(side_effect=record_context)) as run,
+        patch.object(worker, "_write_execution_result", new=AsyncMock()),
+        patch(
+            "src.core.module_cache_sync.wait_for_workspace_generation_sync",
+            return_value="generation-1",
+        ) as wait_generation,
+    ):
+        await worker.worker_main("execution-1")
+
+    wait_generation.assert_called_once_with()
+    run.assert_awaited_once()
+    assert seen["generation"] == "generation-1"
+    redis_client.aclose.assert_awaited_once()

@@ -13,10 +13,17 @@ from src.models.enums import AgentAccessLevel
 from src.models.orm.agent_runs import AgentRun
 from src.models.orm.agents import Agent, AgentRole
 from src.models.orm.users import UserRole
+from src.services.execution.agent_run_access import agent_run_visibility_conditions
 
 
 def _is_global_principal(user: UserPrincipal) -> bool:
-    return user.is_superuser and user.organization_id is None
+    """Return whether the caller has platform-wide agent-run access.
+
+    Platform administrators can carry the provider organization ID, so their
+    global access is determined by the superuser claim rather than by an empty
+    organization field.
+    """
+    return user.is_superuser
 
 
 def _agent_role_exists_for_user(user: UserPrincipal):
@@ -35,13 +42,6 @@ def agent_access_conditions(user: UserPrincipal) -> list:
 
     if user.organization_id is None:
         return [false()]
-
-    in_scope = or_(
-        Agent.organization_id == user.organization_id,
-        Agent.organization_id.is_(None),
-    )
-    if user.is_superuser:
-        return [in_scope]
 
     private_owner = and_(
         Agent.access_level == AgentAccessLevel.PRIVATE,
@@ -70,7 +70,7 @@ def apply_agent_run_access(
     """Apply tenant and agent visibility checks to an AgentRun query."""
     query = query.join(Agent, AgentRun.agent_id == Agent.id)
     if _is_global_principal(user):
-        return query
+        return query.where(*agent_run_visibility_conditions(user))
 
     if user.organization_id is None:
         return query.where(false())
@@ -78,6 +78,7 @@ def apply_agent_run_access(
     return query.where(
         AgentRun.org_id == user.organization_id,
         *agent_access_conditions(user),
+        *agent_run_visibility_conditions(user),
     )
 
 

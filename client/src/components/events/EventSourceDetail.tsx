@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import { useParams } from "react-router-dom";
+import { useParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import {
 	ArrowLeft,

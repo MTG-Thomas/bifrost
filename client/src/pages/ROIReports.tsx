@@ -59,6 +59,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useOrganizations } from "@/hooks/useOrganizations";
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
 import { toFiniteNumber } from "@/lib/chart-values";
+import { formatChartDateLabel } from "@/components/reports/formatters";
 
 // ============================================================================
 // Demo Data Generation
@@ -743,9 +744,7 @@ export function ROIReports() {
 										borderRadius: "6px",
 									}}
 									formatter={formatROITrendTooltip}
-									labelFormatter={(label) =>
-										format(new Date(label), "PPP")
-									}
+									labelFormatter={formatChartDateLabel}
 								/>
 								<Legend
 									formatter={(value) => {

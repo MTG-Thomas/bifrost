@@ -24,12 +24,20 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const clientRoot = resolve(__dirname, "../..");
 
 describe("PLATFORM_MODULES registry", () => {
-	it("each specifier resolves to a real module that exposes named exports", async () => {
-		for (const { specifier } of PLATFORM_MODULES) {
-			const mod = await import(/* @vite-ignore */ specifier);
+	it("each host specifier resolves to a real module that exposes named exports", async () => {
+		for (const { specifier, hostSpecifier } of PLATFORM_MODULES) {
+			const mod = await import(/* @vite-ignore */ hostSpecifier ?? specifier);
 			const keys = Object.keys(mod).filter((k) => k !== "default");
 			expect(keys.length, `expected named exports from ${specifier}`).toBeGreaterThan(0);
 		}
+	});
+
+	it("maps the legacy app router specifier to the patched host package", () => {
+		expect(PLATFORM_MODULES).toContainEqual({
+			specifier: "react-router-dom",
+			hostSpecifier: "react-router",
+			globalKey: "__bifrost_react_router_dom",
+		});
 	});
 
 	it("stubUrlFor produces a stable, slash-free filename", () => {

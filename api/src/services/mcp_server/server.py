@@ -15,10 +15,12 @@ Usage:
     app = fastmcp_server.http_app()
 """
 
+import asyncio
+import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Sequence
 from uuid import UUID
 
 from fastmcp.tools import ToolResult
@@ -26,7 +28,20 @@ from fastmcp.tools import ToolResult
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
-from src.services.mcp_server.tools import TOOL_MODULES, register_all_tools
+    from src.services.tool_registry import RegisteredTool
+
+from src.services.mcp_server.agent_scope import (
+    get_scoped_agent_id as _get_agent_id_from_scope,
+)
+from src.services.mcp_server.tools import (
+    TOOL_MODULES,
+    register_all_tools,
+    register_gateway_tools,
+)
+from src.services.mcp_server.tools.gateway import (
+    GATEWAY_INSTRUCTIONS,
+    GATEWAY_TOOL_NAMES,
+)
 from src.services.mcp_server.tool_result import error_result, success_result
 
 logger = logging.getLogger(__name__)
@@ -57,16 +72,16 @@ BIFROST_WEBSITE_URL = "https://docs.gobifrost.com"
 # =============================================================================
 
 # Workflow tools are registered with normalized names for MCP compatibility.
-# These mappings track the relationship between tool names and workflow UUIDs.
-
-# Forward mapping: normalized tool_name -> workflow_id
-_TOOL_NAME_TO_WORKFLOW_ID: dict[str, str] = {}
-# Reverse mapping: workflow_id -> tool_name
+# The reverse mapping lets agent-scoped access resolve a workflow UUID to its
+# current FastMCP tool name. Its values also track names during refresh.
 _WORKFLOW_ID_TO_TOOL_NAME: dict[str, str] = {}
+_WORKFLOW_CATALOG_DIGEST = hashlib.sha256(b"[]").hexdigest()
+_WORKFLOW_CATALOG_REVISION = -1
+_WORKFLOW_CATALOG_REFRESH_LOCK = asyncio.Lock()
+_WORKFLOW_CATALOG_REFRESH_ATTEMPTS = 3
 
 # Stored references for refresh_workflow_tools()
 _fastmcp_instance: "FastMCP | None" = None
-_default_mcp_context: "MCPContext | None" = None
 
 
 def _normalize_tool_name(name: str) -> str:
@@ -92,26 +107,9 @@ def _normalize_tool_name(name: str) -> str:
     return name
 
 
-def _generate_short_suffix(length: int = 3) -> str:
-    """Generate a short random alphanumeric suffix for duplicate tool names."""
-    import secrets
-    import string
-
-    chars = string.ascii_lowercase + string.digits
-    return "".join(secrets.choice(chars) for _ in range(length))
-
-
-def get_workflow_id_for_tool(tool_name: str) -> str | None:
-    """
-    Get workflow UUID for a registered MCP tool name.
-
-    Args:
-        tool_name: The MCP tool name (e.g., "review_tickets")
-
-    Returns:
-        Workflow UUID string or None if not found
-    """
-    return _TOOL_NAME_TO_WORKFLOW_ID.get(tool_name)
+def _workflow_identity_suffix(workflow_id: UUID | str) -> str:
+    """Return a collision-free, replica-stable suffix for one workflow."""
+    return UUID(str(workflow_id)).hex
 
 
 def get_registered_tool_name(workflow_id: str) -> str | None:
@@ -145,9 +143,7 @@ class MCPContext:
     is_external: bool = False
     user_email: str = ""
     user_name: str = ""
-
-    # System tools enabled for this context (from agent.system_tools)
-    enabled_system_tools: list[str] = field(default_factory=list)
+    operation_id: str | None = None
 
     # Knowledge namespaces accessible to this user (from agent.knowledge_sources)
     accessible_namespaces: list[str] = field(default_factory=list)
@@ -165,31 +161,6 @@ class MCPContext:
             self.org_id = UUID(self.org_id)
 
 
-# =============================================================================
-# Context Helper Functions (for FastMCP authentication)
-# =============================================================================
-
-
-def _get_agent_id_from_scope() -> UUID | None:
-    """Read the agent UUID written to the ASGI scope by AgentScopeMCPMiddleware.
-
-    Returns ``None`` outside an HTTP request context (e.g. stdio MCP) or when
-    the request is to the un-scoped /mcp mount.
-    """
-    from fastmcp.server.dependencies import get_http_request
-
-    try:
-        request = get_http_request()
-        agent_id_str = request.scope.get("mcp_agent_id")
-        if agent_id_str:
-            return UUID(agent_id_str)
-    except (RuntimeError, ValueError, AttributeError) as e:
-        # RuntimeError: not in HTTP context; ValueError: bad UUID; AttributeError:
-        # scope shape unexpected. None of these should crash tool execution.
-        logger.debug(f"could not extract agent_id from scope: {e}")
-    return None
-
-
 def _has_http_request_context() -> bool:
     """Return whether FastMCP has an active HTTP request on this stack."""
     from fastmcp.server.dependencies import get_http_request
@@ -199,8 +170,6 @@ def _has_http_request_context() -> bool:
     except RuntimeError:
         return False
     return True
-
-
 def _get_context_from_token() -> MCPContext:
     """
     Get MCPContext from authenticated FastMCP token.
@@ -235,14 +204,14 @@ def _get_context_from_token() -> MCPContext:
 async def _get_runtime_context() -> MCPContext:
     """Build the per-request MCPContext used by tool execution.
 
-    Populates ``accessible_namespaces`` according to the ASGI mount:
+    Populates ``accessible_namespaces`` only for the agent-scoped mount:
 
     - ``/mcp/{agent_id}`` (agent-scoped): namespaces == that agent's
       ``knowledge_sources`` only. Cross-namespace requests are rejected
       by the tool itself, so a session bound to an agent can only see
       that agent's knowledge.
-    - ``/mcp`` (un-scoped): namespaces == union of the user's accessible
-      agents' ``knowledge_sources``.
+    - ``/mcp`` (unscoped): the gateway resolves the selected agent and
+      constructs a tool-specific context at dispatch time.
     """
     from fastmcp.exceptions import ToolError
     from fastmcp.server.dependencies import get_access_token
@@ -263,10 +232,10 @@ async def _get_runtime_context() -> MCPContext:
     agent_id = _get_agent_id_from_scope()
 
     accessible_namespaces: list[str] = []
-    try:
-        async with get_db_context() as db:
-            service = MCPToolAccessService(db)
-            if agent_id is not None:
+    if agent_id is not None:
+        try:
+            async with get_db_context() as db:
+                service = MCPToolAccessService(db)
                 agent_result = await service.get_tools_for_agent(
                     agent_id=agent_id,
                     user_roles=user_roles,
@@ -278,23 +247,14 @@ async def _get_runtime_context() -> MCPContext:
                 if agent_result is None:
                     raise ToolError("Agent not found or inaccessible")
                 accessible_namespaces = list(agent_result.accessible_namespaces)
-            else:
-                result = await service.get_accessible_tools(
-                    user_roles=user_roles,
-                    is_superuser=is_superuser,
-                    user_id=user_id,
-                    org_id=org_id,
-                    is_external=is_external,
-                )
-                accessible_namespaces = list(result.accessible_namespaces)
-    except ToolError:
-        raise
-    except SQLAlchemyError as exc:
-        logger.exception("Failed to resolve accessible namespaces")
-        raise ToolError("Failed to resolve accessible namespaces") from exc
-    except Exception:
-        logger.exception("Unexpected error resolving accessible namespaces")
-        raise
+        except ToolError:
+            raise
+        except SQLAlchemyError as exc:
+            logger.exception("Failed to resolve accessible namespaces")
+            raise ToolError("Failed to resolve accessible namespaces") from exc
+        except Exception:
+            logger.exception("Unexpected error resolving accessible namespaces")
+            raise
 
     return MCPContext(
         user_id=token.claims.get("user_id", ""),
@@ -344,11 +304,6 @@ class BifrostMCPServer:
         self.context = context
         self._name = name
 
-        # Determine enabled tools
-        self._enabled_tools: set[str] | None = None
-        if context.enabled_system_tools:
-            self._enabled_tools = set(context.enabled_system_tools)
-
         # FastMCP server (lazy initialized)
         self._fastmcp: Any = None
 
@@ -383,8 +338,8 @@ class BifrostMCPServer:
                 )
             ]
 
-        # Per-request context: pull user from the JWT and scope namespaces by
-        # the ASGI mount (agent-scoped vs. union). Falls back to the server's
+        # Per-request context: pull user from the JWT and scope namespaces for
+        # the agent-specific mount. Falls back to the server's
         # default_context only when there is no FastMCP request context at all
         # (e.g. tool introspection at startup); other failures (auth required,
         # DB error) are real errors and must not silently degrade to the
@@ -411,11 +366,16 @@ class BifrostMCPServer:
             mcp = _FastMCP(
                 self._name,
                 auth=auth,
+                instructions=GATEWAY_INSTRUCTIONS,
                 website_url=BIFROST_WEBSITE_URL,
                 icons=icons,
             )
+            register_gateway_tools(mcp, get_context_fn)
             register_all_tools(mcp, get_context_fn)
-            tool_count = sum(len(m.TOOLS) for m in TOOL_MODULES)
+            tool_count = (
+                len(GATEWAY_TOOL_NAMES)
+                + sum(len(m.TOOLS) for m in TOOL_MODULES)
+            )
             logger.info(f"Created FastMCP server with {tool_count} tools and auth")
             return mcp
 
@@ -424,23 +384,18 @@ class BifrostMCPServer:
             assert _FastMCP is not None
             self._fastmcp = _FastMCP(
                 self._name,
+                instructions=GATEWAY_INSTRUCTIONS,
                 website_url=BIFROST_WEBSITE_URL,
                 icons=icons,
             )
+            register_gateway_tools(self._fastmcp, get_context_fn)
             register_all_tools(self._fastmcp, get_context_fn)
-            tool_count = sum(len(m.TOOLS) for m in TOOL_MODULES)
+            tool_count = (
+                len(GATEWAY_TOOL_NAMES)
+                + sum(len(m.TOOLS) for m in TOOL_MODULES)
+            )
             logger.info(f"Created FastMCP server with {tool_count} tools")
         return self._fastmcp
-
-    def get_tool_names(self) -> list[str]:
-        """Get list of registered tool names (prefixed for SDK use)."""
-        all_tools = [tool_id for m in TOOL_MODULES for tool_id, _, _ in m.TOOLS]
-        if self._enabled_tools:
-            tools = [t for t in all_tools if t in self._enabled_tools]
-        else:
-            tools = all_tools
-        return [f"mcp__{self._name}__{t}" for t in tools]
-
 
 def get_system_tools() -> list[dict[str, Any]]:
     """
@@ -529,6 +484,17 @@ def get_system_tools() -> list[dict[str, Any]]:
                         if param.default is inspect.Parameter.empty:
                             parameters["required"].append(param_name)
 
+                if tool_id == "search_knowledge":
+                    from src.services.knowledge.search_budget import (
+                        MAX_KNOWLEDGE_RESULTS,
+                    )
+
+                    parameters["properties"]["limit"].update({
+                        "minimum": 1,
+                        "maximum": MAX_KNOWLEDGE_RESULTS,
+                        "default": MAX_KNOWLEDGE_RESULTS,
+                    })
+
                 tools.append({
                     "id": tool_id,
                     "name": name,
@@ -557,44 +523,6 @@ def get_system_tool_function(tool_id: str) -> Any | None:
                 if hasattr(module, tool_id):
                     return getattr(module, tool_id)
     return None
-
-
-# =============================================================================
-# Factory Function
-# =============================================================================
-
-
-async def create_user_mcp_server(
-    user_id: UUID | str,
-    org_id: UUID | str | None = None,
-    is_platform_admin: bool = False,
-    enabled_tools: list[str] | None = None,
-    user_email: str = "",
-    user_name: str = "",
-) -> BifrostMCPServer:
-    """
-    Create an MCP server scoped to a user's permissions.
-
-    Args:
-        user_id: User ID
-        org_id: Organization ID (optional)
-        is_platform_admin: Whether user is platform admin
-        enabled_tools: List of enabled tool IDs (None = all)
-        user_email: User email for context
-        user_name: User name for context
-
-    Returns:
-        BifrostMCPServer configured for this user
-    """
-    context = MCPContext(
-        user_id=user_id,
-        org_id=org_id,
-        is_platform_admin=is_platform_admin,
-        enabled_system_tools=enabled_tools or [],
-        user_email=user_email,
-        user_name=user_name,
-    )
-    return BifrostMCPServer(context)
 
 
 # =============================================================================
@@ -661,10 +589,84 @@ if HAS_FASTMCP:
                         # Plain string result - return as success
                         return success_result(result, {"result": result})
 
+                from pydantic import BaseModel
+
+                if isinstance(result, BaseModel):
+                    result = result.model_dump(mode="json")
+
                 # Auto-wrap dict results
                 if isinstance(result, dict):
                     if result.get("error"):
                         return error_result(str(result["error"]), result)
+                    from src.services.chat_artifacts import find_artifact_refs
+
+                    artifact_refs = find_artifact_refs(result)
+                    if artifact_refs:
+                        import base64
+
+                        from mcp.types import ImageContent, ResourceLink, TextContent
+
+                        from src.core.database import get_db_context
+                        from src.services.artifacts import (
+                            ArtifactAccessError,
+                            ArtifactService,
+                        )
+                        from src.services.file_storage.service import (
+                            get_file_storage_service,
+                        )
+
+                        content_blocks: list[Any] = [
+                            TextContent(
+                                type="text",
+                                text=f"Created {len(artifact_refs)} artifact(s).",
+                            )
+                        ]
+                        async with get_db_context() as db:
+                            storage = get_file_storage_service(db)
+                            artifact_service = ArtifactService(db)
+                            for ref in artifact_refs:
+                                try:
+                                    artifact = await artifact_service.get_authorized(
+                                        UUID(ref.id),
+                                        user_id=UUID(str(context.user_id)),
+                                        organization_id=(
+                                            UUID(str(context.org_id))
+                                            if context.org_id
+                                            else None
+                                        ),
+                                        is_platform_admin=context.is_platform_admin,
+                                    )
+                                except (ArtifactAccessError, ValueError):
+                                    return error_result(
+                                        "ArtifactRef output was not found or is outside this MCP scope.",
+                                        result,
+                                    )
+                                if ref.content_type.startswith("image/"):
+                                    data = await artifact_service.read(artifact)
+                                    content_blocks.append(
+                                        ImageContent(
+                                            type="image",
+                                            data=base64.b64encode(data).decode("ascii"),
+                                            mimeType=ref.content_type,
+                                        )
+                                    )
+                                else:
+                                    url = await storage.generate_presigned_download_url(
+                                        artifact.s3_key
+                                    )
+                                    content_blocks.append(
+                                        ResourceLink(
+                                            type="resource_link",
+                                            name=ref.filename,
+                                            uri=url,
+                                            mimeType=ref.content_type,
+                                            size=ref.size_bytes,
+                                        )
+                                    )
+                        return ToolResult(
+                            content=content_blocks,
+                            structured_content=result,
+                        )
                     # Format as pretty JSON for display
                     display = json.dumps(result, indent=2, default=str)
                     return success_result(display, result)
@@ -680,24 +682,81 @@ if HAS_FASTMCP:
     _WorkflowTool = WorkflowTool
 
 
-def _map_type_to_json_schema(param_type: str) -> str:
-    """Map workflow parameter type to JSON Schema type."""
-    type_map = {
-        "string": "string",
-        "str": "string",
-        "int": "integer",
-        "integer": "integer",
-        "float": "number",
-        "number": "number",
-        "bool": "boolean",
-        "boolean": "boolean",
-        "json": "object",
-        "dict": "object",
-        "object": "object",
-        "list": "array",
-        "array": "array",
-    }
-    return type_map.get(param_type.lower(), "string")
+@dataclass(frozen=True)
+class _WorkflowCatalogEntry:
+    """One deterministic workflow-tool definition ready for registration."""
+
+    workflow_id: str
+    workflow_name: str
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+
+    def externally_visible_definition(self) -> dict[str, Any]:
+        """Return exactly the fields this registration adds to ``tools/list``."""
+        return {
+            "name": self.name,
+            "description": self.description,
+            "inputSchema": self.input_schema,
+        }
+
+
+def _normalized_workflow_catalog(
+    entries: Sequence[_WorkflowCatalogEntry],
+) -> bytes:
+    """Serialize complete externally visible definitions canonically."""
+    payload = [entry.externally_visible_definition() for entry in entries]
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _workflow_catalog_digest(entries: Sequence[_WorkflowCatalogEntry]) -> str:
+    """Digest complete, canonically ordered externally visible definitions."""
+    return hashlib.sha256(_normalized_workflow_catalog(entries)).hexdigest()
+
+
+def _build_workflow_catalog(
+    tools: Sequence["RegisteredTool"],
+    native_tool_names: set[str] | frozenset[str],
+) -> list[_WorkflowCatalogEntry]:
+    """Normalize workflow tools into a replica-stable exposed catalog.
+
+    Every workflow includes its complete stable UUID. Consequently an exposed
+    identity never changes when another tenant creates or removes a colliding
+    human-readable name, and inaccessible rows cannot influence a caller's
+    visible tool identity.
+    """
+    from src.services.tool_registry import workflow_parameters_to_json_schema
+
+    entries: list[_WorkflowCatalogEntry] = []
+    for tool in tools:
+        normalized = _normalize_tool_name(tool.name)
+        candidate = normalized or "workflow"
+        workflow_id = str(tool.id)
+        exposed_name = f"{candidate}__{_workflow_identity_suffix(workflow_id)}"
+        while exposed_name in native_tool_names:
+            exposed_name = f"{exposed_name}_workflow"
+        workflow_name = tool.name
+        entries.append(
+            _WorkflowCatalogEntry(
+                workflow_id=workflow_id,
+                workflow_name=workflow_name,
+                name=exposed_name,
+                description=(
+                    tool.description
+                    or f"Execute the {workflow_name} workflow"
+                ),
+                input_schema=workflow_parameters_to_json_schema(
+                    tool.parameters_schema
+                ),
+            )
+        )
+
+    return sorted(entries, key=lambda entry: (entry.name, entry.workflow_id))
 
 
 async def _execute_workflow_tool_impl(
@@ -762,7 +821,53 @@ async def _notify_duplicate_workflow_names(duplicates: dict[str, list]) -> None:
         )
 
 
-async def _register_workflow_tools(mcp: "FastMCP", context: MCPContext) -> int:
+def _replace_workflow_catalog(
+    mcp: "FastMCP",
+    catalog: Sequence[_WorkflowCatalogEntry],
+) -> list[_WorkflowCatalogEntry]:
+    """Replace the complete dynamic provider section in canonical order."""
+    assert _WorkflowTool is not None
+
+    prepared_tools: list[tuple[_WorkflowCatalogEntry, Any]] = []
+    for entry in catalog:
+        workflow_tool = _WorkflowTool(
+            name=entry.name,
+            description=entry.description,
+            workflow_id=entry.workflow_id,
+            workflow_name=entry.workflow_name,
+            parameters=entry.input_schema,
+        )
+        prepared_tools.append((entry, workflow_tool))
+
+    for old_name in sorted(set(_WORKFLOW_ID_TO_TOOL_NAME.values())):
+        try:
+            mcp.local_provider.remove_tool(old_name)
+        except KeyError:
+            logger.debug("Workflow tool already absent: %s", old_name)
+
+    registered_entries: list[_WorkflowCatalogEntry] = []
+    try:
+        for entry, workflow_tool in prepared_tools:
+            mcp.add_tool(workflow_tool)
+            registered_entries.append(entry)
+            logger.debug(
+                f"Registered workflow tool: {entry.name} "
+                f"(workflow: {entry.workflow_name}, id: {entry.workflow_id})"
+            )
+    except Exception:
+        # FastMCP may insert a tool before raising while normalizing its schema.
+        # Remove every prepared identity so the next refresh starts cleanly.
+        for entry, _ in prepared_tools:
+            try:
+                mcp.local_provider.remove_tool(entry.name)
+            except KeyError:
+                # The failing add may have rejected the tool before insertion.
+                pass
+        raise
+    return registered_entries
+
+
+async def _register_workflow_tools(mcp: "FastMCP") -> int:
     """
     Register workflow tools with FastMCP server using human-readable names.
 
@@ -770,18 +875,16 @@ async def _register_workflow_tools(mcp: "FastMCP", context: MCPContext) -> int:
     passing the parameters_schema directly as JSON Schema. This bypasses
     FastMCP's function signature inspection.
 
-    Tool names are normalized from workflow names (e.g., "Review Tickets" -> "review_tickets").
-    Duplicate names get a short random suffix (e.g., "review_tickets_x7k").
+    Tool names combine a normalized workflow name with the complete workflow
+    UUID so identity is stable across replicas and independent of hidden rows.
 
     Returns:
         Number of workflow tools registered
     """
-    global _TOOL_NAME_TO_WORKFLOW_ID, _WORKFLOW_ID_TO_TOOL_NAME
-    global _fastmcp_instance, _default_mcp_context
+    global _WORKFLOW_CATALOG_DIGEST, _WORKFLOW_ID_TO_TOOL_NAME, _fastmcp_instance
 
-    # Store refs so refresh_workflow_tools() can re-call us
+    # Store the live server so refresh_workflow_tools() can re-register tools.
     _fastmcp_instance = mcp
-    _default_mcp_context = context
 
     if not HAS_FASTMCP or _WorkflowTool is None:
         logger.warning("FastMCP not available, skipping workflow tool registration")
@@ -795,18 +898,11 @@ async def _register_workflow_tools(mcp: "FastMCP", context: MCPContext) -> int:
             registry = ToolRegistry(db)
             tools = await registry.get_all_tools()
 
-            # Clear previous mappings (in case of re-registration)
-            _TOOL_NAME_TO_WORKFLOW_ID = {}
-            _WORKFLOW_ID_TO_TOOL_NAME = {}
-
             # Group workflows by normalized name to detect duplicates
             name_groups: dict[str, list] = {}
             for tool in tools:
                 normalized = _normalize_tool_name(tool.name)
-                # Handle edge case: empty normalized name falls back to workflow ID
-                if not normalized:
-                    normalized = str(tool.id)
-                name_groups.setdefault(normalized, []).append(tool)
+                name_groups.setdefault(normalized or "workflow", []).append(tool)
 
             # Detect duplicates and notify admins
             duplicates = {name: wfs for name, wfs in name_groups.items() if len(wfs) > 1}
@@ -818,112 +914,109 @@ async def _register_workflow_tools(mcp: "FastMCP", context: MCPContext) -> int:
                 )
 
             # Get native tool names to avoid collisions
-            native_tool_names = {tool_id for m in TOOL_MODULES for tool_id, _, _ in m.TOOLS}
+            native_tool_names = {
+                tool_id for m in TOOL_MODULES for tool_id, _, _ in m.TOOLS
+            } | set(GATEWAY_TOOL_NAMES)
 
-            # Assign unique tool names and register
-            count = 0
-            for base_name, workflows in name_groups.items():
-                for i, tool in enumerate(workflows):
-                    workflow_id = str(tool.id)
-                    workflow_name = tool.name
-                    description = tool.description or f"Execute the {workflow_name} workflow"
+            catalog = _build_workflow_catalog(tools, native_tool_names)
 
-                    # Avoid collision with native tools by adding "_workflow" suffix
-                    # For duplicates among workflows, add random suffix
-                    if base_name in native_tool_names:
-                        # Collides with native tool - add "_workflow" suffix
-                        if i == 0:
-                            tool_name = f"{base_name}_workflow"
-                        else:
-                            tool_name = f"{base_name}_workflow_{_generate_short_suffix()}"
-                    elif i == 0:
-                        tool_name = base_name
-                    else:
-                        tool_name = f"{base_name}_{_generate_short_suffix()}"
+            # FastMCP replacement preserves existing dict positions, so the
+            # helper removes and reinserts the complete dynamic section.
+            registered_entries = _replace_workflow_catalog(mcp, catalog)
 
-                    # Store mapping for middleware lookups
-                    _TOOL_NAME_TO_WORKFLOW_ID[tool_name] = workflow_id
-                    _WORKFLOW_ID_TO_TOOL_NAME[workflow_id] = tool_name
+            count = len(registered_entries)
 
-                    # Build JSON Schema from parameters_schema
-                    properties: dict[str, Any] = {}
-                    required: list[str] = []
-                    for param in tool.parameters_schema:
-                        param_name = param.get("name")
-                        if not param_name:
-                            continue
-
-                        param_type = param.get("type", "string")
-                        json_type = _map_type_to_json_schema(param_type)
-
-                        properties[param_name] = {
-                            "type": json_type,
-                            "description": param.get("label") or param.get("description") or param_name,
-                        }
-
-                        if param.get("required", False):
-                            required.append(param_name)
-
-                    # Create WorkflowTool with human-readable name
-                    # Context is retrieved dynamically from authenticated token at runtime
-                    workflow_tool = _WorkflowTool(
-                        name=tool_name,  # Human-readable name instead of UUID
-                        description=description,
-                        workflow_id=workflow_id,
-                        workflow_name=workflow_name,
-                        parameters={
-                            "type": "object",
-                            "properties": properties,
-                            "required": required,
-                        },
-                    )
-
-                    # Add to FastMCP server
-                    try:
-                        mcp.add_tool(workflow_tool)
-                        count += 1
-                        logger.debug(
-                            f"Registered workflow tool: {tool_name} "
-                            f"(workflow: {workflow_name}, id: {workflow_id})"
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to register workflow tool {workflow_name}: {e}")
-
-            logger.info(f"Registered {count} workflow tools with FastMCP")
+            _WORKFLOW_ID_TO_TOOL_NAME = {
+                entry.workflow_id: entry.name for entry in registered_entries
+            }
+            _WORKFLOW_CATALOG_DIGEST = _workflow_catalog_digest(
+                registered_entries
+            )
+            logger.info(
+                f"Registered {count} workflow tools with FastMCP "
+                f"(catalog digest: {_WORKFLOW_CATALOG_DIGEST})"
+            )
             return count
 
     except Exception as e:
         logger.exception(f"Error registering workflow tools: {e}")
-        return 0
+        raise
 
 
-async def refresh_workflow_tools() -> int:
-    """Re-register all workflow tools from DB. Removes stale tools.
+async def refresh_workflow_tools(
+    *,
+    mcp: "FastMCP | None" = None,
+    target_revision: int | None = None,
+    force: bool = False,
+) -> int:
+    """Reconcile this replica's provider with a stable shared revision.
 
-    Call this after workflow create/update/delete to keep MCP tool list current.
+    The durable database revision is read on both sides of each catalog
+    snapshot. If it changes while the catalog is being rebuilt, the query may
+    have raced a committed mutation, so reconciliation repeats before marking
+    the replica current. A missed pub/sub message is harmless because request
+    middleware supplies the durable shared revision as ``target_revision``.
     """
-    if not _fastmcp_instance or not _default_mcp_context:
+    global _WORKFLOW_CATALOG_REVISION, _fastmcp_instance
+
+    if mcp is not None:
+        _fastmcp_instance = mcp
+    if not _fastmcp_instance:
         logger.debug("MCP not initialized, skipping workflow tool refresh")
         return 0
 
-    old_tool_names = set(_TOOL_NAME_TO_WORKFLOW_ID.keys())
-    count = await _register_workflow_tools(_fastmcp_instance, _default_mcp_context)
-    new_tool_names = set(_TOOL_NAME_TO_WORKFLOW_ID.keys())
-
-    # Remove tools that no longer exist from FastMCP
-    for stale_name in old_tool_names - new_tool_names:
-        try:
-            _fastmcp_instance._tool_manager.remove_tool(stale_name)
-            logger.debug(f"Removed stale MCP tool: {stale_name}")
-        except Exception:
-            pass  # Tool already gone
-
-    added = new_tool_names - old_tool_names
-    removed = old_tool_names - new_tool_names
-    if added or removed:
-        logger.info(
-            f"MCP workflow tools refreshed: {count} total, "
-            f"+{len(added)} added, -{len(removed)} removed"
+    async with _WORKFLOW_CATALOG_REFRESH_LOCK:
+        from src.services.mcp_server.catalog_sync import (
+            get_workflow_catalog_revision,
         )
 
-    return count
+        if (
+            not force
+            and target_revision is not None
+            and _WORKFLOW_CATALOG_REVISION >= target_revision
+        ):
+            if _WORKFLOW_CATALOG_REVISION == target_revision:
+                return len(_WORKFLOW_ID_TO_TOOL_NAME)
+
+            # A delayed pub/sub message may carry an older revision after a
+            # request already reconciled this replica. Only rebuild when the
+            # durable database revision itself moved backwards (for example,
+            # after a restore or replacement).
+            shared_revision = await get_workflow_catalog_revision()
+            if shared_revision >= _WORKFLOW_CATALOG_REVISION:
+                return len(_WORKFLOW_ID_TO_TOOL_NAME)
+
+        for attempt in range(1, _WORKFLOW_CATALOG_REFRESH_ATTEMPTS + 1):
+            revision_before = await get_workflow_catalog_revision()
+            old_tool_names = set(_WORKFLOW_ID_TO_TOOL_NAME.values())
+            old_catalog_digest = _WORKFLOW_CATALOG_DIGEST
+            count = await _register_workflow_tools(_fastmcp_instance)
+            new_tool_names = set(_WORKFLOW_ID_TO_TOOL_NAME.values())
+
+            revision_after = await get_workflow_catalog_revision()
+            if revision_before != revision_after:
+                if attempt == _WORKFLOW_CATALOG_REFRESH_ATTEMPTS:
+                    raise RuntimeError(
+                        "MCP workflow catalog kept changing during reconciliation"
+                    )
+                logger.info(
+                    "MCP workflow catalog revision moved during refresh "
+                    "(%s -> %s); reconciling again",
+                    revision_before,
+                    revision_after,
+                )
+                continue
+
+            _WORKFLOW_CATALOG_REVISION = revision_after
+            added = new_tool_names - old_tool_names
+            removed = old_tool_names - new_tool_names
+            if added or removed or old_catalog_digest != _WORKFLOW_CATALOG_DIGEST:
+                logger.info(
+                    f"MCP workflow tools refreshed: {count} total, "
+                    f"+{len(added)} added, -{len(removed)} removed, "
+                    f"revision: {_WORKFLOW_CATALOG_REVISION}, "
+                    f"catalog digest: {_WORKFLOW_CATALOG_DIGEST}"
+                )
+            return count
+
+        raise AssertionError("workflow catalog reconciliation loop exhausted")

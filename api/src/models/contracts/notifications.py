@@ -86,6 +86,9 @@ class NotificationUpdate(BaseModel):
     result: dict[str, Any] | None = Field(
         default=None, description="Result data on completion"
     )
+    metadata: dict[str, Any] | None = Field(
+        default=None, description="Replacement metadata"
+    )
 
     model_config = ConfigDict(from_attributes=True)
 

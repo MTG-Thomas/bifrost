@@ -156,35 +156,33 @@ def test_extract_parameters_maps_annotations_defaults_and_literals() -> None:
 
     parameters = indexer._extract_parameters_from_ast(func)
 
-    assert parameters == [
-        {"name": "count", "type": "int", "required": True, "label": "Count"},
-        {
-            "name": "enabled",
-            "type": "bool",
-            "required": False,
-            "label": "Enabled",
-            "default_value": True,
+    assert parameters == {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+            "count": {"type": "integer", "title": "Count"},
+            "enabled": {"type": "boolean", "title": "Enabled", "default": True},
+            "mode": {
+                "enum": ["fast", "safe"],
+                "type": "string",
+                "title": "Mode",
+                "default": "fast",
+            },
+            "note": {
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+                "title": "Note",
+                "default": None,
+            },
+            "payload": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "title": "Payload",
+                "default": {},
+            },
         },
-        {
-            "name": "mode",
-            "type": "string",
-            "required": False,
-            "label": "Mode",
-            "default_value": "fast",
-            "options": [
-                {"label": "fast", "value": "fast"},
-                {"label": "safe", "value": "safe"},
-            ],
-        },
-        {"name": "note", "type": "string", "required": False, "label": "Note"},
-        {
-            "name": "payload",
-            "type": "json",
-            "required": False,
-            "label": "Payload",
-            "default_value": {},
-        },
-    ]
+        "additionalProperties": False,
+        "required": ["count"],
+    }
 
 
 def test_execution_context_annotation_is_not_exposed_as_user_parameter() -> None:
@@ -194,14 +192,15 @@ def test_execution_context_annotation_is_not_exposed_as_user_parameter() -> None
         "    pass\n"
     ).body[0]
 
-    assert indexer._extract_parameters_from_ast(func) == [
-        {
-            "name": "customer_name",
-            "type": "string",
-            "required": True,
-            "label": "Customer Name",
-        }
-    ]
+    assert indexer._extract_parameters_from_ast(func) == {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+            "customer_name": {"type": "string", "title": "Customer Name"}
+        },
+        "additionalProperties": False,
+        "required": ["customer_name"],
+    }
 
 
 def test_extract_parameters_maps_list_optional_and_numeric_literal_types() -> None:
@@ -214,53 +213,42 @@ def test_extract_parameters_maps_list_optional_and_numeric_literal_types() -> No
         "    pass\n"
     ).body[1]
 
-    assert indexer._extract_parameters_from_ast(func) == [
-        {
-            "name": "items",
-            "type": "list",
-            "required": True,
-            "label": "Items",
+    assert indexer._extract_parameters_from_ast(func) == {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {"type": "string"},
+                "title": "Items",
+            },
+            "amount": {
+                "anyOf": [{"type": "number"}, {"type": "null"}],
+                "title": "Amount",
+            },
+            "level": {
+                "enum": [1, 2],
+                "type": "integer",
+                "title": "Level",
+                "default": 1,
+            },
+            "ratio": {
+                "enum": [1.5],
+                "type": "number",
+                "title": "Ratio",
+                "default": 1.5,
+            },
+            "enabled": {
+                "enum": [True],
+                "type": "boolean",
+                "title": "Enabled",
+                "default": True,
+            },
+            "unknown": {"title": "Unknown", "default": None},
         },
-        {
-            "name": "amount",
-            "type": "float",
-            "required": False,
-            "label": "Amount",
-        },
-        {
-            "name": "level",
-            "type": "int",
-            "required": False,
-            "label": "Level",
-            "default_value": 1,
-            "options": [
-                {"label": "1", "value": "1"},
-                {"label": "2", "value": "2"},
-            ],
-        },
-        {
-            "name": "ratio",
-            "type": "float",
-            "required": False,
-            "label": "Ratio",
-            "default_value": 1.5,
-            "options": [{"label": "1.5", "value": "1.5"}],
-        },
-        {
-            "name": "enabled",
-            "type": "bool",
-            "required": False,
-            "label": "Enabled",
-            "default_value": True,
-            "options": [{"label": "True", "value": "True"}],
-        },
-        {
-            "name": "unknown",
-            "type": "json",
-            "required": False,
-            "label": "Unknown",
-        },
-    ]
+        "additionalProperties": False,
+        "required": ["items"],
+    }
 
 
 def test_annotation_helpers_cover_attributes_and_non_literal_options() -> None:
@@ -275,19 +263,40 @@ def test_annotation_helpers_cover_attributes_and_non_literal_options() -> None:
 
     assert indexer._annotation_to_string(annotations[0].annotation) == "sdk.ExecutionContext"
     assert indexer._annotation_to_string(ast.Tuple(elts=[])) == ""
-    assert indexer._annotation_to_ui_type(annotations[3].annotation) == "string"
-    assert indexer._annotation_to_ui_type(ast.Tuple(elts=[])) == "json"
-    assert indexer._infer_literal_type(annotations[1].annotation.slice) == "string"
-    assert indexer._infer_literal_type(ast.Tuple(elts=[])) == "string"
-    assert indexer._infer_literal_type(ast.List(elts=[])) == "string"
-    assert indexer._extract_literal_options(annotations[5].annotation) is None
-    assert indexer._extract_literal_options(ast.Attribute(value=ast.Name(id="typing"), attr="Literal")) is None
-    assert indexer._extract_literal_options(
+    assert indexer._annotation_to_json_schema(annotations[3].annotation) == {
+        "anyOf": [
+            {"type": "array", "items": {"type": "string"}},
+            {"type": "null"},
+        ]
+    }
+    assert indexer._annotation_to_json_schema(ast.Tuple(elts=[])) == {}
+    assert indexer._annotation_to_json_schema(annotations[1].annotation) == {
+        "enum": [None],
+        "type": "null",
+    }
+    assert indexer._annotation_to_json_schema(annotations[2].annotation) == {}
+    assert indexer._annotation_to_json_schema(annotations[5].annotation) == {}
+    assert indexer._annotation_to_json_schema(
+        ast.Attribute(value=ast.Name(id="typing"), attr="Literal")
+    ) == {"type": "object"}
+    assert indexer._annotation_to_json_schema(
         ast.Subscript(
             value=ast.Attribute(value=ast.Name(id="typing"), attr="Literal"),
             slice=ast.Constant(value="x"),
         )
-    ) is None
+    ) == {"enum": ["x"], "type": "string"}
+    unresolved_function = ast.parse(
+        "def run(status: Literal[SOME_STATUS]):\n    pass\n"
+    ).body[0]
+    assert isinstance(unresolved_function, ast.FunctionDef)
+    unresolved_literal = unresolved_function.args.args[0].annotation
+    assert unresolved_literal is not None
+    assert indexer._annotation_to_json_schema(unresolved_literal) == {}
+    empty_optional = ast.Subscript(
+        value=ast.Name(id="Optional"),
+        slice=ast.Tuple(elts=[]),
+    )
+    assert indexer._annotation_to_json_schema(empty_optional) == {}
     assert indexer._is_optional_annotation(annotations[4].annotation) is True
 
 
@@ -339,7 +348,11 @@ from bifrost import workflow
     tags=["psa", "sync"],
     timeout_seconds=1,
 )
-def sync_tickets(status: Literal["open", "closed"], limit: int = 100):
+def sync_tickets(
+    status: Literal["open", "closed"],
+    filters: list[dict[str, Literal["open", "closed"]]],
+    limit: int = 100,
+):
     """Docstring fallback should not be needed."""
     return []
 '''
@@ -357,25 +370,35 @@ def sync_tickets(status: Literal["open", "closed"], limit: int = 100):
     assert params["is_active"] is True
     assert params["is_orphaned"] is False
     assert params["type"] == "workflow"
-    assert params["parameters_schema"] == [
-        {
-            "name": "status",
-            "type": "string",
-            "required": True,
-            "label": "Status",
-            "options": [
-                {"label": "open", "value": "open"},
-                {"label": "closed", "value": "closed"},
-            ],
+    assert params["parameters_schema"] == {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+            "status": {
+                "enum": ["open", "closed"],
+                "type": "string",
+                "title": "Status",
+            },
+            "filters": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "enum": ["open", "closed"],
+                        "type": "string",
+                    },
+                },
+                "title": "Filters",
+            },
+            "limit": {
+                "type": "integer",
+                "title": "Limit",
+                "default": 100,
+            },
         },
-        {
-            "name": "limit",
-            "type": "int",
-            "required": False,
-            "label": "Limit",
-            "default_value": 100,
-        },
-    ]
+        "additionalProperties": False,
+        "required": ["status", "filters"],
+    }
     assert "timeout_seconds" not in params
 
     indexer.refresh_workflow_endpoint.assert_awaited_once_with(refreshed)
@@ -571,14 +594,18 @@ async def regions(country: str | None = None):
     assert params["description"] == "Available regions"
     assert params["category"] == "Forms"
     assert params["tags"] == ["geo"]
-    assert params["parameters_schema"] == [
-        {
-            "name": "country",
-            "type": "string",
-            "required": False,
-            "label": "Country",
-        }
-    ]
+    assert params["parameters_schema"] == {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+            "country": {
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+                "title": "Country",
+                "default": None,
+            }
+        },
+        "additionalProperties": False,
+    }
 
 
 @pytest.mark.asyncio

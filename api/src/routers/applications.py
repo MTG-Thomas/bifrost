@@ -12,6 +12,7 @@ Applications use code-based files (TSX/TypeScript) stored in app_files table.
 File operations are handled through the app_files router.
 """
 
+import asyncio
 import base64
 import logging
 import re
@@ -26,7 +27,7 @@ from sqlalchemy.exc import IntegrityError
 from src.core.auth import Context, CurrentSuperuser, CurrentUser
 from src.core.log_safety import log_safe
 from src.core.org_filter import resolve_org_filter
-from src.core.pubsub import publish_app_draft_update, publish_app_published
+from src.core.pubsub import publish_app_draft_update
 from src.models.contracts.applications import (
     ApplicationCreate,
     ApplicationDefinition,
@@ -39,11 +40,25 @@ from src.models.contracts.applications import (
     ApplicationSwapSlugsRequest,
     ApplicationUpdate,
 )
+from src.jobs.platform.application_publish import (
+    APPLICATION_PUBLISH_DEFINITION,
+    ApplicationPublishPayload,
+)
+from src.models.contracts.platform_jobs import PlatformJobAccepted
 from src.models.orm.applications import Application
 from src.models.orm.file_index import FileIndex
-from src.core.exceptions import AccessDeniedError
+from src.services.platform_jobs import (
+    enqueue_platform_job,
+    ensure_platform_job_notification,
+    publish_platform_job_update,
+)
 from src.services.solutions.guard import assert_entity_id_not_solution_managed
-from shared.svg_sanitizer import SvgSanitizationError, sanitize_svg
+from src.core.exceptions import AccessDeniedError
+from shared.logo_processing import (
+    LogoProcessingError,
+    is_logo_thumbnail_version,
+    process_logo,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,9 +119,20 @@ def _logo_data_url(data: bytes | None, content_type: str | None) -> str | None:
     return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
 
 
+def _application_logo_url(application: Application) -> str | None:
+    """Return a logo URL without hiding legacy images during thumbnail backfill."""
+    if is_logo_thumbnail_version(application.logo_thumbnail_version):
+        return f"/api/applications/{application.id}/logo?v={application.logo_thumbnail_version}"
+    if application.logo_content_type:
+        return f"/api/applications/{application.id}/logo"
+    return None
+
+
 async def application_to_public(
     application: Application,
     repo: "ApplicationRepository",
+    *,
+    include_inline_logo: bool = True,
 ) -> ApplicationPublic:
     """Convert Application ORM to ApplicationPublic with role_ids."""
     role_ids = await repo.get_role_ids(application.id)
@@ -127,7 +153,20 @@ async def application_to_public(
         app_model=application.app_model,
         role_ids=role_ids,
         repo_path=application.repo_path,
-        logo=_logo_data_url(application.logo_data, application.logo_content_type),
+        logo=(
+            _logo_data_url(
+                application.logo_thumbnail_data or application.logo_data,
+                application.logo_thumbnail_content_type or application.logo_content_type,
+            )
+            if include_inline_logo
+            else None
+        ),
+        logo_url=_application_logo_url(application),
+        logo_version=(
+            application.logo_thumbnail_version
+            if is_logo_thumbnail_version(application.logo_thumbnail_version)
+            else None
+        ),
         is_solution_managed=application.solution_id is not None,
         solution_id=application.solution_id,
     )
@@ -254,10 +293,6 @@ async def get_application_by_id_or_404(
         )
 
 
-LOGO_ALLOWED_CONTENT_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/svg+xml"}
-LOGO_MAX_SIZE = 5 * 1024 * 1024  # 5 MB
-
-
 # =============================================================================
 # CRUD Endpoints
 # =============================================================================
@@ -292,7 +327,14 @@ async def create_application(
         if data.app_model == "standalone_v2":
             await ensure_no_stale_app_source(ctx.db, data.slug)
         application = await repo.create_application(data, created_by=user.email)
-        return await application_to_public(application, repo)
+        response = await application_to_public(application, repo)
+        # The default request-scoped database dependency commits during
+        # teardown, after the response may already have been sent.  A caller
+        # that immediately uses the returned ID can therefore race that commit
+        # and observe a 404.  A successful create response must only leave this
+        # command boundary once the row is durable.
+        await ctx.db.commit()
+        return response
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -343,7 +385,10 @@ async def list_applications(
         applications = await repo.list_applications()
 
     # Convert each application with role_ids
-    public_apps = [await application_to_public(app, repo) for app in applications]
+    public_apps = [
+        await application_to_public(app, repo, include_inline_logo=False)
+        for app in applications
+    ]
 
     return ApplicationListResponse(
         applications=public_apps,
@@ -546,54 +591,76 @@ async def save_draft(
 
 @router.post(
     "/{app_id}/publish",
-    response_model=ApplicationPublic,
+    response_model=PlatformJobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
     summary="Publish draft to live",
 )
 async def publish_application(
     app_id: UUID,
     ctx: Context,
     user: CurrentUser,
+    response: Response,
     data: ApplicationPublishRequest | None = None,
-) -> ApplicationPublic:
+) -> PlatformJobAccepted:
     """
-    Publish the draft to live.
+    Queue a durable publish of the current source.
 
-    Copies all draft files to a new live version.
+    The platform scheduler rebuilds source into preview and only promotes the
+    freshly generated bundle when that build succeeds. Read
+    ``/api/platform-jobs/{id}`` or subscribe to the caller's notification
+    WebSocket channel for progress. A repeated
+    request while the same app is queued or running returns the existing
+    operation instead of launching a conflicting publish.
     """
     # Publishing a solution-managed app is a deploy-owned action.
     await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
-    repo = ApplicationRepository(
+    application = await get_application_by_id_or_404(ctx, app_id)
+    job, reused = await enqueue_platform_job(
         ctx.db,
-        ctx.org_id,
-        user_id=user.user_id,
-        is_superuser=user.is_platform_admin,
-        is_external=getattr(user, "is_external", False),
+        APPLICATION_PUBLISH_DEFINITION,
+        ApplicationPublishPayload(
+            application_id=application.id,
+            message=data.message if data else None,
+        ),
+        dedupe_key=str(application.id),
+        organization_id=application.organization_id,
+        requested_by_user_id=user.user_id,
+        requested_by_email=user.email,
+        requested_by_name=user.name or user.email or "Unknown",
+        resource_type="application",
+        resource_id=str(application.id),
+        title=f"Publishing {application.name}",
+        action_url=f"/apps/{application.slug}/edit",
     )
-
-    try:
-        await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
-        message = data.message if data else None
-        application = await repo.publish(app_id, user.email, message)
-        if not application:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Application '{app_id}' not found",
+    if reused and job.requested_by_user_id != str(user.user_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An application publish is already in progress",
+        )
+    if job.notification_id is None:
+        try:
+            await ensure_platform_job_notification(ctx.db, job)
+        except Exception:
+            logger.warning(
+                "Application publish queued without a progress notification",
+                extra={"platform_job_id": str(job.id)},
+                exc_info=True,
             )
 
-        # Emit event for real-time updates
-        await publish_app_published(
-            app_id=str(app_id),
-            user_id=str(user.user_id),
-            user_name=user.name or user.email or "Unknown",
-            new_version_id=application.published_at.isoformat() if application.published_at else "",
-        )
+    # Make the durable row visible to the scheduler only after its optional
+    # notification ID is attached. This removes the claim-before-notification
+    # race while still allowing publishes to proceed when Redis is unavailable.
+    await ctx.db.commit()
+    await ctx.db.refresh(job)
+    await publish_platform_job_update(job)
 
-        return await application_to_public(application, repo)
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
+    response.headers["Location"] = f"/api/platform-jobs/{job.id}"
+    return PlatformJobAccepted(
+        job_id=job.id,
+        notification_id=job.notification_id,
+        status=job.status,
+        reused=reused,
+    )
 
 
 # =============================================================================
@@ -990,30 +1057,20 @@ async def upload_application_logo(
     await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
     application = await get_application_by_id_or_404(ctx, app_id)
 
-    if file.content_type not in LOGO_ALLOWED_CONTENT_TYPES:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid file type. Allowed: {', '.join(sorted(LOGO_ALLOWED_CONTENT_TYPES))}",
-        )
-
     content = await file.read()
-    if len(content) > LOGO_MAX_SIZE:
+    try:
+        processed = await asyncio.to_thread(process_logo, content, file.content_type or "")
+    except LogoProcessingError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"File too large. Maximum size: {LOGO_MAX_SIZE // 1024 // 1024} MB",
-        )
+            detail=str(exc),
+        ) from exc
 
-    if file.content_type == "image/svg+xml":
-        try:
-            content = sanitize_svg(content)
-        except SvgSanitizationError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid SVG: {exc}",
-            )
-
-    application.logo_data = content
-    application.logo_content_type = file.content_type
+    application.logo_data = processed.original_data
+    application.logo_content_type = processed.original_content_type
+    application.logo_thumbnail_data = processed.thumbnail_data
+    application.logo_thumbnail_content_type = processed.thumbnail_content_type
+    application.logo_thumbnail_version = processed.thumbnail_version
     await ctx.db.commit()
     return {"ok": True}
 
@@ -1022,7 +1079,14 @@ async def upload_application_logo(
     "/{app_id}/logo",
     summary="Get application logo",
     responses={
-        200: {"content": {"image/png": {}, "image/jpeg": {}, "image/svg+xml": {}}},
+        200: {
+            "content": {
+                "image/webp": {},
+                "image/png": {},
+                "image/jpeg": {},
+                "image/svg+xml": {},
+            }
+        },
         404: {"description": "No logo set"},
     },
 )
@@ -1044,9 +1108,25 @@ async def get_application_logo(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Logo not set",
         )
+    thumbnail_ready = bool(
+        application.logo_thumbnail_data and application.logo_thumbnail_version
+    )
+    headers = (
+        {
+            "Cache-Control": "private, max-age=31536000, immutable",
+            "ETag": f'"{application.logo_thumbnail_version}"',
+        }
+        if thumbnail_ready
+        else {"Cache-Control": "no-store"}
+    )
     return Response(
-        content=application.logo_data,
-        media_type=application.logo_content_type or "application/octet-stream",
+        content=application.logo_thumbnail_data or application.logo_data,
+        media_type=(
+            application.logo_thumbnail_content_type
+            or application.logo_content_type
+            or "application/octet-stream"
+        ),
+        headers=headers,
     )
 
 
@@ -1063,5 +1143,8 @@ async def delete_application_logo(
     application = await get_application_by_id_or_404(ctx, app_id)
     application.logo_data = None
     application.logo_content_type = None
+    application.logo_thumbnail_data = None
+    application.logo_thumbnail_content_type = None
+    application.logo_thumbnail_version = None
     await ctx.db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -54,10 +54,9 @@ vi.mock("@/stores/chatStore", () => ({
 }));
 
 const mockNavigate = vi.fn();
-vi.mock("react-router-dom", async () => {
-	const actual = await vi.importActual<typeof import("react-router-dom")>(
-		"react-router-dom",
-	);
+vi.mock("react-router", async () => {
+	const actual =
+		await vi.importActual<typeof import("react-router")>("react-router");
 	return { ...actual, useNavigate: () => mockNavigate };
 });
 
@@ -95,9 +94,9 @@ describe("ChatSidebar — loading & empty states", () => {
 		const { container } = renderWithProviders(<ChatSidebar />);
 		// Skeleton rows use the "Skeleton" component; happy-dom renders them
 		// as animated divs. We assert at least one placeholder row is present.
-		expect(container.querySelectorAll(".animate-pulse").length).toBeGreaterThan(
-			0,
-		);
+		expect(
+			container.querySelectorAll(".animate-pulse").length,
+		).toBeGreaterThan(0);
 	});
 
 	it("shows the 'No conversations yet' empty state", () => {
@@ -118,6 +117,9 @@ describe("ChatSidebar — conversation list", () => {
 		expect(screen.getByText("First")).toBeInTheDocument();
 		const secondRow = screen.getByText("Second").closest("div.group");
 		expect(secondRow?.className).toMatch(/bg-accent/);
+		expect(
+			screen.getByRole("button", { name: /open second/i }),
+		).toBeInTheDocument();
 	});
 
 	it("filters by title via the search input", () => {
@@ -127,10 +129,9 @@ describe("ChatSidebar — conversation list", () => {
 		];
 		renderWithProviders(<ChatSidebar />);
 
-		fireEvent.change(
-			screen.getByPlaceholderText(/search conversations/i),
-			{ target: { value: "alp" } },
-		);
+		fireEvent.change(screen.getByPlaceholderText(/search conversations/i), {
+			target: { value: "alp" },
+		});
 
 		expect(screen.getByText("Alpha")).toBeInTheDocument();
 		expect(screen.queryByText("Beta")).not.toBeInTheDocument();
@@ -156,6 +157,18 @@ describe("ChatSidebar — conversation list", () => {
 		await user.click(screen.getByText("Alpha"));
 
 		expect(onConversationSelected).toHaveBeenCalledOnce();
+	});
+
+	it("selects a conversation from the keyboard", async () => {
+		conversationsRef.data = [conv({ id: "c-1", title: "Alpha" })];
+		const { user } = renderWithProviders(<ChatSidebar />);
+		const selection = screen.getByRole("button", { name: /^open alpha$/i });
+
+		selection.focus();
+		await user.keyboard(" ");
+
+		expect(storeState.setActiveConversation).toHaveBeenCalledWith("c-1");
+		expect(mockNavigate).toHaveBeenCalledWith("/chat/c-1");
 	});
 });
 
@@ -195,6 +208,7 @@ describe("ChatSidebar — delete flow", () => {
 
 		expect(deleteButton.className).toContain("opacity-100");
 		expect(deleteButton.className).toContain("sm:opacity-0");
+		expect(deleteButton.className).toContain("size-11");
 	});
 
 	it("opens the confirm dialog and triggers delete on confirm", async () => {
@@ -219,5 +233,22 @@ describe("ChatSidebar — delete flow", () => {
 
 		// Avoid an unused-variable warning from the test harness.
 		void container;
+	});
+
+	it("opens delete from the keyboard without selecting the conversation", async () => {
+		conversationsRef.data = [conv({ id: "c-1", title: "Alpha" })];
+		const { user } = renderWithProviders(<ChatSidebar />);
+		const deleteButton = screen.getByRole("button", {
+			name: /delete alpha/i,
+		});
+
+		deleteButton.focus();
+		await user.keyboard(" ");
+
+		expect(
+			await screen.findByText(/delete conversation/i),
+		).toBeInTheDocument();
+		expect(storeState.setActiveConversation).not.toHaveBeenCalled();
+		expect(mockNavigate).not.toHaveBeenCalled();
 	});
 });

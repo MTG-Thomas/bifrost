@@ -108,6 +108,76 @@
 
 /* ----------------------- end shadcn/tailwind.css ------------------- */
 
+/* Agent history surfaces are bounded workspaces on standard desktop viewports.
+ * The page context remains fixed while the repeated collection owns overflow.
+ * Runs caps expanded filters separately; Overview lets Recent activity and the
+ * sidebar scroll independently. Narrow or short viewports intentionally retain
+ * ordinary document scrolling.
+ */
+@media (min-width: 64rem) and (min-height: 45rem) {
+	.agent-overview-workspace,
+	.agent-runs-workspace {
+		height: 100%;
+		min-height: 0;
+		overflow: hidden;
+	}
+
+	.agent-overview-workspace .agent-overview-tab {
+		min-height: 0;
+		flex: 1 1 0%;
+		overflow: hidden;
+	}
+
+	.agent-overview-workspace .agent-overview-main {
+		min-height: 0;
+		overflow: hidden;
+	}
+
+	.agent-overview-workspace .agent-overview-recent {
+		display: flex;
+		min-height: 0;
+		flex: 1 1 0%;
+		flex-direction: column;
+	}
+
+	.agent-overview-workspace .agent-overview-recent-list {
+		min-height: 0;
+		flex: 1 1 0%;
+		overflow-y: auto;
+		overscroll-behavior-y: contain;
+	}
+
+	.agent-overview-workspace .agent-overview-sidebar {
+		min-height: 0;
+		overflow-y: auto;
+		overscroll-behavior-y: contain;
+		scrollbar-gutter: stable;
+		padding-inline-end: 0.25rem;
+	}
+
+	.agent-runs-workspace .agent-runs-tab {
+		min-height: 0;
+		flex: 1 1 0%;
+		overflow: hidden;
+	}
+
+	.agent-runs-workspace .agent-runs-filter-region {
+		max-height: min(12rem, 30vh);
+		overflow-y: auto;
+		overscroll-behavior-y: contain;
+		scrollbar-gutter: stable;
+		padding-inline-end: 0.25rem;
+	}
+
+	.agent-runs-workspace .agent-runs-scroll-region {
+		min-height: 0;
+		flex: 1 1 0%;
+		overflow-y: auto;
+		overscroll-behavior-y: contain;
+		padding-block-end: 0.25rem;
+	}
+}
+
 :root {
 	--radius: 0.65rem;
 	--background: oklch(1 0 0);
@@ -236,6 +306,12 @@
 		@apply bg-background text-foreground;
 	}
 
+	html.embed-transparent,
+	html.embed-transparent body,
+	html.embed-transparent #root {
+		background: transparent;
+	}
+
 	/* Enable smooth animations everywhere */
 	* {
 		transition-property:
@@ -302,6 +378,21 @@
 		}
 	}
 
+	@keyframes routeReadyReveal {
+		from {
+			opacity: 0.72;
+			filter: blur(2px);
+			clip-path: inset(0 0 6px 0 round 8px);
+			transform: translateY(4px);
+		}
+		to {
+			opacity: 1;
+			filter: blur(0);
+			clip-path: inset(0 round 0);
+			transform: translateY(0);
+		}
+	}
+
 	.route-transition-progress-track {
 		background: oklch(from var(--primary) l c h / 0.12);
 	}
@@ -316,13 +407,14 @@
 		transform-origin: left center;
 	}
 
-	.route-transition-progress-fill[data-state="finishing"] {
-		transform: translateX(0) scaleX(1);
+	.route-ready-reveal {
+		animation: routeReadyReveal 220ms cubic-bezier(0.16, 1, 0.3, 1);
 	}
 
-	/* Apply fade-in animation to main content */
-	main > * {
-		animation: fadeIn 0.3s ease-out;
+	@media (prefers-reduced-motion: reduce) {
+		.route-ready-reveal {
+			animation: none;
+		}
 	}
 
 	/* Button press effect */
@@ -515,9 +607,43 @@
 	}
 }
 
+@keyframes chat-activity-sweep {
+	0%,
+	20% {
+		background-position: 120% 0;
+	}
+	80%,
+	100% {
+		background-position: -20% 0;
+	}
+}
+
+.chat-activity-shimmer {
+	color: transparent;
+	background-image: linear-gradient(
+		100deg,
+		var(--muted-foreground) 35%,
+		var(--foreground) 50%,
+		var(--muted-foreground) 65%
+	);
+	background-size: 240% 100%;
+	background-clip: text;
+	-webkit-background-clip: text;
+	animation: chat-activity-sweep 1.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.chat-activity-shimmer {
+		color: var(--muted-foreground);
+		background: none;
+		animation: none;
+	}
+}
+
 /* Tiptap Editor Styles */
 .tiptap-editor,
-.ProseMirror {
+.ProseMirror,
+.markdown-content {
 	& > :first-child {
 		margin-top: 0;
 	}

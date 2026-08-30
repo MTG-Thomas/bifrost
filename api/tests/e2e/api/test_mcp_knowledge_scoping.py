@@ -1,10 +1,10 @@
 """
 E2E: search_knowledge exposure and scoping over the MCP HTTP transport.
 
-Two MCP mounts:
+Two MCP surfaces:
 
-- POST /mcp                — un-scoped: tools/list and tool calls union
-                              the user's accessible agents.
+- POST /mcp                — progressive agent discovery and dispatch through
+                              stable gateway tools.
 - POST /mcp/{agent_id}     — agent-scoped: tools/list and tool calls
                               are limited to that one agent.
 
@@ -13,7 +13,8 @@ Regression coverage:
 1. search_knowledge is auto-injected into tools/list when an agent has
    knowledge_sources, even if system_tools doesn't list it (mirror of
    agent_helpers.py:140 behavior in native chat).
-2. /mcp returns the union of namespaces the user can access.
+2. /mcp dispatches search through one explicitly selected agent, rather than
+   combining namespaces across every accessible agent.
 3. /mcp/{agent_id} sees ONLY that agent's namespaces.
 4. /mcp/{agent_id} rejects explicit cross-namespace queries — a user with
    broader token access cannot bypass the per-agent boundary by passing
@@ -23,6 +24,7 @@ Skipped without ``EMBEDDINGS_AI_TEST_KEY`` since search_knowledge calls
 the embedding provider.
 """
 
+import json
 import logging
 import os
 import uuid
@@ -120,16 +122,49 @@ def _result_namespaces(payload: dict) -> set[str]:
     }
 
 
+def _gateway_call(
+    e2e_client,
+    headers: dict[str, str],
+    tool_name: str,
+    arguments: dict,
+) -> dict:
+    """Call one default-endpoint gateway tool and return structured data."""
+    payload = _mcp_call_tool(
+        e2e_client,
+        "/mcp",
+        headers,
+        tool_name,
+        arguments,
+    )
+    assert "result" in payload, payload
+    result = payload["result"]
+    structured = result.get("structuredContent")
+    if structured is not None:
+        return structured
+    assert len(result.get("content", [])) == 1, result
+    return json.loads(result["content"][0]["text"])
+
+
 @pytest.fixture(scope="module")
 def _embedding_config(e2e_client, platform_admin):
     """Configure OpenAI embeddings (required for search_knowledge)."""
     if not EMBEDDINGS_AVAILABLE:
         pytest.skip("EMBEDDINGS_AI_TEST_KEY not set")
 
+    connection_resp = e2e_client.post(
+        "/api/admin/ai/connections",
+        json={
+            "name": "MCP Knowledge Embeddings",
+            "provider": "openai",
+            "api_key": os.environ["EMBEDDINGS_AI_TEST_KEY"],
+        },
+        headers=platform_admin.headers,
+    )
+    assert connection_resp.status_code == 201, f"Embedding connection failed: {connection_resp.text}"
+    connection = connection_resp.json()
     config = {
-        "provider": "openai",
+        "connection_id": connection["id"],
         "model": "text-embedding-3-small",
-        "api_key": os.environ["EMBEDDINGS_AI_TEST_KEY"],
     }
     resp = e2e_client.post(
         "/api/admin/llm/embedding-config",
@@ -143,6 +178,10 @@ def _embedding_config(e2e_client, platform_admin):
     try:
         e2e_client.delete(
             "/api/admin/llm/embedding-config",
+            headers=platform_admin.headers,
+        )
+        e2e_client.delete(
+            f"/api/admin/ai/connections/{connection['id']}",
             headers=platform_admin.headers,
         )
     except Exception as e:
@@ -245,19 +284,34 @@ def _knowledge_scoping_setup(e2e_client, platform_admin, _embedding_config):
 class TestMCPKnowledgeScoping:
     """Knowledge scoping across un-scoped and agent-scoped MCP mounts."""
 
-    def test_unscoped_lists_search_knowledge_via_auto_inject(
+    def test_unscoped_lists_gateway_and_agent_catalog_injects_search(
         self, e2e_client, platform_admin, _knowledge_scoping_setup
     ):
-        """/mcp tools/list includes search_knowledge because at least one
-        accessible agent has knowledge_sources, even though no agent has
-        search_knowledge in system_tools."""
+        """/mcp stays compact while get-agent exposes injected knowledge."""
         _mcp_initialize(e2e_client, "/mcp", platform_admin.headers)
         tools = _mcp_list_tools(e2e_client, "/mcp", platform_admin.headers)
 
-        names = [t["name"] for t in tools]
-        assert "search_knowledge" in names, (
-            f"search_knowledge missing from /mcp tools/list (auto-inject "
-            f"path). Got: {names}"
+        assert {tool["name"] for tool in tools} == {
+            "bifrost_get_required_instructions",
+            "bifrost_search_capabilities",
+            "bifrost_execute_tool",
+            "bifrost_get_execution",
+            "bifrost_search_memory",
+            "bifrost_save_memory",
+            "bifrost_remove_memory",
+        }
+        loaded = _gateway_call(
+            e2e_client,
+            platform_admin.headers,
+            "bifrost_search_capabilities",
+            {
+                "agent_id": _knowledge_scoping_setup["agent_alpha_id"],
+                "query": "search knowledge",
+            },
+        )
+        assert any(
+            tool["name"] == "search_knowledge"
+            for tool in loaded["agents"][0]["matching_tools"]
         )
 
     def test_agent_scoped_lists_search_knowledge(
@@ -274,29 +328,59 @@ class TestMCPKnowledgeScoping:
             f"search_knowledge missing from agent-scoped /mcp/<agent>: {names}"
         )
 
-    def test_unscoped_search_returns_union(
+    def test_gateway_search_uses_the_selected_agent(
         self, e2e_client, platform_admin, _knowledge_scoping_setup
     ):
-        """/mcp search_knowledge can find documents across the union of
-        namespaces from all accessible agents."""
+        """/mcp search dispatch stays within the explicitly selected agent."""
         _mcp_initialize(e2e_client, "/mcp", platform_admin.headers)
 
-        result = _mcp_call_tool(
-            e2e_client, "/mcp", platform_admin.headers, "search_knowledge",
-            {"query": _knowledge_scoping_setup["marker_alpha"]},
+        loaded_alpha = _gateway_call(
+            e2e_client,
+            platform_admin.headers,
+            "bifrost_search_capabilities",
+            {
+                "agent_id": _knowledge_scoping_setup["agent_alpha_id"],
+                "query": "search knowledge",
+            },
         )
-        namespaces = _result_namespaces(result)
-        assert _knowledge_scoping_setup["ns_alpha"] in namespaces, (
-            f"Expected ns_alpha in unscoped search; got {result}"
+        alpha_ref = next(
+            tool["tool_ref"]
+            for tool in loaded_alpha["agents"][0]["matching_tools"]
+            if tool["name"] == "search_knowledge"
+        )
+        result = _gateway_call(
+            e2e_client,
+            platform_admin.headers,
+            "bifrost_execute_tool",
+            {
+                "agent_id": _knowledge_scoping_setup["agent_alpha_id"],
+                "tool_ref": alpha_ref,
+                "arguments": {
+                    "query": _knowledge_scoping_setup["marker_alpha"],
+                },
+                "operation_id": "knowledge-alpha",
+            },
+        )
+        text_blob = str(result)
+        assert _knowledge_scoping_setup["ns_alpha"] in text_blob, (
+            f"Expected ns_alpha in alpha-agent gateway search; got {result}"
         )
 
-        result = _mcp_call_tool(
-            e2e_client, "/mcp", platform_admin.headers, "search_knowledge",
-            {"query": _knowledge_scoping_setup["marker_beta"]},
+        cross_result = _gateway_call(
+            e2e_client,
+            platform_admin.headers,
+            "bifrost_execute_tool",
+            {
+                "agent_id": _knowledge_scoping_setup["agent_alpha_id"],
+                "tool_ref": alpha_ref,
+                "arguments": {
+                    "query": _knowledge_scoping_setup["marker_beta"],
+                },
+                "operation_id": "knowledge-cross",
+            },
         )
-        namespaces = _result_namespaces(result)
-        assert _knowledge_scoping_setup["ns_beta"] in namespaces, (
-            f"Expected ns_beta in unscoped search; got {result}"
+        assert _knowledge_scoping_setup["ns_beta"] not in str(cross_result), (
+            f"Alpha-agent gateway search leaked ns_beta: {cross_result}"
         )
 
     def test_agent_scoped_isolation(
@@ -353,17 +437,37 @@ class TestMCPKnowledgeScoping:
     def test_unscoped_rejects_unknown_namespace(
         self, e2e_client, platform_admin, _knowledge_scoping_setup
     ):
-        """Sanity: even on the un-scoped mount, namespaces outside the
-        user's accessible set must be rejected."""
+        """Gateway dispatch rejects namespaces outside the selected agent."""
         _mcp_initialize(e2e_client, "/mcp", platform_admin.headers)
-        result = _mcp_call_tool(
-            e2e_client, "/mcp", platform_admin.headers, "search_knowledge",
+        loaded = _gateway_call(
+            e2e_client,
+            platform_admin.headers,
+            "bifrost_search_capabilities",
             {
-                "query": "anything",
-                "namespace": "this_namespace_does_not_exist",
+                "agent_id": _knowledge_scoping_setup["agent_alpha_id"],
+                "query": "search knowledge",
             },
         )
-        structured = _structured_tool_result(result)
-        assert structured.get("code") == SEARCH_KNOWLEDGE_NAMESPACE_DENIED_CODE, (
-            f"Unknown namespace was not rejected on /mcp: {result}"
+        search_ref = next(
+            tool["tool_ref"]
+            for tool in loaded["agents"][0]["matching_tools"]
+            if tool["name"] == "search_knowledge"
+        )
+        result = _gateway_call(
+            e2e_client,
+            platform_admin.headers,
+            "bifrost_execute_tool",
+            {
+                "agent_id": _knowledge_scoping_setup["agent_alpha_id"],
+                "tool_ref": search_ref,
+                "arguments": {
+                    "query": "anything",
+                    "namespace": "this_namespace_does_not_exist",
+                },
+                "operation_id": "knowledge-missing-namespace",
+            },
+        )
+        text_blob = str(result)
+        assert "Access denied" in text_blob or "not accessible" in text_blob, (
+            f"Unknown namespace was not rejected by gateway dispatch: {result}"
         )

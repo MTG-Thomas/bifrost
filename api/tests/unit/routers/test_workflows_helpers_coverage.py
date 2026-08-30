@@ -79,9 +79,7 @@ def test_convert_workflow_orm_to_schema_normalizes_defaults():
         organization_id=None,
         solution_id=solution_id,
         access_level=None,
-        parameters_schema=[
-            {"name": "ticket_id", "type": "string", "required": True}
-        ],
+        parameters_schema=[{"name": "ticket_id", "type": "string", "required": True}],
         execution_mode="invalid",
         timeout_seconds=None,
         endpoint_enabled=None,
@@ -130,29 +128,38 @@ async def test_derive_solution_scope_prefers_valid_explicit_solution_id():
 async def test_derive_solution_scope_returns_none_for_bad_ids():
     ctx = SimpleNamespace(solution_id=None, app_id=None)
 
-    assert await derive_execution_solution_scope(
-        _Db(),
-        ctx,
-        solution_id="not-a-uuid",
-        form_id=None,
-        app_id=None,
-    ) is None
+    assert (
+        await derive_execution_solution_scope(
+            _Db(),
+            ctx,
+            solution_id="not-a-uuid",
+            form_id=None,
+            app_id=None,
+        )
+        is None
+    )
 
-    assert await derive_execution_solution_scope(
-        _Db(),
-        ctx,
-        solution_id=None,
-        form_id="not-a-uuid",
-        app_id=None,
-    ) is None
+    assert (
+        await derive_execution_solution_scope(
+            _Db(),
+            ctx,
+            solution_id=None,
+            form_id="not-a-uuid",
+            app_id=None,
+        )
+        is None
+    )
 
-    assert await derive_execution_solution_scope(
-        _Db(),
-        ctx,
-        solution_id=None,
-        form_id=None,
-        app_id="not-a-uuid",
-    ) is None
+    assert (
+        await derive_execution_solution_scope(
+            _Db(),
+            ctx,
+            solution_id=None,
+            form_id=None,
+            app_id="not-a-uuid",
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio
@@ -161,29 +168,38 @@ async def test_derive_solution_scope_uses_form_then_app_lookup():
     app_solution = uuid4()
     ctx = SimpleNamespace(solution_id=None, app_id=None)
 
-    assert await derive_execution_solution_scope(
-        _Db(form_solution),
-        ctx,
-        solution_id=None,
-        form_id=str(uuid4()),
-        app_id=None,
-    ) == form_solution
+    assert (
+        await derive_execution_solution_scope(
+            _Db(form_solution),
+            ctx,
+            solution_id=None,
+            form_id=str(uuid4()),
+            app_id=None,
+        )
+        == form_solution
+    )
 
-    assert await derive_execution_solution_scope(
-        _Db(app_solution),
-        ctx,
-        solution_id=None,
-        form_id=None,
-        app_id=str(uuid4()),
-    ) == app_solution
+    assert (
+        await derive_execution_solution_scope(
+            _Db(app_solution),
+            ctx,
+            solution_id=None,
+            form_id=None,
+            app_id=str(uuid4()),
+        )
+        == app_solution
+    )
 
-    assert await derive_execution_solution_scope(
-        _Db(),
-        ctx,
-        solution_id=None,
-        form_id=None,
-        app_id=None,
-    ) is None
+    assert (
+        await derive_execution_solution_scope(
+            _Db(),
+            ctx,
+            solution_id=None,
+            form_id=None,
+            app_id=None,
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio
@@ -249,24 +265,31 @@ async def test_insert_scheduled_execution_persists_expected_execution_fields():
     org_id = uuid4()
     executed_by = uuid4()
     form_id = uuid4()
-    # Runtime pinning deliberately resolves the workflow before persisting the
-    # scheduled row. A non-Solution workflow selects the `_repo` compatibility
-    # mode without any deployment closure lookup.
-    db = _Db((SimpleNamespace(solution_id=None), None))
+    db = _Db()
     scheduled_at = datetime.now(UTC)
 
-    execution_id = await workflows._insert_scheduled_execution(
-        db=db,
-        workflow_id=workflow_id,
-        workflow_name="sync_records",
-        parameters={"ticket": "123"},
-        scheduled_at=scheduled_at,
-        organization_id=org_id,
-        executed_by=executed_by,
-        executed_by_name="Ada",
-        form_id=form_id,
-        is_platform_admin=True,
-    )
+    with (
+        patch(
+            "src.services.solutions.deployment_runtime.pin_workflow_runtime",
+            return_value=None,
+        ),
+        patch(
+            "src.services.workspace_release_runtime.pin_workspace_runtime",
+            return_value=None,
+        ),
+    ):
+        execution_id = await workflows._insert_scheduled_execution(
+            db=db,
+            workflow_id=workflow_id,
+            workflow_name="sync_records",
+            parameters={"ticket": "123"},
+            scheduled_at=scheduled_at,
+            organization_id=org_id,
+            executed_by=executed_by,
+            executed_by_name="Ada",
+            form_id=form_id,
+            is_platform_admin=True,
+        )
 
     assert isinstance(execution_id, UUID)
     assert db.committed is True

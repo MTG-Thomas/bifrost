@@ -18,7 +18,7 @@ import json
 import logging
 from decimal import Decimal
 from datetime import datetime, timezone
-from typing import Any, Awaitable, TypedDict, cast
+from typing import Any, Awaitable, NotRequired, TypedDict, cast
 
 import redis.asyncio as redis
 
@@ -63,14 +63,18 @@ class PendingExecution(TypedDict):
     user_email: str
     form_id: str | None
     api_key_id: str | None  # Workflow ID whose API key triggered this (for audit trail)
-    startup: dict[str, Any] | None  # Launch workflow results (available via context.startup)
+    startup: Any | None  # Launch workflow results (available via context.startup)
+    form_inputs: dict[str, Any]
+    embed: dict[str, Any]
     sync: bool  # If True, worker pushes result to Redis for sync execution
     is_platform_admin: bool  # Whether the caller is a platform admin
     is_provider_org: bool  # Trusted caller provider-org membership
     is_external: bool  # Trusted caller external-access restriction
     event: dict[str, Any] | None  # EventContext fields if event-triggered; None otherwise
+    artifact_workspace_id: str | None
     created_at: str  # ISO format
     cancelled: bool
+    execution_attempt_id: NotRequired[str]
 
 
 class RedisClient:
@@ -111,7 +115,9 @@ class RedisClient:
         user_email: str,
         form_id: str | None = None,
         script_name: str | None = None,
-        startup: dict[str, Any] | None = None,
+        startup: Any | None = None,
+        form_inputs: dict[str, Any] | None = None,
+        embed: dict[str, Any] | None = None,
         api_key_id: str | None = None,
         sync: bool = False,
         is_platform_admin: bool = False,
@@ -121,6 +127,7 @@ class RedisClient:
         solution_deployment_id: str | None = None,
         runtime_evidence: dict[str, Any] | None = None,
         runtime_mode: str = "legacy",
+        artifact_workspace_id: str | None = None,
     ) -> None:
         """
         Store pending execution in Redis.
@@ -160,11 +167,14 @@ class RedisClient:
             "form_id": form_id,
             "api_key_id": api_key_id,
             "startup": startup,
+            "form_inputs": form_inputs or {},
+            "embed": embed or {},
             "sync": sync,
             "is_platform_admin": is_platform_admin,
             "is_provider_org": is_provider_org,
             "is_external": is_external,
             "event": event,
+            "artifact_workspace_id": artifact_workspace_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "cancelled": False,
         }
@@ -506,7 +516,7 @@ class RedisClient:
     async def close(self) -> None:
         """Close Redis connection."""
         if self._redis:
-            await self._redis.close()
+            await self._redis.aclose()
             self._redis = None
 
     # =========================================================================

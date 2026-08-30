@@ -2,7 +2,7 @@
  * Header affordance for setting up a passkey without occupying page content.
  */
 
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { Fingerprint } from "lucide-react";
 
 import { Button } from "@/components/ui/button";

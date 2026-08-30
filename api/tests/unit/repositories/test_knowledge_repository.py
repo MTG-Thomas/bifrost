@@ -590,3 +590,49 @@ async def test_delete_orphaned_docs_is_safe_on_empty_keys_and_returns_rowcount()
 
     assert await repo.delete_orphaned_docs("docs", valid_keys={"keep.md"}) == 4
     session.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_recovers_exact_lexical_match_missed_by_vector_candidates(
+    db_session,
+):
+    repo = KnowledgeRepository(db_session, org_id=None, is_superuser=True)
+
+    for index in range(21):
+        db_session.add(
+            KnowledgeStore(
+                namespace="ns-hybrid",
+                key=f"distractor-{index}",
+                content=f"Generic account configuration article {index}.",
+                embedding=[1.0, 0.0, 0.0],
+            )
+        )
+    db_session.add(
+        KnowledgeStore(
+            namespace="ns-hybrid",
+            key="contact-types",
+            content=(
+                "Use Contact Types to identify the Technical POC and Billing "
+                "POC for a customer."
+            ),
+            embedding=[-1.0, 0.0, 0.0],
+        )
+    )
+    await db_session.flush()
+
+    vector_only = await repo.search(
+        query_embedding=[1.0, 0.0, 0.0],
+        namespace="ns-hybrid",
+        limit=5,
+    )
+    hybrid = await repo.search(
+        query_embedding=[1.0, 0.0, 0.0],
+        query_text="Where do I set the Technical POC and Billing POC?",
+        namespace="ns-hybrid",
+        limit=5,
+    )
+
+    assert "contact-types" not in [doc.key for doc in vector_only]
+    assert hybrid[0].key == "contact-types"
+    assert hybrid[0].score is not None
+    assert 0.0 <= hybrid[0].score <= 1.0

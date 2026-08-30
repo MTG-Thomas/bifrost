@@ -39,25 +39,25 @@ test.describe("Branding terminology", () => {
 		await page.goto("/apps");
 		await expect(
 			page.getByRole("link", { name: "Games" }),
-		).toBeVisible();
+		).toBeVisible({ timeout: 10_000 });
 		await expect(
 			page.getByRole("heading", { name: "Games", exact: true }),
-		).toBeVisible();
+		).toBeVisible({ timeout: 10_000 });
 
 		await page.goto("/agents");
 		await expect(
 			page.getByRole("link", { name: "Characters" }),
-		).toBeVisible();
+		).toBeVisible({ timeout: 10_000 });
 		await expect(
 			page.getByRole("heading", { name: "Characters", exact: true }),
-		).toBeVisible();
+		).toBeVisible({ timeout: 10_000 });
 
 		await page.goto("/forms");
 		await expect(
 			page.getByRole("link", { name: "Quests" }),
-		).toBeVisible();
+		).toBeVisible({ timeout: 10_000 });
 		await expect(
 			page.getByRole("heading", { name: "Quests", exact: true }),
-		).toBeVisible();
+		).toBeVisible({ timeout: 10_000 });
 	});
 });

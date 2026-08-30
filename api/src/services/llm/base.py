@@ -7,6 +7,7 @@ Abstract base class and data types for LLM providers.
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any, Literal
 
 
@@ -28,6 +29,15 @@ class ToolCallRequest:
     arguments: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class LLMInputFile:
+    """Binary user input kept provider-neutral until the Pydantic adapter."""
+
+    filename: str
+    media_type: str
+    data: bytes
+
+
 @dataclass
 class LLMMessage:
     """
@@ -38,6 +48,7 @@ class LLMMessage:
 
     role: Literal["user", "assistant", "system", "tool"]
     content: str | None = None
+    input_files: list[LLMInputFile] = field(default_factory=list)
 
     # For assistant messages that request tool calls
     tool_calls: list[ToolCallRequest] | None = None
@@ -58,6 +69,9 @@ class LLMResponse:
     # Token usage
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    provider_cost: Decimal | None = None
 
     # Model info
     model: str | None = None
@@ -79,22 +93,36 @@ class LLMStreamChunk:
     finish_reason: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    provider_cost: Decimal | None = None
 
     # For error chunks
     error: str | None = None
+
+
+ANTHROPIC_REQUIRED_MAX_TOKENS = 16_384
 
 
 @dataclass
 class LLMConfig:
     """Configuration for LLM client."""
 
-    provider: Literal["openai", "anthropic"]
+    provider: Literal["openai", "anthropic", "google"]
     model: str
     api_key: str
     endpoint: str | None = None
-    max_tokens: int = 16384
     # Optional parameters
     extra_params: dict[str, Any] = field(default_factory=dict)
+
+
+def request_max_tokens(config: LLMConfig, override: int | None) -> int | None:
+    """Return an explicit output limit only when requested or required."""
+    if override is not None:
+        return override
+    if config.provider == "anthropic":
+        return ANTHROPIC_REQUIRED_MAX_TOKENS
+    return None
 
 
 class BaseLLMClient(ABC):
@@ -115,6 +143,7 @@ class BaseLLMClient(ABC):
         *,
         max_tokens: int | None = None,
         model: str | None = None,
+        require_tool_call: bool = False,
     ) -> LLMResponse:
         """
         Non-streaming completion.
@@ -124,6 +153,7 @@ class BaseLLMClient(ABC):
             tools: Optional list of tools the model can call
             max_tokens: Override default max tokens
             model: Override default model (must be compatible with configured provider)
+            require_tool_call: Reject text-only output so the provider must call a tool
 
         Returns:
             LLMResponse with content and/or tool calls

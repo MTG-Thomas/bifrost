@@ -6,7 +6,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router";
 // Note: This component uses direct fetch calls rather than the auth context
 // because it handles the MFA setup flow before full authentication is complete
 import { Button } from "@/components/ui/button";

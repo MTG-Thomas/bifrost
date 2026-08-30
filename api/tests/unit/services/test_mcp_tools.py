@@ -340,6 +340,7 @@ class TestSearchKnowledge:
         assert len(data["results"]) == 1
         assert data["results"][0]["content"] == "This is documentation about the SDK"
         assert data["count"] == 1
+        assert mock_repo.search.await_args.kwargs["query_text"] == "SDK documentation"
 
     @pytest.mark.asyncio
     async def test_returns_no_results_message(self, org_user_context):
@@ -696,36 +697,6 @@ class TestBifrostMCPServer:
         server = BifrostMCPServer(org_user_context)
         assert server.context == org_user_context
 
-    def test_get_tool_names_returns_all_tools(self, org_user_context):
-        """Should return all tool names when no filter."""
-        from src.services.mcp_server.server import BifrostMCPServer
-
-        server = BifrostMCPServer(org_user_context)
-        tool_names = server.get_tool_names()
-
-        assert "mcp__bifrost__execute_workflow" in tool_names
-        assert "mcp__bifrost__list_workflows" in tool_names
-        assert "mcp__bifrost__list_integrations" in tool_names
-        assert "mcp__bifrost__list_forms" in tool_names
-        assert "mcp__bifrost__get_docs" in tool_names
-        assert "mcp__bifrost__search_knowledge" in tool_names
-
-    def test_get_tool_names_respects_enabled_filter(self):
-        """Should return only enabled tools when filter applied."""
-        from src.services.mcp_server.server import BifrostMCPServer
-
-        context = MCPContext(
-            user_id=uuid4(),
-            enabled_system_tools=["execute_workflow", "list_workflows"],
-        )
-        server = BifrostMCPServer(context)
-        tool_names = server.get_tool_names()
-
-        assert "mcp__bifrost__execute_workflow" in tool_names
-        assert "mcp__bifrost__list_workflows" in tool_names
-        assert "mcp__bifrost__list_integrations" not in tool_names
-        assert len(tool_names) == 2
-
 
 # ==================== get_system_tool_ids Tests ====================
 
@@ -962,215 +933,6 @@ class TestMCPConfigCache:
         assert config_service._cache_time is None
 
 
-# ==================== Tool Filtering Tests ====================
-
-
-class TestToolFiltering:
-    """Tests for tool filtering based on allowed/blocked lists."""
-
-    def test_allowed_tool_ids_limits_visible_tools(self):
-        """Should only show tools in the allowed list when specified."""
-        from src.services.mcp_server.server import BifrostMCPServer
-
-        # Context with specific allowed tools
-        context = MCPContext(
-            user_id=uuid4(),
-            enabled_system_tools=["execute_workflow", "list_workflows"],
-        )
-
-        server = BifrostMCPServer(context)
-        tool_names = server.get_tool_names()
-
-        # Should only contain allowed tools
-        assert "mcp__bifrost__execute_workflow" in tool_names
-        assert "mcp__bifrost__list_workflows" in tool_names
-        assert "mcp__bifrost__list_integrations" not in tool_names
-        assert "mcp__bifrost__list_forms" not in tool_names
-        assert "mcp__bifrost__search_knowledge" not in tool_names
-        assert len(tool_names) == 2
-
-    def test_empty_allowed_means_all_tools(self):
-        """Should show all tools when allowed list is empty (falsy)."""
-        from src.services.mcp_server.server import BifrostMCPServer
-
-        # Context with empty enabled tools - empty list is falsy,
-        # so BifrostMCPServer treats it as None (all tools allowed)
-        context = MCPContext(
-            user_id=uuid4(),
-            enabled_system_tools=[],
-        )
-
-        server = BifrostMCPServer(context)
-        tool_names = server.get_tool_names()
-
-        # Empty list is falsy, so it becomes None -> all tools shown
-        # We have many system tools including forms, workflows, data providers, apps, file ops
-        assert len(tool_names) >= 18  # At least the core tools
-
-    def test_no_enabled_tools_means_all_tools(self):
-        """Should show all tools when enabled_system_tools is not set."""
-        from src.services.mcp_server.server import BifrostMCPServer
-
-        # Context without enabled_system_tools set
-        context = MCPContext(
-            user_id=uuid4(),
-            # enabled_system_tools not set -> defaults to empty list
-        )
-        # Manually set to None to simulate "all tools" mode
-        context.enabled_system_tools = []
-
-        # But we need to create server before setting - let's test the None case
-        context2 = MCPContext(user_id=uuid4())
-
-        # BifrostMCPServer converts empty list to None for "all tools"
-        server = BifrostMCPServer(context2)
-
-        # enabled_tools should be None since context.enabled_system_tools is empty
-        # Actually the logic is: if enabled_system_tools is truthy, use it
-        # If empty/falsy, _enabled_tools becomes None meaning "all tools"
-        tool_names = server.get_tool_names()
-
-        # Should contain some of the core system tools
-        expected_tools = [
-            "mcp__bifrost__execute_workflow",
-            "mcp__bifrost__list_workflows",
-            "mcp__bifrost__list_integrations",
-            "mcp__bifrost__list_forms",
-            "mcp__bifrost__get_docs",
-            "mcp__bifrost__search_knowledge",
-        ]
-
-        for expected in expected_tools:
-            assert expected in tool_names, f"Missing tool: {expected}"
-
-        # All system tools including forms, workflows, data providers, apps, file ops
-        assert len(tool_names) >= 17  # At least the core tools
-
-    def test_single_tool_filtering(self):
-        """Should correctly filter to single tool."""
-        from src.services.mcp_server.server import BifrostMCPServer
-
-        context = MCPContext(
-            user_id=uuid4(),
-            enabled_system_tools=["search_knowledge"],
-        )
-
-        server = BifrostMCPServer(context)
-        tool_names = server.get_tool_names()
-
-        assert tool_names == ["mcp__bifrost__search_knowledge"]
-
-    def test_tool_filtering_preserves_order(self):
-        """Should return tools in consistent order."""
-        from src.services.mcp_server.server import BifrostMCPServer
-
-        # Test multiple times to ensure consistent ordering
-        for _ in range(3):
-            context = MCPContext(
-                user_id=uuid4(),
-                enabled_system_tools=["list_workflows", "execute_workflow", "list_forms"],
-            )
-
-            server = BifrostMCPServer(context)
-            tool_names = server.get_tool_names()
-
-            # Order should match the all_tools list order, not enabled_system_tools order
-            # (execute_workflow comes before list_workflows in all_tools)
-            assert "mcp__bifrost__execute_workflow" in tool_names
-            assert "mcp__bifrost__list_workflows" in tool_names
-            assert "mcp__bifrost__list_forms" in tool_names
-
-    def test_unknown_tool_ids_ignored(self):
-        """Should ignore unknown tool IDs in enabled list."""
-        from src.services.mcp_server.server import BifrostMCPServer
-
-        context = MCPContext(
-            user_id=uuid4(),
-            enabled_system_tools=["execute_workflow", "unknown_tool", "fake_tool"],
-        )
-
-        server = BifrostMCPServer(context)
-        tool_names = server.get_tool_names()
-
-        # Should only contain the valid tool
-        assert tool_names == ["mcp__bifrost__execute_workflow"]
-
-
-class TestMCPContextFiltering:
-    """Tests for MCPContext-based tool access control."""
-
-    def test_platform_admin_sees_all_tools_by_default(self):
-        """Platform admin should see all tools when no filter applied."""
-        from src.services.mcp_server.server import BifrostMCPServer
-
-        context = MCPContext(
-            user_id=uuid4(),
-            is_platform_admin=True,
-            # No enabled_system_tools filter
-        )
-
-        server = BifrostMCPServer(context)
-        tool_names = server.get_tool_names()
-
-        assert len(tool_names) >= 18  # All system tools (forms, workflows, data providers, apps, etc.)
-
-    def test_org_user_respects_enabled_tools(self):
-        """Org user should only see tools from enabled_system_tools."""
-        from src.services.mcp_server.server import BifrostMCPServer
-
-        context = MCPContext(
-            user_id=uuid4(),
-            org_id=uuid4(),
-            is_platform_admin=False,
-            enabled_system_tools=["list_workflows", "list_forms"],
-        )
-
-        server = BifrostMCPServer(context)
-        tool_names = server.get_tool_names()
-
-        assert len(tool_names) == 2
-        assert "mcp__bifrost__list_workflows" in tool_names
-        assert "mcp__bifrost__list_forms" in tool_names
-
-    def test_context_with_all_tools_enabled(self):
-        """Context with all tools enabled should show all tools."""
-        from src.services.mcp_server.server import BifrostMCPServer
-
-        all_tool_ids = [
-            "execute_workflow",
-            "list_workflows",
-            "list_integrations",
-            "list_forms",
-            "get_docs",
-            "search_knowledge",
-        ]
-
-        context = MCPContext(
-            user_id=uuid4(),
-            enabled_system_tools=all_tool_ids,
-        )
-
-        server = BifrostMCPServer(context)
-        tool_names = server.get_tool_names()
-
-        assert len(tool_names) == 6
-
-    def test_enabled_tools_are_case_sensitive(self):
-        """Tool IDs should be case-sensitive."""
-        from src.services.mcp_server.server import BifrostMCPServer
-
-        context = MCPContext(
-            user_id=uuid4(),
-            enabled_system_tools=["Execute_Workflow", "LIST_WORKFLOWS"],  # Wrong case
-        )
-
-        server = BifrostMCPServer(context)
-        tool_names = server.get_tool_names()
-
-        # Should be empty since tool IDs don't match (case sensitive)
-        assert len(tool_names) == 0
-
-
 # ==================== Tool Result Display Text Tests ====================
 
 
@@ -1265,7 +1027,9 @@ class TestRegisterWorkflow:
         """register_workflow MCP tool rejects missing function_name."""
         from src.services.mcp_server.tools.workflow import register_workflow
 
-        result = await register_workflow(platform_admin_context, "workflows/test.py", "")
+        result = await register_workflow(
+            platform_admin_context, "workflows/test.py", ""
+        )
         data = result.structured_content
         assert "error" in data
         assert "function_name is required" in data["error"]
@@ -1275,7 +1039,9 @@ class TestRegisterWorkflow:
         """register_workflow MCP tool rejects non-.py files."""
         from src.services.mcp_server.tools.workflow import register_workflow
 
-        result = await register_workflow(platform_admin_context, "workflows/test.yaml", "my_function")
+        result = await register_workflow(
+            platform_admin_context, "workflows/test.yaml", "my_function"
+        )
         data = result.structured_content
         assert "error" in data
         assert "path must be a .py file" in data["error"]
@@ -1290,12 +1056,23 @@ class TestRegisterWorkflow:
             mock_db_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
             mock_db_ctx.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            with patch("src.services.file_storage.FileStorageService") as mock_svc_cls:
+            with (
+                patch(
+                    "src.services.mcp_server.tools.workflow."
+                    "active_workspace_release_file_view",
+                    AsyncMock(return_value=None),
+                ),
+                patch("src.services.file_storage.FileStorageService") as mock_svc_cls,
+            ):
                 mock_svc = MagicMock()
-                mock_svc.read_file = AsyncMock(side_effect=FileNotFoundError("not found"))
+                mock_svc.read_file = AsyncMock(
+                    side_effect=FileNotFoundError("not found")
+                )
                 mock_svc_cls.return_value = mock_svc
 
-                result = await register_workflow(platform_admin_context, "workflows/missing.py", "my_func")
+                result = await register_workflow(
+                    platform_admin_context, "workflows/missing.py", "my_func"
+                )
 
         data = result.structured_content
         assert "error" in data
@@ -1314,12 +1091,21 @@ class TestRegisterWorkflow:
             mock_db_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
             mock_db_ctx.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            with patch("src.services.file_storage.FileStorageService") as mock_svc_cls:
+            with (
+                patch(
+                    "src.services.mcp_server.tools.workflow."
+                    "active_workspace_release_file_view",
+                    AsyncMock(return_value=None),
+                ),
+                patch("src.services.file_storage.FileStorageService") as mock_svc_cls,
+            ):
                 mock_svc = MagicMock()
                 mock_svc.read_file = AsyncMock(return_value=(code, None))
                 mock_svc_cls.return_value = mock_svc
 
-                result = await register_workflow(platform_admin_context, "workflows/test.py", "my_func")
+                result = await register_workflow(
+                    platform_admin_context, "workflows/test.py", "my_func"
+                )
 
         data = result.structured_content
         assert "error" in data
@@ -1502,4 +1288,7 @@ class TestMCPAgentPrivilegeBoundary:
         )
 
         assert result.structured_content is not None
-        assert "Only platform admins can create global agents" in result.structured_content["error"]
+        assert (
+            "Only platform admins can create global agents"
+            in result.structured_content["error"]
+        )

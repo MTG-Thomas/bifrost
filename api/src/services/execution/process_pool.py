@@ -37,8 +37,9 @@ import signal
 import subprocess
 import time
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from queue import Empty
 from typing import Any, Awaitable, Callable
@@ -48,12 +49,23 @@ import redis.asyncio as redis
 
 from src.config import get_settings
 from src.services.execution.memory_monitor import get_cgroup_memory, has_sufficient_memory_cgroup
+from src.services.execution_admission import (
+    AdmissionOutcome,
+    record_admission_decision,
+)
+from src.services.execution.fault_injection import (
+    FailurePoint,
+    execution_failure_checkpoint,
+)
 from src.models.contracts.notifications import NotificationCategory, NotificationCreate, NotificationStatus
 from src.services.execution.simple_worker import install_requirements, RequirementsInstallResult
 from src.services.notification_service import get_notification_service
 from src.services.execution.template_process import TemplateProcess
+from src.core.module_cache import WORKSPACE_GENERATION_CHANNEL
 
 logger = logging.getLogger(__name__)
+
+_CLEAN_EXIT_RESULT_GRACE = timedelta(seconds=2)
 
 
 async def _notify_requirements_failures(result: RequirementsInstallResult) -> None:
@@ -144,6 +156,42 @@ class ProcessPoolAdmissionRejected(RuntimeError):
     """Raised when local process-pool capacity cannot admit an execution."""
 
 
+class WorkspaceRuntimeDurationLimitInvalid(ValueError):
+    """An immutable Workspace runtime lacks a valid parent-process deadline."""
+
+
+# Backward-compatible import name for the pre-release canary tests/SDK surface.
+WorkspaceDraftDurationLimitInvalid = WorkspaceRuntimeDurationLimitInvalid
+
+
+def execution_timeout_from_context(
+    context: dict[str, Any], default_timeout: int
+) -> int:
+    """Resolve the parent-enforced deadline for immutable Workspace runtimes."""
+    timeout = context.get("timeout_seconds", default_timeout)
+    if context.get("runtime_mode") not in {
+        "workspace-canary-v1",
+        "workspace-release-v1",
+    }:
+        return timeout
+    hard_limit = context.get("runtime_max_duration_seconds")
+    if hard_limit is None and context.get("runtime_mode") == "workspace-canary-v1":
+        hard_limit = context.get("draft_max_duration_seconds")
+    if (
+        not isinstance(hard_limit, int)
+        or isinstance(hard_limit, bool)
+        or hard_limit <= 0
+    ):
+        raise WorkspaceRuntimeDurationLimitInvalid(
+            "immutable Workspace runtime is missing its hard duration bound"
+        )
+    if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
+        raise WorkspaceRuntimeDurationLimitInvalid(
+            "immutable Workspace runtime timeout is invalid"
+        )
+    return min(timeout, hard_limit)
+
+
 @dataclass
 class ExecutionInfo:
     """
@@ -205,6 +253,13 @@ class ProcessHandle:
     # Used by the orphan sweep to wait out the grace-sleep window before treating
     # a KILLED handle as truly stuck.
     killed_at: datetime | None = None
+    # Timestamp set when the template reports a clean exit before the result
+    # loop has drained the child's result pipe.
+    clean_exit_observed_at: datetime | None = None
+    # File descriptor registered with the asyncio loop while this child is
+    # producing its one result. None once readiness fires or the handle is
+    # removed through timeout/cancellation/crash cleanup.
+    result_reader_fd: int | None = None
 
     @property
     def is_alive(self) -> bool:
@@ -230,29 +285,25 @@ class _PidWrapper:
         self.exitcode: int | None = None
 
     def is_alive(self) -> bool:
+        if self.exitcode is not None:
+            return False
         try:
             os.kill(self.pid, 0)
             return True
         except OSError:
             return False
 
+    def mark_exited(self, exitcode: int) -> None:
+        """Record the authoritative exit status reported by the child parent."""
+        self.exitcode = exitcode
+
     def join(self, timeout: float | None = None) -> None:
-        import time
-        try:
-            if timeout is not None:
-                # Non-blocking waitpid with polling
-                deadline = time.monotonic() + timeout
-                while time.monotonic() < deadline:
-                    pid, status = os.waitpid(self.pid, os.WNOHANG)
-                    if pid != 0:
-                        self.exitcode = os.waitstatus_to_exitcode(status)
-                        return
-                    time.sleep(0.1)
-            else:
-                _, status = os.waitpid(self.pid, 0)
-                self.exitcode = os.waitstatus_to_exitcode(status)
-        except ChildProcessError:
-            pass  # Already reaped
+        """Wait for disappearance without trying to reap a grandchild."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while self.is_alive():
+            if deadline is not None and time.monotonic() >= deadline:
+                return
+            time.sleep(0.05)
 
 
 # Type alias for result callback
@@ -354,7 +405,7 @@ class ProcessPoolManager:
 
         # Async tasks
         self._monitor_task: asyncio.Task[None] | None = None
-        self._result_task: asyncio.Task[None] | None = None
+        self._result_tasks: set[asyncio.Task[None]] = set()
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._cancel_task: asyncio.Task[None] | None = None
         self._command_task: asyncio.Task[None] | None = None
@@ -399,7 +450,13 @@ class ProcessPoolManager:
         catch this — the worker process should crash-loop so Kubernetes
         restarts it and the failure is visible.
         """
-        new_template = TemplateProcess()
+        # Requirements are installed in the manager before initial startup and
+        # before package-driven recycle.  The environment is shared with the
+        # spawned template, so installing them again here only extends the
+        # restart barrier and can make the next admitted execution time out.
+        # Crash/route healing likewise reuses that already-installed shared
+        # environment; source-generation recycle only needs fresh imports.
+        new_template = TemplateProcess(install_requirements_on_startup=False)
         await asyncio.to_thread(new_template.start)
         self._template = new_template
         logger.info(f"Template process started (PID={new_template.pid})")
@@ -462,8 +519,7 @@ class ProcessPoolManager:
 
         Returns:
             ProcessHandle for the new forked worker. State starts at BUSY
-            because every fork is claimed by the routing caller (there is
-            no warm pool / idle state).
+            because every fork is claimed by the routing caller.
 
         Raises:
             RuntimeError: If the template process is not alive.
@@ -499,6 +555,18 @@ class ProcessPoolManager:
         self.processes[process_id] = handle
         logger.info(f"Created worker {process_id} (PID={handle.pid})")
         return handle
+
+    async def _ensure_template_alive_for_route(self) -> None:
+        """Ensure an admitted route has a live template while restart-locked."""
+        if not self._started or self._shutdown:
+            raise RuntimeError("Cannot route execution: process pool is not running")
+
+        if self._template is None or not self._template.is_alive():
+            logger.warning("Template unavailable during route admission; starting replacement")
+            await self._start_template()
+
+        if self._template is None or not self._template.is_alive():
+            raise RuntimeError("Replacement template process did not become ready")
 
     async def start(self) -> None:
         """
@@ -539,10 +607,6 @@ class ProcessPoolManager:
             self._monitor_loop(),
             name="pool-monitor"
         )
-        self._result_task = asyncio.create_task(
-            self._result_loop(),
-            name="pool-results"
-        )
         self._heartbeat_task = asyncio.create_task(
             self._heartbeat_loop(),
             name="pool-heartbeat"
@@ -577,19 +641,16 @@ class ProcessPoolManager:
         # Cancel background tasks
         tasks = [
             self._monitor_task,
-            self._result_task,
             self._heartbeat_task,
             self._cancel_task,
             self._command_task,
+            *self._result_tasks,
         ]
         for task in tasks:
             if task and not task.done():
                 task.cancel()
-                try:
+                with suppress(asyncio.CancelledError):
                     await task
-                except asyncio.CancelledError:
-                    # Expected — we just cancelled the task; no log needed
-                    pass
 
         # Terminate all processes
         for handle in list(self.processes.values()):
@@ -609,6 +670,7 @@ class ProcessPoolManager:
             self._redis = None
 
         self.processes.clear()
+        self._result_tasks.clear()
         self._started = False
 
         logger.info("ProcessPoolManager stopped")
@@ -620,6 +682,8 @@ class ProcessPoolManager:
         Args:
             handle: ProcessHandle to terminate
         """
+        self._unregister_result_reader(handle)
+
         # Mark as KILLED immediately to prevent route_execution from sending
         # work to this process during the graceful_shutdown_seconds sleep.
         handle.state = ProcessState.KILLED
@@ -681,21 +745,22 @@ class ProcessPoolManager:
         Fork a one-shot worker for this execution.
 
         Waits for a free slot under the `max_workers` cap if the pool is
-        saturated. The context is written to Redis, and the execution_id
-        is sent to the forked child via the work queue.
+        saturated. The context is retained in Redis for durability and
+        diagnostics, then sent with the execution ID to the forked child over
+        its private work pipe.
 
         Args:
             execution_id: Unique identifier for the execution
-            context: Execution context data (written to Redis)
+            context: Execution context sent to the child and retained in Redis
         """
         self._admission_attempts += 1
+        execution_failure_checkpoint(FailurePoint.WORKFLOW_ADMISSION)
         admission_started = time.monotonic()
 
-        # Wait for any in-progress drain+restart to complete before routing.
-        # Without this, executions arriving during a package-install restart
-        # would hit a dead template and fail with ConnectionResetError.
-        async with self._restart_lock:
-            pass  # just wait for it to be released
+        # Validate immutable draft limits before writing context or forking.
+        timeout = execution_timeout_from_context(
+            context, self.execution_timeout_seconds
+        )
 
         # Write context to Redis
         await self._write_context_to_redis(execution_id, context)
@@ -713,13 +778,37 @@ class ProcessPoolManager:
                 self._admission_wait_seconds_max,
                 wait_seconds,
             )
+            record_admission_decision(
+                workload_class="interactive_workflow",
+                admission_policy="workflow_process_pool",
+                outcome=AdmissionOutcome.DEFERRED,
+                reason="memory_pressure",
+                wait_seconds=wait_seconds,
+            )
             raise MemoryError(
                 f"Cannot route execution {execution_id[:8]}: memory pressure "
                 f"exceeds {settings.memory_pressure_threshold:.0%} threshold"
             )
 
-        # Wait for a slot under the max_workers cap. Worker exits notify
-        # _slot_condition, so this wakes immediately once a slot frees.
+        # Get timeout from context or use default
+        timeout = context.get("timeout_seconds", self.execution_timeout_seconds)
+
+        await self._dispatch_to_child(
+            execution_id,
+            context,
+            timeout,
+            admission_started,
+        )
+
+    async def _dispatch_to_child(
+        self,
+        execution_id: str,
+        context: dict[str, Any],
+        timeout: int,
+        admission_started: float,
+    ) -> None:
+        """Claim or fork one child and send its sole execution."""
+        # Wait until a result frees a slot when every child is busy.
         if len(self.processes) >= self.max_workers:
             if not await self._wait_for_slot():
                 wait_seconds = time.monotonic() - admission_started
@@ -729,13 +818,28 @@ class ProcessPoolManager:
                     self._admission_wait_seconds_max,
                     wait_seconds,
                 )
+                record_admission_decision(
+                    workload_class="interactive_workflow",
+                    admission_policy="workflow_process_pool",
+                    outcome=AdmissionOutcome.DEFERRED,
+                    reason="slot_timeout",
+                    wait_seconds=wait_seconds,
+                )
                 raise ProcessPoolAdmissionRejected("No worker slot available after timeout")
 
-        # Fork the worker. _fork_process returns a handle already in BUSY.
-        handle = self._fork_process()
-
-        # Get timeout from context or use default
-        timeout = context.get("timeout_seconds", self.execution_timeout_seconds)
+        # Validate and fork while holding the same lock used by template
+        # recycling. Merely waiting on the lock earlier in this method leaves a
+        # race across the context/admission awaits: a recycle can shut down the
+        # template after that wait but before the fork.
+        async with self._restart_lock:
+            # A failed or externally interrupted restart can leave the installed
+            # template dead after the restart lock is released. Heal that state
+            # once, while preserving a concurrent stop as authoritative.
+            await self._ensure_template_alive_for_route()
+            execution_failure_checkpoint(FailurePoint.CHILD_FORK)
+            # _fork_process repeats the final template-alive validation and
+            # returns a handle already in BUSY.
+            handle = self._fork_process()
 
         handle.current_execution = ExecutionInfo(
             execution_id=execution_id,
@@ -744,14 +848,29 @@ class ProcessPoolManager:
         )
         handle.result_reported = False
 
-        # Send execution_id to the child
-        handle.work_queue.put_nowait(execution_id)
+        self._register_result_reader(handle)
+
+        # Send the already-assembled context over the child's private pipe.
+        try:
+            handle.work_queue.put_nowait((execution_id, context))
+        except Exception:
+            self._unregister_result_reader(handle)
+            self.processes.pop(handle.id, None)
+            await self._notify_slot_free()
+            raise
         wait_seconds = time.monotonic() - admission_started
         self._admission_successes += 1
         self._admission_wait_seconds_total += wait_seconds
         self._admission_wait_seconds_max = max(
             self._admission_wait_seconds_max,
             wait_seconds,
+        )
+        record_admission_decision(
+            workload_class="interactive_workflow",
+            admission_policy="workflow_process_pool",
+            outcome=AdmissionOutcome.ADMITTED,
+            reason="capacity_available",
+            wait_seconds=wait_seconds,
         )
 
         logger.info(
@@ -765,7 +884,7 @@ class ProcessPoolManager:
         context: dict[str, Any],
     ) -> None:
         """
-        Write execution context to Redis for worker to read.
+        Retain execution context in Redis for durability and diagnostics.
 
         Args:
             execution_id: Execution ID
@@ -781,9 +900,8 @@ class ProcessPoolManager:
 
         Runs every 1 second to:
         1. Check for timed-out executions and kill processes
-        2. Check for crashed processes and replace them
-        3. Scale down excess idle processes
-        4. Periodically clean stale queue entries (every 60s)
+        2. Check for crashed processes
+        3. Periodically clean stale queue entries (every 60s)
         """
         import time as _time
 
@@ -854,8 +972,7 @@ class ProcessPoolManager:
                 # Report timeout
                 await self._report_timeout(handle)
 
-                # Remove from pool — one-shot workers don't get replaced;
-                # the next execution's route_execution will fork on demand.
+                # Remove from the pool — the next execution forks on demand.
                 # pop() not del: a peer (_handle_result) may have removed it
                 # during the _kill_process / _report_timeout awaits above.
                 self.processes.pop(handle.id, None)
@@ -868,6 +985,8 @@ class ProcessPoolManager:
         Args:
             handle: ProcessHandle to kill
         """
+        self._unregister_result_reader(handle)
+
         # Mark as KILLED immediately to prevent route_execution from sending
         # work to this process during the graceful_shutdown_seconds sleep.
         handle.state = ProcessState.KILLED
@@ -979,14 +1098,16 @@ class ProcessPoolManager:
         on the next iteration rather than looping on a dead one.
         """
         channel = f"bifrost:pool:{self.worker_id}:commands"
-        logger.info(f"Command listener loop started on channel {channel}")
+        channels = [channel, WORKSPACE_GENERATION_CHANNEL]
+        logger.info(f"Command listener loop started on channels {channels}")
 
         while not self._shutdown:
             pubsub = None
             try:
                 r = await self._get_redis()
                 pubsub = r.pubsub()
-                await pubsub.subscribe(channel)
+                await pubsub.subscribe(*channels)
+                next_durable_poll = 0.0
 
                 while not self._shutdown:
                     message = await pubsub.get_message(
@@ -996,13 +1117,16 @@ class ProcessPoolManager:
                     if message and message["type"] == "message":
                         data = json.loads(message["data"])
                         await self._handle_command(data)
+                    if time.monotonic() >= next_durable_poll:
+                        await self._poll_durable_worker_command()
+                        next_durable_poll = time.monotonic() + 1.0
             except Exception as e:
                 logger.error(f"Command listener error: {e}; reconnecting in 1s")
                 await asyncio.sleep(1.0)
             finally:
                 if pubsub is not None:
                     try:
-                        await pubsub.unsubscribe(channel)
+                        await pubsub.unsubscribe(*channels)
                         await pubsub.aclose()
                     except Exception as e:
                         # Already-closed pubsub or Redis disconnect — best-effort cleanup
@@ -1017,6 +1141,60 @@ class ProcessPoolManager:
         Args:
             command: Command dict with 'action' field and action-specific data
         """
+        command_id = command.get("command_id")
+        if command_id:
+            from src.core.database import get_db_context
+            from src.services.worker_control_commands import (
+                claim_worker_control_command,
+                finish_worker_control_command,
+            )
+
+            async with get_db_context() as db:
+                claimed = await claim_worker_control_command(
+                    db,
+                    command_id=uuid.UUID(str(command_id)),
+                    worker_id=self.worker_id,
+                )
+                await db.commit()
+            if claimed is None:
+                logger.info("Ignoring completed or concurrently claimed command %s", command_id)
+                return
+            persisted_command = {
+                "command_id": str(claimed.id),
+                "action": claimed.action,
+                "pid": claimed.process_id,
+                "reason": claimed.reason,
+            }
+            try:
+                await self._dispatch_worker_command(persisted_command)
+            except Exception as exc:
+                async with get_db_context() as db:
+                    await finish_worker_control_command(
+                        db,
+                        command_id=uuid.UUID(str(command_id)),
+                        worker_id=self.worker_id,
+                        succeeded=False,
+                        failure_message=str(exc),
+                    )
+                    await db.commit()
+                raise
+            async with get_db_context() as db:
+                await finish_worker_control_command(
+                    db,
+                    command_id=uuid.UUID(str(command_id)),
+                    worker_id=self.worker_id,
+                    succeeded=True,
+                )
+                await db.commit()
+            return
+
+        action = command.get("action")
+        if action != "workspace_generation_changed":
+            logger.warning("Ignoring unaudited worker command without command_id: %s", action)
+            return
+        await self._dispatch_worker_command(command)
+
+    async def _dispatch_worker_command(self, command: dict[str, Any]) -> None:
         action = command.get("action")
         logger.info(f"Received command: {action}")
 
@@ -1024,8 +1202,33 @@ class ProcessPoolManager:
             await self._handle_recycle_process_command(command)
         elif action == "recycle_all":
             await self._handle_recycle_all_command(command)
+        elif action == "workspace_generation_changed":
+            await self._handle_workspace_generation_changed_command(command)
         else:
             logger.warning(f"Unknown command action: {action}")
+
+    async def _poll_durable_worker_command(self) -> None:
+        """Converge commands even when their Redis notification was lost."""
+
+        from src.core.database import get_db_context
+        from src.services.worker_control_commands import (
+            get_pending_worker_control_command,
+        )
+
+        async with get_db_context() as db:
+            command = await get_pending_worker_control_command(
+                db,
+                worker_id=self.worker_id,
+            )
+            if command is None:
+                return
+            data = {
+                "command_id": str(command.id),
+                "action": command.action,
+                "pid": command.process_id,
+                "reason": command.reason,
+            }
+        await self._handle_command(data)
 
     async def _handle_recycle_process_command(self, command: dict[str, Any]) -> None:
         """
@@ -1045,6 +1248,19 @@ class ProcessPoolManager:
             f"— delegating to drain+restart"
         )
         await self._recycle_via_drain(reason=reason)
+
+    async def _handle_workspace_generation_changed_command(
+        self, command: dict[str, Any]
+    ) -> None:
+        """Drain and restart the template after committed workspace source changes."""
+        generation = command.get("generation", "unknown")
+        reason = command.get("reason", "workspace source activation")
+        logger.info(
+            "Workspace generation %s activated (%s); recycling template",
+            generation,
+            reason,
+        )
+        await self.drain_and_restart_template()
 
     async def _handle_recycle_all_command(self, command: dict[str, Any]) -> None:
         """
@@ -1111,7 +1327,7 @@ class ProcessPoolManager:
                 # Report cancellation
                 await self._report_cancellation(handle)
 
-                # Remove from pool — one-shot worker, no replacement.
+                # Remove from the pool — the next execution forks on demand.
                 # pop() not del: a peer (_handle_result) may have removed it
                 # during the _kill_process / _report_cancellation awaits.
                 self.processes.pop(handle.id, None)
@@ -1151,7 +1367,7 @@ class ProcessPoolManager:
 
     async def _check_process_health(self) -> None:
         """
-        Check for crashed processes and replace them.
+        Check for crashed processes.
 
         Case A: Process is dead and state is NOT KILLED — unexpected crash
         (SIGSEGV, worker exit, etc.). Report crash if not already reported.
@@ -1162,6 +1378,11 @@ class ProcessPoolManager:
         """
         to_remove: list[str] = []
 
+        # restart_template mutates the TemplateProcess control pipe in a worker
+        # thread. Do not inspect that pipe while the restart lock is held.
+        if not self._restart_lock.locked():
+            self._collect_child_exit_statuses()
+
         # Snapshot to a list — items() iterator is unsafe across the awaits
         # below (peer coroutines like _handle_result mutate self.processes).
         for process_id, handle in list(self.processes.items()):
@@ -1169,6 +1390,23 @@ class ProcessPoolManager:
             if process_id not in self.processes:
                 continue
             if not handle.is_alive and handle.state != ProcessState.KILLED:
+                if handle.current_execution and not handle.result_reported:
+                    try:
+                        result = handle.result_queue.get_nowait()
+                    except (Empty, EOFError, OSError):
+                        result = None
+
+                    if isinstance(result, dict):
+                        await self._handle_result(handle, result)
+                        continue
+
+                    if handle.process.exitcode == 0:
+                        now = datetime.now(timezone.utc)
+                        if handle.clean_exit_observed_at is None:
+                            handle.clean_exit_observed_at = now
+                        if now - handle.clean_exit_observed_at < _CLEAN_EXIT_RESULT_GRACE:
+                            continue
+
                 # Case A: unexpected crash
                 logger.warning(
                     f"Process {process_id} crashed "
@@ -1199,8 +1437,7 @@ class ProcessPoolManager:
                     await self._report_orphan(handle)
                 to_remove.append(process_id)
 
-        # Remove crashed/orphaned processes. One-shot workers don't get
-        # replaced — the next execution's route_execution will fork.
+        # Remove crashed/orphaned processes.
         # Use pop() not del because a peer (e.g. _handle_result) may have
         # already removed the id during one of the awaits above. We still
         # notify slot waiters if anything was removed here, since the
@@ -1208,10 +1445,35 @@ class ProcessPoolManager:
         if to_remove:
             removed_any = False
             for process_id in to_remove:
+                handle = self.processes.get(process_id)
+                if handle is not None:
+                    self._unregister_result_reader(handle)
                 if self.processes.pop(process_id, None) is not None:
                     removed_any = True
             if removed_any:
                 await self._notify_slot_free()
+
+    def _collect_child_exit_statuses(self) -> None:
+        """Apply exit statuses gathered by the template that owns the children."""
+        template = self._template
+        if template is None:
+            return
+
+        try:
+            exit_statuses = template.collect_child_exit_statuses()
+        except (EOFError, OSError, RuntimeError) as e:
+            logger.warning(f"Could not collect child exit statuses from template: {e}")
+            return
+
+        handles_by_pid = {
+            handle.pid: handle
+            for handle in self.processes.values()
+            if handle.pid is not None
+        }
+        for child_pid, exitcode in exit_statuses.items():
+            handle = handles_by_pid.get(child_pid)
+            if handle is not None and isinstance(handle.process, _PidWrapper):
+                handle.process.mark_exited(exitcode)
 
     async def _report_orphan(self, handle: ProcessHandle) -> None:
         """
@@ -1267,33 +1529,58 @@ class ProcessPoolManager:
         except Exception as e:
             logger.exception(f"Error reporting crash: {e}")
 
-    async def _result_loop(self) -> None:
-        """
-        Collect results from all process result queues.
+    def _register_result_reader(self, handle: ProcessHandle) -> None:
+        """Wake immediately when a one-shot child's result pipe is readable."""
+        loop = asyncio.get_running_loop()
+        fd = handle.result_queue.fileno()
+        handle.result_reader_fd = fd
+        loop.add_reader(fd, self._on_result_ready, handle.id, fd)
 
-        Polls result queues from all processes (non-blocking) and
-        handles completed executions.
-        """
-        logger.info("Result loop started")
+    def _unregister_result_reader(self, handle: ProcessHandle) -> None:
+        """Remove a result-pipe watch if the handle still owns one."""
+        fd = handle.result_reader_fd
+        if fd is None:
+            return
+        asyncio.get_running_loop().remove_reader(fd)
+        handle.result_reader_fd = None
 
-        while not self._shutdown:
-            try:
-                for handle in list(self.processes.values()):
-                    try:
-                        result = handle.result_queue.get_nowait()
-                        await self._handle_result(handle, result)
-                    except Empty:
-                        # Hot polling loop — Empty is the common case (no work ready).
-                        # Logging here would flood at 10Hz × N processes; intentionally silent.
-                        pass
-                    except Exception as e:
-                        logger.exception(f"Result loop error for {handle.id}: {e}")
-            except Exception as e:
-                logger.exception(f"Result loop error: {e}")
+    def _on_result_ready(self, process_id: str, fd: int) -> None:
+        """Convert an asyncio pipe-readiness callback into async result work."""
+        asyncio.get_running_loop().remove_reader(fd)
+        handle = self.processes.get(process_id)
+        if handle is None:
+            return
+        handle.result_reader_fd = None
+        task = asyncio.create_task(
+            self._consume_ready_result(process_id),
+            name=f"pool-result-{process_id}",
+        )
+        self._result_tasks.add(task)
+        task.add_done_callback(self._result_tasks.discard)
 
-            await asyncio.sleep(0.1)
+    async def _consume_ready_result(self, process_id: str) -> None:
+        """Drain one readable child pipe and forward its result."""
+        handle = self.processes.get(process_id)
+        if handle is None:
+            return
+        try:
+            result = handle.result_queue.get_nowait()
+        except Empty:
+            # Readiness can be transient when a peer concurrently inspects the
+            # pipe. Re-arm only while this handle still owns the execution.
+            if self.processes.get(process_id) is handle:
+                self._register_result_reader(handle)
+            return
+        except (EOFError, OSError) as exc:
+            # The health loop reports the child crash with the established
+            # synthetic result contract.
+            logger.debug("Result pipe closed for %s: %s", process_id, exc)
+            return
+        except Exception as exc:
+            logger.exception("Result reader error for %s: %s", process_id, exc)
+            return
 
-        logger.info("Result loop stopped")
+        await self._handle_result(handle, result)
 
     async def _handle_result(
         self,
@@ -1312,6 +1599,7 @@ class ProcessPoolManager:
         """
         # Mark result as reported before clearing current_execution so the invariant
         # ("result_reported=True once on_result has fired") holds for external observers.
+        self._unregister_result_reader(handle)
         handle.result_reported = True
 
         # Clear current execution
@@ -1513,14 +1801,43 @@ class ProcessPoolManager:
                 }
             processes.append(info)
 
-        # In on-demand mode every handle is BUSY or KILLED — no idle pool.
-        # Keep `idle_count` in the heartbeat shape for back-compat (always 0).
+        # One-shot handles are never idle; retain the field for the heartbeat
+        # contract consumed by the worker dashboard.
         idle_count = 0
         busy_count = len([p for p in self.processes.values() if p.state == ProcessState.BUSY])
         max_workers = getattr(self, "max_workers", len(self.processes))
         available_slots = max(0, max_workers - busy_count)
 
         memory_current, memory_max = get_cgroup_memory()
+        admission_attempts = self._admission_attempts
+        admission_wait_total = self._admission_wait_seconds_total
+        active_executions = [
+            p.current_execution for p in self.processes.values() if p.current_execution
+        ]
+        estimated_drain_seconds = max(
+            (
+                max(0.0, info.timeout_seconds - info.elapsed_seconds)
+                for info in active_executions
+            ),
+            default=0.0,
+        )
+        memory_utilization = (
+            memory_current / memory_max
+            if memory_current >= 0 and memory_max > 0
+            else None
+        )
+        health_reasons = []
+        if self._shutdown:
+            health_reasons.append("shutting_down")
+        if available_slots == 0:
+            health_reasons.append("capacity_saturated")
+        if (
+            memory_utilization is not None
+            and memory_utilization >= get_settings().memory_pressure_threshold
+        ):
+            health_reasons.append("memory_pressure")
+        if self._requirements_installed < self._requirements_total:
+            health_reasons.append("requirements_incomplete")
 
         return {
             "type": "worker_heartbeat",
@@ -1537,19 +1854,24 @@ class ProcessPoolManager:
             "idle_count": idle_count,
             "busy_count": busy_count,
             "available_slots": available_slots,
+            "saturation_ratio": busy_count / max_workers if max_workers else None,
+            "memory_utilization": memory_utilization,
+            "estimated_drain_seconds": estimated_drain_seconds,
+            "health_reasons": health_reasons,
             "requirements_installed": self._requirements_installed,
             "requirements_total": self._requirements_total,
             "memory_current_bytes": memory_current,
             "memory_max_bytes": memory_max,
             "admission": {
-                "attempts": getattr(self, "_admission_attempts", 0),
-                "successes": getattr(self, "_admission_successes", 0),
-                "rejections": dict(getattr(self, "_admission_rejections", {})),
-                "wait_seconds_total": getattr(
-                    self, "_admission_wait_seconds_total", 0.0
-                ),
-                "wait_seconds_max": getattr(
-                    self, "_admission_wait_seconds_max", 0.0
+                "attempts": admission_attempts,
+                "successes": self._admission_successes,
+                "rejections": dict(self._admission_rejections),
+                "wait_seconds_total": admission_wait_total,
+                "wait_seconds_max": self._admission_wait_seconds_max,
+                "wait_seconds_average": (
+                    admission_wait_total / admission_attempts
+                    if admission_attempts
+                    else 0.0
                 ),
             },
         }

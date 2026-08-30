@@ -485,6 +485,7 @@ async def install_zip(
             replace_secrets=replace_secrets,
             replace_data=replace_data,
             reactivate=reactivate,
+            source_artifact=data,
         )
 
 
@@ -515,6 +516,7 @@ async def install_zip_path(
             replace_secrets=replace_secrets,
             replace_data=replace_data,
             reactivate=reactivate,
+            source_artifact=zip_path,
         )
 
 
@@ -578,6 +580,7 @@ async def _install_workspace(
     replace_secrets: bool,
     replace_data: bool,
     reactivate: bool,
+    source_artifact: bytes | Path,
 ) -> Solution:
     from src.services.solutions.write_lock import solution_write_lock
 
@@ -655,7 +658,9 @@ async def _install_workspace(
             )
 
         deployer = SolutionDeployer(db)
-        result = await deployer.deploy(bundle, force=force)
+        result = await deployer.deploy(
+            bundle, force=force, source_artifact=source_artifact
+        )
         await db.commit()
         # S3 only after the DB is durable; still inside the lock so finalize
         # can't race another writer.
@@ -742,6 +747,7 @@ async def deploy_zip_to_solution(
             solution,
             Path(tmp),
             force=force,
+            source_artifact=data,
         )
 
 
@@ -760,6 +766,7 @@ async def deploy_zip_to_solution_path(
             solution,
             Path(tmp),
             force=force,
+            source_artifact=zip_path,
         )
 
 
@@ -769,6 +776,7 @@ async def _deploy_workspace_to_solution(
     workspace: Path,
     *,
     force: bool,
+    source_artifact: bytes | Path,
 ) -> DeployResult:
     preview = _parse_workspace(workspace)
     if not preview.slug or not preview.name:
@@ -786,7 +794,11 @@ async def _deploy_workspace_to_solution(
         )
         raise UnmetDependency(f"Solution has unmet dependencies: {items}")
 
-    return await SolutionDeployer(db).deploy(bundle, force=force)
+    return await SolutionDeployer(db).deploy(
+        bundle,
+        force=force,
+        source_artifact=source_artifact,
+    )
 
 
 async def _assert_no_unforced_collisions(

@@ -16,7 +16,7 @@ SIMPLE_WORKFLOW = '''
 """Simple workflow for fork pool testing."""
 from bifrost import workflow
 
-@workflow(name="e2e_fork_simple", execution_mode="async")
+@workflow(name="e2e_fork_simple")
 async def e2e_fork_simple(value: int = 42) -> dict:
     """A simple workflow that returns a result."""
     return {"status": "ok", "value": value}
@@ -27,7 +27,7 @@ CONCURRENT_WORKFLOW = '''
 import os
 from bifrost import workflow
 
-@workflow(name="e2e_fork_concurrent", execution_mode="async")
+@workflow(name="e2e_fork_concurrent")
 async def e2e_fork_concurrent(index: int = 0) -> dict:
     """Return process ID and index to verify isolation."""
     return {
@@ -42,7 +42,7 @@ TIMEOUT_WORKFLOW = '''
 import time
 from bifrost import workflow
 
-@workflow(name="e2e_fork_timeout", execution_mode="async")
+@workflow(name="e2e_fork_timeout")
 async def e2e_fork_timeout(sleep_seconds: int = 60) -> dict:
     """Sleep for specified duration to test timeout."""
     time.sleep(sleep_seconds)
@@ -53,7 +53,7 @@ LARGE_FLAT_RESULT_WORKFLOW = '''
 """Production-shaped flat result regression for issue #480."""
 from bifrost import workflow
 
-@workflow(name="e2e_large_flat_result", execution_mode="async")
+@workflow(name="e2e_large_flat_result")
 async def e2e_large_flat_result(row_count: int = 5395) -> list[dict[str, str]]:
     """Return the scrubbed production row shape without customer values."""
     return [
@@ -252,7 +252,7 @@ class TestForkBasedExecution:
         asyncio.set_event_loop(loop)
         try:
             execution_ids = loop.run_until_complete(
-                asyncio.gather(*[run_one(i) for i in range(5)])
+                asyncio.gather(*[run_one(i) for i in range(30)])
             )
         finally:
             loop.close()
@@ -275,7 +275,7 @@ class TestForkBasedExecution:
 
         results = poll_until(check_all_completed, max_wait=30.0, interval=0.5)
         assert results is not None, "Not all executions completed within timeout"
-        assert len(results) == 5, f"Expected 5 results, got {len(results)}"
+        assert len(results) == 30, f"Expected 30 results, got {len(results)}"
 
         # All should succeed
         for r in results:
@@ -284,7 +284,7 @@ class TestForkBasedExecution:
         # Results should have correct indices
         result_data = [r.get("result", {}) for r in results]
         indices = sorted(d.get("index") for d in result_data)
-        assert indices == [0, 1, 2, 3, 4], f"Wrong indices: {indices}"
+        assert indices == list(range(30)), f"Wrong indices: {indices}"
 
     def test_execution_timeout(self, e2e_client, platform_admin, timeout_workflow):
         """Timeout should still kill forked processes."""

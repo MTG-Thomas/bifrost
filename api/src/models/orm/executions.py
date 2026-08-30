@@ -75,6 +75,10 @@ class Execution(Base):
     )
     runtime_evidence: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     runtime_evidence_hash: Mapped[str | None] = mapped_column(String(71), nullable=True)
+    dispatch_evidence: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    dispatch_evidence_hash: Mapped[str | None] = mapped_column(
+        String(71), nullable=True
+    )
     api_key_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("workflows.id", ondelete="SET NULL", onupdate="CASCADE"), default=None
     )  # Workflow whose API key triggered this execution (null for user-triggered)
@@ -111,6 +115,7 @@ class Execution(Base):
     __table_args__ = (
         Index("ix_executions_org_status", "organization_id", "status"),
         Index("ix_executions_created", "created_at"),
+        Index("ix_executions_started_at", "started_at"),
         Index("ix_executions_user", "executed_by"),
         Index("ix_executions_workflow", "workflow_name"),
         Index("ix_executions_is_local_execution", "is_local_execution"),

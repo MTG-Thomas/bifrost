@@ -10,7 +10,7 @@ Uses pwdlib (modern replacement for unmaintained passlib) for password hashing.
 import base64
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
 import jwt
 from cryptography.fernet import Fernet
@@ -58,7 +58,9 @@ def get_password_hash(password: str) -> str:
 
 def create_access_token(
     data: dict[str, Any],
-    expires_delta: timedelta | None = None
+    expires_delta: timedelta | None = None,
+    *,
+    audience: str | None = None,
 ) -> str:
     """
     Create a JWT access token.
@@ -85,7 +87,7 @@ def create_access_token(
         "exp": expire,
         "type": "access",
         "iss": settings.jwt_issuer,
-        "aud": settings.jwt_audience,
+        "aud": audience or settings.jwt_audience,
     })
 
     encoded_jwt = jwt.encode(
@@ -99,7 +101,9 @@ def create_access_token(
 
 def create_refresh_token(
     data: dict[str, Any],
-    expires_delta: timedelta | None = None
+    expires_delta: timedelta | None = None,
+    *,
+    audience: str | None = None,
 ) -> tuple[str, str]:
     """
     Create a JWT refresh token with JTI for revocation support.
@@ -133,7 +137,7 @@ def create_refresh_token(
         "type": "refresh",
         "jti": jti,
         "iss": settings.jwt_issuer,
-        "aud": settings.jwt_audience,
+        "aud": audience or settings.jwt_audience,
     })
 
     encoded_jwt = jwt.encode(
@@ -145,7 +149,12 @@ def create_refresh_token(
     return encoded_jwt, jti
 
 
-def decode_token(token: str, expected_type: str | None = None) -> dict[str, Any] | None:
+def decode_token(
+    token: str,
+    expected_type: str | None = None,
+    *,
+    audience: str | None = None,
+) -> dict[str, Any] | None:
     """
     Decode and validate a JWT token.
 
@@ -164,7 +173,7 @@ def decode_token(token: str, expected_type: str | None = None) -> dict[str, Any]
             settings.secret_key,
             algorithms=[settings.algorithm],
             issuer=settings.jwt_issuer,
-            audience=settings.jwt_audience,
+            audience=audience or settings.jwt_audience,
         )
 
         # Validate token type if specified
@@ -244,43 +253,45 @@ def decode_mfa_token(token: str, expected_purpose: str = "mfa_verify") -> dict[s
         return None
 
 
-def create_embed_token(
-    app_id: str,
+def create_embed_access_token(
+    *,
+    embed_kind: Literal["app", "form"],
+    grant: Literal["hmac", "public"],
+    resource_id: str,
     org_id: str | None,
-    verified_params: dict[str, str],
+    display_name: str | None = None,
+    verified_context: dict[str, str] | None = None,
+    capability_fingerprint: str | None = None,
+    expires_delta: timedelta = timedelta(hours=8),
 ) -> str:
-    """Create an 8-hour JWT for embed iframe sessions.
+    """Mint the single access-token contract used by embedded sessions."""
+    import uuid
 
-    Args:
-        app_id: Application UUID string.
-        org_id: Organization UUID string (from the app).
-        verified_params: HMAC-verified query parameters.
-
-    Returns:
-        Encoded JWT string with type="embed".
-    """
     from src.core.constants import SYSTEM_USER_ID
 
-    settings = get_settings()
-    expire = datetime.now(timezone.utc) + timedelta(hours=8)
-
-    to_encode = {
+    data: dict[str, Any] = {
         "sub": SYSTEM_USER_ID,
-        "jti": secrets.token_urlsafe(16),
-        "app_id": app_id,
+        "jti": str(uuid.uuid4()),
         "org_id": org_id,
-        "verified_params": verified_params,
         "email": "embed@internal.gobifrost.com",
         "is_superuser": False,
         "embed": True,
+        "embed_kind": embed_kind,
+        "grant": grant,
+        "is_external": True,
         "roles": ["EmbedUser"],
-        "exp": expire,
-        "type": "embed",
-        "iss": settings.jwt_issuer,
-        "aud": settings.jwt_audience,
     }
+    data[f"{embed_kind}_id"] = resource_id
+    if display_name is not None:
+        data["name"] = display_name
+    if verified_context:
+        data["verified_context"] = verified_context
+        if embed_kind == "app":
+            data["verified_params"] = verified_context
+    if capability_fingerprint is not None:
+        data["capability_fingerprint"] = capability_fingerprint
 
-    return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
+    return create_access_token(data, expires_delta=expires_delta)
 
 
 # =============================================================================
@@ -409,6 +420,10 @@ def validate_csrf_token(cookie_token: str, header_token: str) -> bool:
 
 def mint_engine_token(
     *,
+    execution_id: str | None = None,
+    solution_id: str | None = None,
+    global_repo_access: bool = False,
+    timeout_seconds: int = 1800,
     organization_id: str | None = None,
     delegated_user_id: str | None = None,
     delegated_email: str = "",
@@ -418,13 +433,18 @@ def mint_engine_token(
     delegated_is_external: bool = False,
 ) -> tuple[str, str]:
     """
-    Mint a long-lived engine token (30 days) parent-side.
+    Mint a short-lived, execution-scoped engine token parent-side.
 
     Called by the consumer (which legitimately holds SECRET_KEY) before
     dispatching an execution.  The returned token and expiry ISO string are
-    placed in context_data and handed to the child via Redis; the child writes
-    them to the credentials file with save_credentials() — no SECRET_KEY
-    required in the child process.
+    placed in context_data and handed to the child over its private work pipe;
+    the child installs the token as process-scoped SDK credentials — no
+    SECRET_KEY or persistent credential write is required there.
+
+    The signed Solution claims are authoritative for internal module-fetch
+    endpoints. A child cannot broaden its source-code scope by changing query
+    parameters. The token lifetime covers the workflow timeout plus five
+    minutes for startup and completion flushing.
 
     Returns:
         (token, expires_at_iso): JWT string and ISO-8601 expiry timestamp.
@@ -435,6 +455,9 @@ def mint_engine_token(
         "name": "Bifrost Engine",
         "is_superuser": True,
         "engine": True,
+        "engine_execution_id": execution_id,
+        "engine_solution_id": solution_id,
+        "engine_global_repo_access": bool(global_repo_access),
     }
     if organization_id is not None:
         token_data["org_id"] = str(organization_id)
@@ -450,8 +473,9 @@ def mint_engine_token(
             }
         )
 
-    expires_at = datetime.now(timezone.utc) + timedelta(days=30)
-    token = create_access_token(token_data, expires_delta=timedelta(days=30))
+    lifetime = timedelta(seconds=max(timeout_seconds, 1) + 300)
+    expires_at = datetime.now(timezone.utc) + lifetime
+    token = create_access_token(token_data, expires_delta=lifetime)
 
     return token, expires_at.isoformat()
 

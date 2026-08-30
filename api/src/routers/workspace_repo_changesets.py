@@ -12,6 +12,9 @@ from src.models.contracts.workspace_repo_changesets import (
     WorkspaceRepoChangesetDiffResponse,
     WorkspaceRepoChangesetResponse,
     WorkspaceRepoFileMutationRequest,
+    WorkspaceRepoGitConvergenceApplyRequest,
+    WorkspaceRepoGitConvergencePreviewRequest,
+    WorkspaceRepoGitConvergenceResponse,
     WorkspaceRepoStateResponse,
     WorkspaceRepoValidationResponse,
 )
@@ -31,19 +34,29 @@ router = APIRouter(
 
 async def _service(db: DbSession, org_id: UUID | None) -> WorkspaceRepoChangesetService:
     org_id = require_organization_id(org_id)
+    from src.config import get_settings
     from src.services.github_config import get_github_config
-    from src.services.github_sync import GitHubSyncService
+    from src.services.platform_commit_writer import GitHubAppCommitWriter
 
     config = await get_github_config(db, org_id)
-    callback = None
-    if config and config.repo_url:
-        git = GitHubSyncService(db, config.repo_url, config.branch)
-
-        async def commit(message: str, push: bool) -> tuple[str | None, str | None]:
-            return await git.commit_workspace_changes(message, push=push)
-
-        callback = commit
-    return WorkspaceRepoChangesetService(db, org_id, commit_callback=callback)
+    settings = get_settings()
+    writer = None
+    if config and config.repo_url and settings.github_app_commit_writer_configured:
+        app_id = settings.github_app_id
+        installation_id = settings.github_app_installation_id
+        private_key = settings.github_app_private_key
+        if app_id is None or installation_id is None or private_key is None:
+            raise RuntimeError(
+                "GitHub App commit writer configuration is incomplete"
+            )
+        writer = GitHubAppCommitWriter(
+            repo_url=config.repo_url,
+            branch=config.branch,
+            app_id=app_id,
+            installation_id=installation_id,
+            private_key=private_key.get_secret_value(),
+        )
+    return WorkspaceRepoChangesetService(db, org_id, commit_writer=writer)
 
 
 def _translate(exc: Exception) -> HTTPException:
@@ -105,6 +118,60 @@ async def begin_workspace_repo_changeset(
         raise _translate(exc) from exc
 
 
+@router.get(
+    "/recoverable-git-closures",
+    response_model=list[WorkspaceRepoChangesetResponse],
+)
+async def list_recoverable_workspace_repo_git_closures(
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+    scope: str | None = None,
+):
+    try:
+        return await (await _service(db, ctx.org_id)).recoverable_git_closures(
+            scope=scope
+        )
+    except Exception as exc:
+        raise _translate(exc) from exc
+
+
+@router.post(
+    "/git-convergence/preview",
+    response_model=WorkspaceRepoGitConvergenceResponse,
+)
+async def preview_workspace_repo_git_convergence(
+    request: WorkspaceRepoGitConvergencePreviewRequest,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+):
+    try:
+        return await (await _service(db, ctx.org_id)).preview_git_convergence(
+            request
+        )
+    except Exception as exc:
+        raise _translate(exc) from exc
+
+
+@router.post(
+    "/git-convergence/apply",
+    response_model=WorkspaceRepoGitConvergenceResponse,
+)
+async def apply_workspace_repo_git_convergence(
+    request: WorkspaceRepoGitConvergenceApplyRequest,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+):
+    try:
+        return await (await _service(db, ctx.org_id)).apply_git_convergence(
+            request, operator=user.email
+        )
+    except Exception as exc:
+        raise _translate(exc) from exc
+
+
 @router.get("/{changeset_id}", response_model=WorkspaceRepoChangesetResponse)
 async def show_workspace_repo_changeset(
     changeset_id: UUID, ctx: Context, db: DbSession, user: CurrentSuperuser
@@ -159,6 +226,25 @@ async def activate_workspace_repo_changeset(
 ):
     try:
         return await (await _service(db, ctx.org_id)).activate(
+            changeset_id, request, user.email
+        )
+    except Exception as exc:
+        raise _translate(exc) from exc
+
+
+@router.post(
+    "/{changeset_id}/retry-git-closure",
+    response_model=WorkspaceRepoChangesetResponse,
+)
+async def retry_workspace_repo_git_closure(
+    changeset_id: UUID,
+    request: WorkspaceRepoActivateRequest,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+):
+    try:
+        return await (await _service(db, ctx.org_id)).retry_git_closure(
             changeset_id, request, user.email
         )
     except Exception as exc:

@@ -1,7 +1,7 @@
 import {
 	useLocation as useRouterLocation,
 	type Location,
-} from "react-router-dom";
+} from "react-router";
 import { useAppBuilderStore } from "@/stores/app-builder.store";
 
 export function appRelativePathname(pathname: string, basePath: string): string {

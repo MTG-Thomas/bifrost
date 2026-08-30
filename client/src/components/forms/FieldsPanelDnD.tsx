@@ -152,24 +152,14 @@ function FieldItem({ field, index, onEdit, onDelete }: FieldItemProps) {
 					source.data["type"] === "field" ||
 					source.data["type"] === "template" ||
 					source.data["type"] === "workflow-input",
-				onDragEnter: ({ source }) => {
-					if (
-						source.data["type"] === "template" ||
-						source.data["type"] === "workflow-input"
-					) {
-						setIsDraggedOver(true);
-					} else {
-						setIsDraggedOver(true);
-					}
-				},
+				onDragEnter: () => setIsDraggedOver(true),
 				onDrag: ({ self, source }) => {
 					if (
 						source.data["type"] === "template" ||
 						source.data["type"] === "workflow-input"
 					) {
 						const position = self.data["position"] as
-							| "before"
-							| "after";
+							"before" | "after";
 						setDropPosition(position);
 					}
 				},
@@ -373,7 +363,9 @@ function WorkflowInputItem({ param }: WorkflowInputItemProps) {
 				dragging ? "opacity-50 scale-95" : ""
 			}`}
 		>
-			<div className={`${template?.color ?? "bg-blue-500"} p-2 rounded-md`}>
+			<div
+				className={`${template?.color ?? "bg-blue-500"} p-2 rounded-md`}
+			>
 				<Icon className="h-4 w-4 text-white" />
 			</div>
 			<div className="flex-1 min-w-0">
@@ -465,8 +457,7 @@ export function FieldsPanelDnD({
 						);
 						if (target?.data["index"] !== undefined) {
 							const position = target.data["position"] as
-								| "before"
-								| "after";
+								"before" | "after";
 							const dropIndex =
 								position === "before"
 									? (target.data["index"] as number)
@@ -488,8 +479,7 @@ export function FieldsPanelDnD({
 						);
 						if (target?.data["index"] !== undefined) {
 							const position = target.data["position"] as
-								| "before"
-								| "after";
+								"before" | "after";
 							const dropIndex =
 								position === "before"
 									? (target.data["index"] as number)
@@ -502,11 +492,9 @@ export function FieldsPanelDnD({
 						setSelectedField(undefined);
 						setEditingIndex(undefined);
 						const description = source.data["description"] as
-							| string
-							| undefined;
+							string | undefined;
 						const dataProvider = source.data["dataProvider"] as
-							| string
-							| undefined;
+							string | undefined;
 						setWorkflowInputData({
 							name: source.data["fieldName"] as string,
 							required: source.data["required"] as boolean,

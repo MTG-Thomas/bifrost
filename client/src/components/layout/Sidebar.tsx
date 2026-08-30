@@ -1,4 +1,4 @@
-import { NavLink } from "react-router-dom";
+import { NavLink } from "react-router";
 import {
 	LayoutDashboard,
 	Workflow,
@@ -30,11 +30,7 @@ import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { Logo } from "@/components/branding/Logo";
 import { Button } from "@/components/ui/button";
-import {
-	term,
-	useTerminology,
-	type ProductTermKey,
-} from "@/lib/terminology";
+import { term, useTerminology, type ProductTermKey } from "@/lib/terminology";
 
 interface NavItem {
 	title: string;
@@ -154,7 +150,7 @@ const navSections: NavSection[] = [
 				icon: Webhook,
 				requiresPlatformAdmin: true,
 			},
-	{
+			{
 				title: "Entity Management",
 				href: "/entity-management",
 				icon: Network,
@@ -200,12 +196,6 @@ const navSections: NavSection[] = [
 				title: "Diagnostics",
 				href: "/diagnostics",
 				icon: Stethoscope,
-				requiresPlatformAdmin: true,
-			},
-			{
-				title: "Infrastructure",
-				href: "/infrastructure",
-				icon: ServerCog,
 				requiresPlatformAdmin: true,
 			},
 			{
@@ -352,14 +342,14 @@ export function Sidebar({
 
 			{/* Mobile Sidebar Overlay */}
 			{isMobileMenuOpen && (
-				<div
-					className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm md:hidden"
-					onClick={() => setIsMobileMenuOpen(false)}
-				>
-					<aside
-						className="fixed left-0 top-0 h-dvh w-64 border-r bg-background flex flex-col"
-						onClick={(e) => e.stopPropagation()}
-					>
+				<div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm md:hidden">
+					<button
+						type="button"
+						aria-label="Close navigation menu"
+						className="absolute inset-0 cursor-default"
+						onClick={() => setIsMobileMenuOpen(false)}
+					/>
+					<aside className="fixed left-0 top-0 h-dvh w-64 border-r bg-background flex flex-col">
 						{/* Logo Section with Close Button */}
 						<div className="h-16 flex items-center justify-between border-b px-4">
 							<Logo type="rectangle" className="h-8" alt="Logo" />

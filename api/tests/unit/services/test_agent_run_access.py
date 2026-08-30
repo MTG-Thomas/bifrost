@@ -52,15 +52,11 @@ class TestAgentAccessConditions:
 
         assert "false" in compiled.lower()
 
-    def test_org_superuser_is_limited_to_org_or_global_agents(self) -> None:
+    def test_org_superuser_has_platform_wide_agent_access(self) -> None:
         org_id = uuid4()
         user = _principal(org_id=org_id, is_superuser=True)
 
-        compiled = _sql(select(Agent).where(*agent_run_access.agent_access_conditions(user)))
-
-        assert _sql_uuid(org_id) in compiled
-        assert "agents.organization_id IS NULL" in compiled
-        assert "access_level" not in compiled.split("WHERE", 1)[1]
+        assert agent_run_access.agent_access_conditions(user) == []
 
     def test_org_user_gets_scope_and_visibility_filters(self) -> None:
         org_id = uuid4()
@@ -79,6 +75,14 @@ class TestAgentAccessConditions:
 class TestApplyAgentRunAccess:
     def test_global_superuser_query_only_joins_agents(self) -> None:
         user = _principal(org_id=None, is_superuser=True)
+
+        compiled = _sql(agent_run_access.apply_agent_run_access(select(AgentRun), user))
+
+        assert "JOIN agents ON agent_runs.agent_id = agents.id" in compiled
+        assert "WHERE" not in compiled
+
+    def test_org_superuser_query_only_joins_agents(self) -> None:
+        user = _principal(org_id=uuid4(), is_superuser=True)
 
         compiled = _sql(agent_run_access.apply_agent_run_access(select(AgentRun), user))
 

@@ -6,7 +6,7 @@
 # Uses BUILDPLATFORM to run on native architecture (no QEMU emulation)
 # =============================================================================
 # node:20-slim
-FROM --platform=$BUILDPLATFORM node:26-slim@sha256:a1d9d671994fc2d26e297ac56b4b1522a8bc7fa71c43b14cd1b1fe6c5116f7dc AS base
+FROM --platform=$BUILDPLATFORM node:26-slim@sha256:4ebb5ace66f15a24c14c492e01a8beeed4fddf970a856109f5126e703e5fe503 AS base
 
 WORKDIR /app
 
@@ -29,13 +29,21 @@ COPY . .
 ENV NODE_OPTIONS="--max-old-space-size=4096"
 ARG VITE_BIFROST_VERSION=unknown
 ENV VITE_BIFROST_VERSION=${VITE_BIFROST_VERSION}
-RUN npm run build
+RUN npm run build \
+    && find dist -type d -exec chmod 755 {} + \
+    && find dist -type f -exec chmod 644 {} +
+
+# Local/CI verification target: production build plus the same Node checks
+# required by the merge gate.
+FROM builder AS ci
+
+CMD ["sh", "-c", "npm run tsc && npm run lint && npm test"]
 
 # =============================================================================
 # Stage 3: Production with nginx
 # =============================================================================
 # nginx:alpine
-FROM nginx:alpine@sha256:54f2a904c251d5a34adf545a72d32515a15e08418dae0266e23be2e18c66fefa AS production
+FROM nginx:alpine@sha256:db35bfc6b2951e7f8a72db5db120288c127ffaeeb4a6d4b95a26fead017d5913 AS production
 
 # Copy built assets from builder
 COPY --from=builder /app/dist /usr/share/nginx/html

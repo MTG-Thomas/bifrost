@@ -87,7 +87,14 @@ export function validateAppCodePath(path: string): PathValidationResult {
 		if (!ROOT_ALLOWED_FILES.has(rootName)) {
 			return {
 				valid: false,
-				error: `Root-level file must be one of: ${Array.from(ROOT_ALLOWED_FILES).map(f => f + ".tsx").sort().join(", ")}. Use pages/, components/, or modules/ directories for other files.`,
+				error: `Root-level file must be one of: ${Array.from(
+					ROOT_ALLOWED_FILES,
+				)
+					.map((f) => f + ".tsx")
+					.sort((left, right) => left.localeCompare(right))
+					.join(
+						", ",
+					)}. Use pages/, components/, or modules/ directories for other files.`,
 			};
 		}
 		return { valid: true };
@@ -98,7 +105,9 @@ export function validateAppCodePath(path: string): PathValidationResult {
 	if (!VALID_TOP_DIRS.has(topDir)) {
 		return {
 			valid: false,
-			error: `Files must be in one of: ${Array.from(VALID_TOP_DIRS).sort().join(", ")}. Got: '${topDir}'`,
+			error: `Files must be in one of: ${Array.from(VALID_TOP_DIRS)
+				.sort((left, right) => left.localeCompare(right))
+				.join(", ")}. Got: '${topDir}'`,
 		};
 	}
 
@@ -120,7 +129,9 @@ export function validateAppCodePath(path: string): PathValidationResult {
 		}
 
 		// Validate segment name - use filename pattern for last segment
-		const pattern = isLastSegment ? VALID_FILENAME_PATTERN : VALID_NAME_PATTERN;
+		const pattern = isLastSegment
+			? VALID_FILENAME_PATTERN
+			: VALID_NAME_PATTERN;
 		if (!pattern.test(segment)) {
 			if (isLastSegment) {
 				// Check if missing extension
@@ -145,7 +156,10 @@ export function validateAppCodePath(path: string): PathValidationResult {
 		const segmentName = segment.replace(/\.tsx?$/, "");
 
 		// Special files in pages/
-		if (topDir === "pages" && (segmentName === "index" || segmentName === "_layout")) {
+		if (
+			topDir === "pages" &&
+			(segmentName === "index" || segmentName === "_layout")
+		) {
 			continue;
 		}
 

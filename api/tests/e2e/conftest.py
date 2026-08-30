@@ -62,14 +62,15 @@ def _check_api_available() -> tuple[bool, str | None]:
 
 
 def pytest_collection_modifyitems(config, items):
-    """Skip e2e tests if API is not available."""
+    """Fail the run when the E2E boundary is unavailable.
+
+    Returning a green session in which every integration test was skipped made
+    a broken stack indistinguishable from a successful product run.
+    """
     is_available, reason = _check_api_available()
 
     if not is_available:
-        skip_e2e = pytest.mark.skip(reason=f"E2E tests skipped: {reason}")
-        for item in items:
-            if "e2e" in item.nodeid:
-                item.add_marker(skip_e2e)
+        pytest.exit(f"E2E test boundary unavailable: {reason}", returncode=1)
 
 
 @pytest.fixture(scope="session")
@@ -299,7 +300,7 @@ def execute_form_sync(
 ) -> dict:
     """Execute a form and poll until completion.
 
-    The /api/forms/{form_id}/execute endpoint is async by default - it queues
+    The /api/forms/{form_id}/submissions endpoint is async by default - it queues
     the execution and returns immediately with status=Pending. This helper polls
     the execution status until it reaches a terminal state (Success/Failed).
 
@@ -317,7 +318,7 @@ def execute_form_sync(
         AssertionError: If execution fails or times out
     """
     response = e2e_client.post(
-        f"/api/forms/{form_id}/execute",
+        f"/api/forms/{form_id}/submissions",
         headers=headers,
         json={"form_data": form_data},
     )

@@ -2,11 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { renderHook } from "@testing-library/react";
 import { useParams } from "./useParams";
 
-vi.mock("react-router-dom", () => ({
+vi.mock("react-router", () => ({
 	useParams: vi.fn(),
 }));
 
-import { useParams as useRouterParams } from "react-router-dom";
+import { useParams as useRouterParams } from "react-router";
 
 const mockedUseRouterParams = vi.mocked(useRouterParams);
 

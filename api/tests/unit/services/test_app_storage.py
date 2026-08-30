@@ -211,23 +211,27 @@ async def test_publish_returns_zero_without_preview_files() -> None:
 
 @pytest.mark.asyncio
 async def test_publish_copies_preview_and_removes_stale_live(monkeypatch) -> None:
+    manifest = b'{"entry":"index.js","outputs":["index.js","components/Button.js"]}'
     client = _FakeClient(
         list_pages=[
             {
                 "Contents": [
-                    {"Key": "_apps/app/preview/index.tsx"},
-                    {"Key": "_apps/app/preview/components/Button.tsx"},
+                    {"Key": "_apps/app/preview/manifest.json"},
+                    {"Key": "_apps/app/preview/index.js"},
+                    {"Key": "_apps/app/preview/components/Button.js"},
+                    {"Key": "_apps/app/preview/stale.js"},
                 ],
                 "IsTruncated": False,
             },
             {
                 "Contents": [
-                    {"Key": "_apps/app/live/index.tsx"},
+                    {"Key": "_apps/app/live/index.js"},
                     {"Key": "_apps/app/live/old.tsx"},
                 ],
                 "IsTruncated": False,
             },
-        ]
+        ],
+        objects={"_apps/app/preview/manifest.json": manifest},
     )
     service = _service(client)
     invalidated: list[str] = []
@@ -237,12 +241,28 @@ async def test_publish_copies_preview_and_removes_stale_live(monkeypatch) -> Non
 
     monkeypatch.setattr(service, "invalidate_render_cache", invalidate)
 
-    assert await service.publish("app") == 2
+    assert await service.publish("app") == 3
     assert {copy["Key"] for copy in client.copied} == {
-        "_apps/app/live/index.tsx",
-        "_apps/app/live/components/Button.tsx",
+        "_apps/app/live/manifest.json",
+        "_apps/app/live/index.js",
+        "_apps/app/live/components/Button.js",
     }
-    assert client.deleted == [{"Bucket": "bucket", "Key": "_apps/app/live/old.tsx"}]
+    assert client.deleted_batches == [
+        {
+            "Bucket": "bucket",
+            "Delete": {
+                "Objects": [{"Key": "_apps/app/live/old.tsx"}],
+                "Quiet": True,
+            },
+        },
+        {
+            "Bucket": "bucket",
+            "Delete": {
+                "Objects": [{"Key": "_apps/app/preview/stale.js"}],
+                "Quiet": True,
+            },
+        },
+    ]
     assert invalidated == ["app"]
 
 
@@ -384,6 +404,7 @@ class _FakeClient:
         self.list_calls: list[dict] = []
         self.copied: list[dict] = []
         self.deleted: list[dict] = []
+        self.deleted_batches: list[dict] = []
         self.puts: list[dict] = []
         self.exceptions = SimpleNamespace(NoSuchKey=KeyError)
 
@@ -403,6 +424,11 @@ class _FakeClient:
 
     async def delete_object(self, **kwargs):
         self.deleted.append(kwargs)
+        if self.delete_error is not None:
+            raise self.delete_error
+
+    async def delete_objects(self, **kwargs):
+        self.deleted_batches.append(kwargs)
         if self.delete_error is not None:
             raise self.delete_error
 

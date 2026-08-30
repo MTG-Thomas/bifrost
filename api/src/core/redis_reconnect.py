@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 
 from redis.asyncio import Redis
@@ -83,11 +84,8 @@ class ResilientPubSubListener:
 
         if self._listener_task:
             self._listener_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._listener_task
-            except asyncio.CancelledError:
-                # Expected — we just cancelled the task
-                pass
             self._listener_task = None
 
         await self._cleanup()
@@ -164,7 +162,7 @@ class ResilientPubSubListener:
                 # Listen for messages
                 try:
                     await self._listen()
-                except asyncio.CancelledError:
+                except asyncio.CancelledError:  # NOSONAR -- cancellation terminates this owned listener loop.
                     logger.debug("Redis listener cancelled")
                     return
                 except Exception as e:
@@ -200,7 +198,7 @@ class ResilientPubSubListener:
             try:
                 await asyncio.sleep(backoff)
             except asyncio.CancelledError:
-                return
+                raise
 
             # Increase backoff for next attempt (capped at max)
             backoff = min(backoff * self.backoff_multiplier, self.max_backoff)

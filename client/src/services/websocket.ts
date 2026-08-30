@@ -85,6 +85,8 @@ export interface AppPublishedUpdate {
 	timestamp: string;
 }
 
+export type PlatformJobUpdate = components["schemas"]["PlatformJobPublic"];
+
 // Frontend-specific WebSocket event types (wrappers around backend messages)
 export interface ExecutionUpdate {
 	executionId: string;
@@ -162,7 +164,11 @@ export interface PackageProgress {
 	recycling: number;
 	recycled: number;
 	failed: number;
-	failures: { worker: string; package: string | null; error: string | null }[];
+	failures: {
+		worker: string;
+		package: string | null;
+		error: string | null;
+	}[];
 }
 
 export interface LocalRunnerStateUpdate {
@@ -309,6 +315,9 @@ export interface ChatStreamChunk {
 		| "tool_call"
 		| "tool_progress"
 		| "tool_result"
+		| "artifact_started"
+		| "artifact_ready"
+		| "artifact_failed"
 		| "agent_switch"
 		| "done"
 		| "error"
@@ -323,6 +332,13 @@ export interface ChatStreamChunk {
 	tool_call?: ChatToolCall | null;
 	tool_progress?: ChatToolProgress | null;
 	tool_result?: ChatToolResult | null;
+	artifact?: {
+		type: "bifrost_artifact";
+		id: string;
+		filename: string;
+		content_type: string;
+		size_bytes: number;
+	} | null;
 	agent_switch?: ChatAgentSwitch | null;
 	message_id?: string | null;
 	// message_start fields - real UUIDs sent before streaming begins
@@ -452,6 +468,7 @@ type WebSocketMessage =
 	| { type: "notification_created"; notification: NotificationPayload }
 	| { type: "notification_updated"; notification: NotificationPayload }
 	| { type: "notification_dismissed"; notification_id: string }
+	| { type: "platform_job_updated"; job: PlatformJobUpdate }
 	| {
 			type: "progress";
 			action: "install" | "uninstall";
@@ -462,12 +479,36 @@ type WebSocketMessage =
 			recycling: number;
 			recycled: number;
 			failed: number;
-			failures: { worker: string; package: string | null; error: string | null }[];
+			failures: {
+				worker: string;
+				package: string | null;
+				error: string | null;
+			}[];
 	  }
 	| { type: "git_log"; jobId: string; level: string; message: string }
-	| { type: "git_progress"; jobId: string; phase: string; current: number; total: number; path?: string | null }
-	| { type: "git_complete"; jobId: string; status: "success" | "error"; message: string; [key: string]: unknown }
-	| { type: "git_op_complete"; jobId: string; status: string; resultType: string; data?: Record<string, unknown>; error?: string }
+	| {
+			type: "git_progress";
+			jobId: string;
+			phase: string;
+			current: number;
+			total: number;
+			path?: string | null;
+	  }
+	| {
+			type: "git_complete";
+			jobId: string;
+			status: "success" | "error";
+			message: string;
+			[key: string]: unknown;
+	  }
+	| {
+			type: "git_op_complete";
+			jobId: string;
+			status: string;
+			resultType: string;
+			data?: Record<string, unknown>;
+			error?: string;
+	  }
 	| {
 			type: "devrun_state_update";
 			state: LocalRunnerStateUpdate | null;
@@ -529,13 +570,16 @@ export interface GitOpComplete {
 
 type GitLogCallback = (log: PackageLog) => void;
 type GitProgressCallback = (progress: GitProgress) => void;
-type GitCompleteCallback = (complete: PackageComplete & Record<string, unknown>) => void;
+type GitCompleteCallback = (
+	complete: PackageComplete & Record<string, unknown>,
+) => void;
 type LocalRunnerStateCallback = (state: LocalRunnerStateUpdate | null) => void;
 type EventSourceUpdateCallback = (update: EventSourceUpdate) => void;
 type ChatStreamCallback = (chunk: ChatStreamChunk) => void;
 type AppDraftUpdateCallback = (update: AppDraftUpdate) => void;
 type AppCodeFileUpdateCallback = (update: AppCodeFileUpdate) => void;
 type AppPublishedUpdateCallback = (update: AppPublishedUpdate) => void;
+type PlatformJobUpdateCallback = (update: PlatformJobUpdate) => void;
 type PoolMessageCallback = (message: PoolMessage) => void;
 type FileActivityCallback = (event: FileActivityEvent) => void;
 type AgentRunUpdateCallback = (update: AgentRunUpdate) => void;
@@ -598,7 +642,10 @@ class WebSocketService {
 	private gitLogCallbacks = new Map<string, Set<GitLogCallback>>();
 	private gitProgressCallbacks = new Map<string, Set<GitProgressCallback>>();
 	private gitCompleteCallbacks = new Map<string, Set<GitCompleteCallback>>();
-	private gitOpCompleteCallbacks = new Map<string, Set<(complete: GitOpComplete) => void>>();
+	private gitOpCompleteCallbacks = new Map<
+		string,
+		Set<(complete: GitOpComplete) => void>
+	>();
 	private localRunnerStateCallbacks = new Set<LocalRunnerStateCallback>();
 	private eventSourceUpdateCallbacks = new Map<
 		string,
@@ -617,6 +664,12 @@ class WebSocketService {
 		string,
 		Set<AppPublishedUpdateCallback>
 	>();
+	private platformJobUpdateCallbacks = new Map<
+		string,
+		Set<PlatformJobUpdateCallback>
+	>();
+	private allPlatformJobUpdateCallbacks =
+		new Set<PlatformJobUpdateCallback>();
 	private poolMessageCallbacks = new Set<PoolMessageCallback>();
 	private fileActivityCallbacks = new Set<FileActivityCallback>();
 	private agentRunUpdateCallbacks: Set<AgentRunUpdateCallback> = new Set();
@@ -624,7 +677,8 @@ class WebSocketService {
 		string,
 		Set<SummaryBackfillUpdateCallback>
 	> = new Map();
-	private agentRunStepCallbacks: Map<string, Set<AgentRunStepCallback>> = new Map();
+	private agentRunStepCallbacks: Map<string, Set<AgentRunStepCallback>> =
+		new Map();
 	private connectionStatusCallbacks = new Set<(connected: boolean) => void>();
 
 	// Track subscribed channels
@@ -852,6 +906,15 @@ class WebSocketService {
 					.removeNotification(message.notification_id);
 				break;
 
+			case "platform_job_updated":
+				this.platformJobUpdateCallbacks
+					.get(message.job.id)
+					?.forEach((callback) => callback(message.job));
+				this.allPlatformJobUpdateCallbacks.forEach((callback) =>
+					callback(message.job),
+				);
+				break;
+
 			case "progress":
 				// Aggregated package-install progress (one rolling line across workers)
 				this.packageProgressCallbacks.forEach((cb) =>
@@ -889,10 +952,10 @@ class WebSocketService {
 				// Git sync progress message - dispatch to job-specific subscribers
 				const gitProgressJobId = message.jobId;
 				if (gitProgressJobId) {
-					const gitProgressCallbacks =
+					const callbacks =
 						this.gitProgressCallbacks.get(gitProgressJobId);
-					gitProgressCallbacks?.forEach((callback) =>
-						callback({
+					callbacks?.forEach((cb) =>
+						cb({
 							phase: message.phase,
 							current: message.current,
 							total: message.total,
@@ -907,11 +970,15 @@ class WebSocketService {
 				// Git sync complete message - dispatch to job-specific subscribers
 				const gitCompleteJobId = message.jobId;
 				if (gitCompleteJobId) {
-					const { type: _type, jobId: _jobId, ...gitCompleteData } = message;
-					const gitCompleteCallbacks =
+					const {
+						type: _type,
+						jobId: _jobId,
+						...gitCompleteData
+					} = message;
+					const callbacks =
 						this.gitCompleteCallbacks.get(gitCompleteJobId);
-					gitCompleteCallbacks?.forEach((callback) =>
-						callback(
+					callbacks?.forEach((cb) =>
+						cb(
 							gitCompleteData as Parameters<GitCompleteCallback>[0],
 						),
 					);
@@ -922,10 +989,10 @@ class WebSocketService {
 			case "git_op_complete": {
 				const gitOpJobId = message.jobId;
 				if (gitOpJobId) {
-					const gitOpCompleteCallbacks =
+					const callbacks =
 						this.gitOpCompleteCallbacks.get(gitOpJobId);
-					gitOpCompleteCallbacks?.forEach((callback) =>
-						callback({
+					callbacks?.forEach((cb) =>
+						cb({
 							status: message.status,
 							resultType: message.resultType,
 							data: message.data,
@@ -962,6 +1029,9 @@ class WebSocketService {
 			case "tool_call":
 			case "tool_progress":
 			case "tool_result":
+			case "artifact_started":
+			case "artifact_ready":
+			case "artifact_failed":
 			case "agent_switch":
 			case "done":
 			case "error":
@@ -990,18 +1060,25 @@ class WebSocketService {
 			case "file_push":
 			case "watch_start":
 			case "watch_stop":
-				this.fileActivityCallbacks.forEach((cb) => cb(message as FileActivityEvent));
+				this.fileActivityCallbacks.forEach((cb) =>
+					cb(message as FileActivityEvent),
+				);
 				break;
 
 			// Agent run update types
 			case "agent_run_update": {
 				const agentRunUpdate = message as unknown as AgentRunUpdate;
-				this.agentRunUpdateCallbacks.forEach((cb) => cb(agentRunUpdate));
+				this.agentRunUpdateCallbacks.forEach((cb) =>
+					cb(agentRunUpdate),
+				);
 				break;
 			}
 			case "agent_run_step": {
-				const agentRunStepUpdate = message as unknown as AgentRunStepUpdate;
-				const runCallbacks = this.agentRunStepCallbacks.get(agentRunStepUpdate.run_id);
+				const agentRunStepUpdate =
+					message as unknown as AgentRunStepUpdate;
+				const runCallbacks = this.agentRunStepCallbacks.get(
+					agentRunStepUpdate.run_id,
+				);
 				if (runCallbacks) {
 					runCallbacks.forEach((cb) => cb(agentRunStepUpdate));
 				}
@@ -1096,11 +1173,9 @@ class WebSocketService {
 		const queuePosition = message["queuePosition"] as number | undefined;
 		const waitReason = message["waitReason"] as WaitReason | undefined;
 		const availableMemoryMb = message["availableMemoryMb"] as
-			| number
-			| undefined;
+			number | undefined;
 		const requiredMemoryMb = message["requiredMemoryMb"] as
-			| number
-			| undefined;
+			number | undefined;
 
 		const update: ExecutionUpdate = {
 			executionId: message.executionId,
@@ -1353,7 +1428,10 @@ class WebSocketService {
 	/**
 	 * Subscribe to git sync progress updates for a specific connection
 	 */
-	onGitSyncProgress(connectionId: string, callback: GitProgressCallback): () => void {
+	onGitSyncProgress(
+		connectionId: string,
+		callback: GitProgressCallback,
+	): () => void {
 		if (!this.gitProgressCallbacks.has(connectionId)) {
 			this.gitProgressCallbacks.set(connectionId, new Set());
 		}
@@ -1371,7 +1449,10 @@ class WebSocketService {
 	/**
 	 * Subscribe to git sync completion for a specific connection
 	 */
-	onGitSyncComplete(connectionId: string, callback: GitCompleteCallback): () => void {
+	onGitSyncComplete(
+		connectionId: string,
+		callback: GitCompleteCallback,
+	): () => void {
 		if (!this.gitCompleteCallbacks.has(connectionId)) {
 			this.gitCompleteCallbacks.set(connectionId, new Set());
 		}
@@ -1389,10 +1470,7 @@ class WebSocketService {
 	/**
 	 * Subscribe to git operation progress updates for a specific job
 	 */
-	onGitProgress(
-		jobId: string,
-		callback: GitProgressCallback,
-	): () => void {
+	onGitProgress(jobId: string, callback: GitProgressCallback): () => void {
 		if (!this.gitProgressCallbacks.has(jobId)) {
 			this.gitProgressCallbacks.set(jobId, new Set());
 		}
@@ -1498,7 +1576,13 @@ class WebSocketService {
 	/**
 	 * Send a chat message to a conversation
 	 */
-	sendChatMessage(conversationId: string, message: string, localId?: string): boolean {
+	sendChatMessage(
+		conversationId: string,
+		message: string,
+		localId?: string,
+		attachmentIds: string[] = [],
+		modelProfileId: string | null = null,
+	): boolean {
 		if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
 			return false;
 		}
@@ -1509,6 +1593,8 @@ class WebSocketService {
 				conversation_id: conversationId,
 				message,
 				local_id: localId,
+				attachment_ids: attachmentIds,
+				model_profile_id: modelProfileId,
 			}),
 		);
 		return true;
@@ -1653,6 +1739,34 @@ class WebSocketService {
 	}
 
 	/**
+	 * Observe the durable HTTP job contract over the user's existing
+	 * notification WebSocket channel.
+	 */
+	onPlatformJobUpdate(
+		jobId: string,
+		callback: PlatformJobUpdateCallback,
+	): () => void {
+		if (!this.platformJobUpdateCallbacks.has(jobId)) {
+			this.platformJobUpdateCallbacks.set(jobId, new Set());
+		}
+		this.platformJobUpdateCallbacks.get(jobId)!.add(callback);
+		return () => {
+			this.platformJobUpdateCallbacks.get(jobId)?.delete(callback);
+			if (this.platformJobUpdateCallbacks.get(jobId)?.size === 0) {
+				this.platformJobUpdateCallbacks.delete(jobId);
+			}
+		};
+	}
+
+	/** Observe every visible platform-job update on subscribed channels. */
+	onAnyPlatformJobUpdate(callback: PlatformJobUpdateCallback): () => void {
+		this.allPlatformJobUpdateCallbacks.add(callback);
+		return () => {
+			this.allPlatformJobUpdateCallbacks.delete(callback);
+		};
+	}
+
+	/**
 	 * Subscribe to pool/worker updates for diagnostics
 	 */
 	onPoolMessage(callback: PoolMessageCallback): () => void {
@@ -1685,10 +1799,7 @@ class WebSocketService {
 	/**
 	 * Subscribe to agent run step updates (detail page)
 	 */
-	onAgentRunStep(
-		runId: string,
-		callback: AgentRunStepCallback,
-	): () => void {
+	onAgentRunStep(runId: string, callback: AgentRunStepCallback): () => void {
 		if (!this.agentRunStepCallbacks.has(runId)) {
 			this.agentRunStepCallbacks.set(runId, new Set());
 		}
@@ -1771,7 +1882,9 @@ class WebSocketService {
 	/**
 	 * Subscribe to connection status changes
 	 */
-	onConnectionStatusChange(callback: (connected: boolean) => void): () => void {
+	onConnectionStatusChange(
+		callback: (connected: boolean) => void,
+	): () => void {
 		this.connectionStatusCallbacks.add(callback);
 		return () => {
 			this.connectionStatusCallbacks.delete(callback);

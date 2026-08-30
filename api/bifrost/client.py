@@ -9,7 +9,6 @@ Supports two modes:
 
 import asyncio
 import logging
-import os
 import sys
 import threading
 import time
@@ -23,12 +22,13 @@ import httpx
 from .credentials import (
     clear_credentials,
     get_credentials,
-    get_ephemeral_credentials_source,
     is_token_expired,
     load_allowed_dotenv,
+    resolve_credentials,
     resolve_current_connection,
+    resolve_environment_url,
+    save_refreshed_credentials,
     save_credentials,
-    save_ephemeral_credentials,
 )
 
 logger = logging.getLogger(__name__)
@@ -196,8 +196,6 @@ async def _acquire_refresh_lock(lock: threading.Lock) -> None:
             lock.release()
         raise
 
-
-
 async def refresh_connection_access_token(
     api_url: str,
     observed_access_token: str | None,
@@ -211,21 +209,30 @@ async def refresh_connection_access_token(
     """
     normalized_url = api_url.rstrip("/")
     coordinator = _refresh_coordinator(normalized_url)
+    credential_source = "unknown"
     await _acquire_refresh_lock(coordinator.lock)
     try:
-        creds = get_credentials(normalized_url)
-        if not creds:
+        resolved = resolve_credentials(normalized_url)
+        if resolved is None:
+            logger.warning(
+                "Bifrost token refresh failed for %s: no credentials resolved",
+                normalized_url,
+            )
             return None
+        credential_source = resolved.source
+        creds = resolved.credentials
 
-        stored_access_token = str(creds["access_token"])
-        stored_refresh_token = str(creds["refresh_token"])
-        ephemeral_source = get_ephemeral_credentials_source(normalized_url)
-        env_backed = ephemeral_source is not None
+        stored_access_token = creds.access_token
+        stored_refresh_token = creds.refresh_token
+        process_backed = resolved.source == "process"
 
         if coordinator.latest_access_token is not None:
             if observed_access_token != coordinator.latest_access_token:
                 return coordinator.latest_access_token
-            if not env_backed and stored_access_token != coordinator.latest_access_token:
+            if (
+                not process_backed
+                and stored_access_token != coordinator.latest_access_token
+            ):
                 coordinator.latest_access_token = stored_access_token
                 coordinator.latest_refresh_token = stored_refresh_token
                 return stored_access_token
@@ -244,6 +251,12 @@ async def refresh_connection_access_token(
                 json={"refresh_token": refresh_token},
             )
         if response.status_code != 200:
+            logger.warning(
+                "Bifrost token refresh failed for %s using %s credentials: HTTP %s",
+                normalized_url,
+                credential_source,
+                response.status_code,
+            )
             return None
 
         data = response.json()
@@ -252,22 +265,31 @@ async def refresh_connection_access_token(
             seconds=data.get("expires_in", 1800)
         )
         new_refresh_token = str(data["refresh_token"])
-        refreshed = {
-            "api_url": normalized_url,
-            "access_token": access_token,
-            "refresh_token": new_refresh_token,
-            "expires_at": expires_at.isoformat(),
-        }
-        if ephemeral_source is not None:
-            save_ephemeral_credentials(source=ephemeral_source, **refreshed)
-        else:
-            save_credentials(
-                **refreshed,
+        saved = save_refreshed_credentials(
+            resolved,
+            stored_access_token,
+            refresh_token,
+            access_token,
+            new_refresh_token,
+            expires_at.isoformat(),
+        )
+        if not saved:
+            logger.warning(
+                "Bifrost token refresh succeeded for %s, but the %s credential "
+                "source changed before rotated tokens could be written back",
+                normalized_url,
+                credential_source,
             )
         coordinator.latest_access_token = access_token
         coordinator.latest_refresh_token = new_refresh_token
         return access_token
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "Bifrost token refresh failed for %s using %s credentials: %s",
+            normalized_url,
+            credential_source,
+            type(exc).__name__,
+        )
         return None
     finally:
         coordinator.lock.release()
@@ -358,7 +380,7 @@ async def login_flow(api_url: str | None = None, auto_open: bool = True) -> bool
     """
     # Get API URL
     if not api_url:
-        api_url = os.getenv("BIFROST_API_URL", "http://localhost:8000")
+        api_url = resolve_environment_url() or "http://localhost:8000"
 
     api_url = api_url.rstrip("/")
 
@@ -561,7 +583,12 @@ class BifrostClient:
         return self._http
 
     @classmethod
-    def get_instance(cls, require_auth: bool = False) -> "BifrostClient":
+    def get_instance(
+        cls,
+        require_auth: bool = False,
+        *,
+        api_url: str | None = None,
+    ) -> "BifrostClient":
         """
         Get thread-local singleton client instance.
 
@@ -575,6 +602,8 @@ class BifrostClient:
         Args:
             require_auth: If True, trigger interactive login when no credentials found
                          (default: False for backward compatibility)
+            api_url: Explicit instance whose URL-keyed credentials must be used.
+                     This bypasses ambient directory/default-profile selection.
 
         Returns:
             BifrostClient instance
@@ -584,14 +613,22 @@ class BifrostClient:
         """
         # Use thread-local storage instead of class-level singleton
         # This ensures each thread gets its own client with httpx bound to its event loop
+        selected_api_url = api_url.rstrip("/") if api_url else None
         instance = getattr(_thread_local, "bifrost_client", None)
+        if instance is not None and (
+            selected_api_url is None or instance.api_url == selected_api_url
+        ):
+            return instance
 
-        if instance is None:
+        if instance is None or selected_api_url is not None:
             # Try credentials file from CLI login
-            creds = get_credentials(prompt_for_default=require_auth)
+            creds = get_credentials(
+                selected_api_url,
+                prompt_for_default=require_auth and selected_api_url is None,
+            )
 
             # Check if token needs refresh
-            if creds and is_token_expired():
+            if creds and is_token_expired(api_url=creds["api_url"]):
                 # Try to refresh
                 access_token = _refresh_connection_access_token_sync(
                     creds["api_url"], creds["access_token"]
@@ -612,7 +649,8 @@ class BifrostClient:
             # No credentials - trigger login flow if required
             if require_auth:
                 selected_url, _selected_source = resolve_current_connection(
-                    prompt_for_default=True
+                    selected_api_url,
+                    prompt_for_default=selected_api_url is None,
                 )
                 if selected_url is None:
                     stored_urls = []
@@ -635,7 +673,7 @@ class BifrostClient:
                     # No running loop, safe to use asyncio.run()
                     if asyncio.run(login_flow(selected_url)):
                         # Login successful, load credentials
-                        creds = get_credentials()
+                        creds = get_credentials(selected_url)
                         if creds:
                             instance = cls(creds["api_url"], creds["access_token"])
                             _thread_local.bifrost_client = instance

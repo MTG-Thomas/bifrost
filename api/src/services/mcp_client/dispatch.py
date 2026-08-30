@@ -77,7 +77,7 @@ def _normalize_call_tool_result(result: CallToolResult) -> dict[str, Any]:
     ``{"content": <text-or-blocks>, "structured_content": <dict|None>,
        "is_error": bool}``.
 
-    Structured content (``CallToolResult.structuredContent``) is preserved
+    Structured content (``CallToolResult.structured_content``) is preserved
     verbatim — the planner prefers structured JSON over text when both
     are present.
     """
@@ -91,8 +91,8 @@ def _normalize_call_tool_result(result: CallToolResult) -> dict[str, Any]:
 
     return {
         "content": content_blocks,
-        "structured_content": result.structuredContent,
-        "is_error": bool(result.isError),
+        "structured_content": result.structured_content,
+        "is_error": bool(result.is_error),
     }
 
 
@@ -116,8 +116,8 @@ async def _call_remote(
     arguments: dict[str, Any],
 ) -> CallToolResult:
     """Open a session, call the tool, return the raw result."""
-    async with mcp_client_session.open_session(connection, access_token) as session:
-        return await session.call_tool(tool_name, arguments)
+    async with mcp_client_session.open_client(connection, access_token) as client:
+        return await client.call_tool_mcp(tool_name, arguments)
 
 
 async def invoke(
@@ -126,6 +126,8 @@ async def invoke(
     arguments: dict[str, Any],
     caller_user_id: UUID | None,
     db: AsyncSession,
+    *,
+    retry_auth_rejection: bool = True,
 ) -> dict[str, Any]:
     """Invoke an external MCP tool and return its normalized result.
 
@@ -139,6 +141,9 @@ async def invoke(
             webhook), or ``None`` for autonomous runs. Threaded into
             ``resolve_token`` for the user-vs-service decision.
         db: Active async session.
+        retry_auth_rejection: Whether a likely 401/403 may repeat the remote
+            call after token refresh. At-most-once callers disable this because
+            a string-shaped protocol error cannot prove no effect occurred.
 
     Returns:
         Normalized result envelope. Always includes ``content``,
@@ -176,7 +181,18 @@ async def invoke(
     try:
         result = await _call_remote(connection, access_token, tool_name, arguments)
     except Exception as exc:
-        if not _looks_like_auth_error(exc):
+        is_auth_error = _looks_like_auth_error(exc)
+        if not is_auth_error or not retry_auth_rejection:
+            if (
+                is_auth_error
+                and resolution_path == ResolutionPath.USER_TOKEN
+                and caller_user_id is not None
+            ):
+                raise NeedsReauthError(
+                    reauth_url=f"/me/connections/{connection.id}/connect",
+                    connection_id=connection.id,
+                    tool_name=tool_name,
+                ) from exc
             raise ToolDispatchError(
                 f"MCP call_tool {tool_name!r} on connection {connection.id} failed: {exc}",
                 connection_id=connection.id,

@@ -1,7 +1,7 @@
 import { renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("react-router-dom", () => ({
+vi.mock("react-router", () => ({
 	Outlet: vi.fn(),
 	useLocation: vi.fn(),
 	useMatch: vi.fn(),
@@ -12,7 +12,7 @@ vi.mock("react-router-dom", () => ({
 import {
 	useLocation as useRouterLocation,
 	type Location,
-} from "react-router-dom";
+} from "react-router";
 import { useAppBuilderStore } from "@/stores/app-builder.store";
 import { createPlatformScope } from "./scope";
 

@@ -871,6 +871,7 @@ class TestListEventSubscriptions:
             workflow_id=workflow_id,
             workflow=SimpleNamespace(name="Workflow"),
             event_type="ticket.created",
+            criteria=None,
             input_mapping={"ticket": "$.id"},
             is_active=True,
         )
@@ -1051,6 +1052,7 @@ class TestUpdateEventSubscription:
             workflow_id=workflow_id,
             workflow=None,
             event_type=None,
+            criteria=None,
             input_mapping=None,
             is_active=True,
             updated_at=None,
