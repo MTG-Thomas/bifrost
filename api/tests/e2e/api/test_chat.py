@@ -206,6 +206,40 @@ class TestChatAttachments:
         missing = e2e_client.get(content_url, headers=platform_admin.headers)
         assert missing.status_code == 404
 
+    def test_html_attachment_content_is_always_downloaded(
+        self,
+        e2e_client,
+        platform_admin,
+        test_conversation,
+    ):
+        auth_headers = {"Authorization": platform_admin.headers["Authorization"]}
+        upload = e2e_client.post(
+            f"/api/chat/conversations/{test_conversation['id']}/attachments",
+            files=[
+                (
+                    "files",
+                    (
+                        "unsafe.html",
+                        b"<script>alert(1)</script>",
+                        "text/html; charset=utf-8",
+                    ),
+                )
+            ],
+            headers=auth_headers,
+        )
+        assert upload.status_code == 200, upload.text
+        attachment = upload.json()["attachments"][0]
+
+        content = e2e_client.get(
+            f"/api/chat/conversations/{test_conversation['id']}"
+            f"/attachments/{attachment['id']}/content",
+            headers=platform_admin.headers,
+        )
+
+        assert content.status_code == 200, content.text
+        assert content.headers["content-type"] == "text/html; charset=utf-8"
+        assert content.headers["content-disposition"].startswith("attachment;")
+
     def test_sdk_document_artifact_returns_readable_opaque_reference(
         self,
         e2e_client,
@@ -314,6 +348,35 @@ class TestChatAttachments:
         )
         assert content.status_code == 200, content.text
         assert content.headers["content-type"] == "text/html; charset=utf-8"
+        assert content.headers["content-disposition"] == "attachment"
+
+    @pytest.mark.parametrize(
+        "content_type",
+        ["image/svg+xml", "application/atom+xml"],
+    )
+    def test_sdk_serves_browser_active_xml_artifacts_as_downloads(
+        self,
+        e2e_client,
+        platform_admin,
+        content_type,
+    ):
+        upload_headers = {
+            key: value
+            for key, value in platform_admin.headers.items()
+            if key.lower() != "content-type"
+        }
+        stored = e2e_client.post(
+            "/api/sdk/artifacts",
+            files={"file": ("active.xml", b"<svg></svg>", content_type)},
+            headers=upload_headers,
+        )
+
+        assert stored.status_code == 200, stored.text
+        content = e2e_client.get(
+            f"/api/sdk/artifacts/{stored.json()['id']}/content",
+            headers=platform_admin.headers,
+        )
+        assert content.status_code == 200, content.text
         assert content.headers["content-disposition"] == "attachment"
 
     @pytest.mark.asyncio

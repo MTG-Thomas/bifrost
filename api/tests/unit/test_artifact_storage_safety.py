@@ -65,6 +65,37 @@ async def test_html_artifacts_are_stored_with_inert_object_content_type(monkeypa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("filename", "content_type"),
+    [
+        ("diagram.svg", "text/plain"),
+        ("feed.txt", "Application/Atom+XML; Charset=UTF-8"),
+    ],
+)
+async def test_browser_active_declared_or_inferred_types_use_inert_storage(
+    monkeypatch,
+    filename,
+    content_type,
+):
+    storage = _FakeStorage()
+    monkeypatch.setattr(
+        "src.services.artifacts.get_file_storage_service",
+        lambda _db: storage,
+    )
+
+    await ArtifactService(_FakeDB()).store(
+        filename=filename,
+        content_type=content_type,
+        content=b"<svg xmlns='http://www.w3.org/2000/svg'></svg>",
+        created_by_user_id=uuid4(),
+        organization_id=None,
+    )
+
+    assert storage.raw_writes == []
+    assert storage.chunk_writes[0][2] == "application/octet-stream"
+
+
+@pytest.mark.asyncio
 async def test_non_html_artifacts_keep_existing_storage_path(monkeypatch):
     """The HTML hardening must not change ordinary artifact persistence."""
     storage = _FakeStorage()
