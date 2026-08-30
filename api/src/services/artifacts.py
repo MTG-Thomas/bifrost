@@ -73,7 +73,18 @@ class ArtifactService:
             prefix = "_attachments" if storage_family == "upload" else "_artifacts"
             s3_key = f"{prefix}/{artifact_id}_{safe_name}"
         storage = get_file_storage_service(self.db)
-        await storage.write_raw_to_s3(s3_key, content)
+        base_content_type = content_type.partition(";")[0].strip().lower()
+        if base_content_type == "text/html":
+            async def content_chunks():
+                yield content
+
+            await storage.write_raw_chunks_to_s3(
+                s3_key,
+                content_chunks(),
+                content_type="application/octet-stream",
+            )
+        else:
+            await storage.write_raw_to_s3(s3_key, content)
         artifact = Artifact(
             id=artifact_id,
             organization_id=organization_id,
