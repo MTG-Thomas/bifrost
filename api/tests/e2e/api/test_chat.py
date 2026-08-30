@@ -301,7 +301,7 @@ class TestChatAttachments:
                 "file": (
                     "Unsafe.html",
                     b"<script>window.parent.location='/settings'</script>",
-                    "text/html",
+                    "text/html; charset=utf-8",
                 )
             },
             headers=upload_headers,

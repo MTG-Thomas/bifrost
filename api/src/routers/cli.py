@@ -2519,7 +2519,8 @@ async def sdk_read_artifact(
                 },
             )
     headers = {"X-Content-Type-Options": "nosniff"}
-    if artifact.content_type == "text/html":
+    base_content_type = artifact.content_type.partition(";")[0].strip().lower()
+    if base_content_type == "text/html":
         headers["Content-Disposition"] = "attachment"
     return Response(
         content=content,
