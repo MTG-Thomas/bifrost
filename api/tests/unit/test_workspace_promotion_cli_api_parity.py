@@ -109,6 +109,7 @@ def test_reviewed_preview_payload_validates_against_server_dto(
 
     assert parsed.schema_version == promote.REVIEWED_PROMOTION_SCHEMA
     assert promote.PROMOTION_PREVIEW_ENDPOINT in _route_paths()
+    assert promote.PROMOTION_PREVIEW_JOB_ENDPOINT in _route_paths()
     assert all(member.content_base64 is None for member in parsed.snapshot.closure)
 
 

@@ -702,6 +702,7 @@ async def list_event_subscriptions(
                     "workflow_id": str(s.workflow_id),
                     "workflow_name": s.workflow.name if s.workflow else None,
                     "event_type": s.event_type,
+                    "criteria": s.criteria,
                     "input_mapping": s.input_mapping,
                     "is_active": s.is_active,
                     "delivery_count": total,
@@ -725,9 +726,11 @@ async def create_event_subscription(
     source_id: str,
     workflow_id: str,
     event_type: str | None = None,
+    criteria: dict | None = None,
     input_mapping: dict | None = None,
 ) -> ToolResult:
     """Create a subscription linking an event source to a workflow."""
+    from src.models.contracts.events import EventCriteria
     from src.models.orm.events import EventSubscription
     from src.repositories.events import EventSourceRepository
 
@@ -757,10 +760,16 @@ async def create_event_subscription(
             if not _source_in_scope(context, source.organization_id):
                 return error_result(f"Event source not found: {source_id}")
 
+            validated_criteria = (
+                EventCriteria.model_validate(criteria).model_dump(mode="json")
+                if criteria is not None
+                else None
+            )
             subscription = EventSubscription(
                 event_source_id=UUID(source_id),
                 workflow_id=UUID(workflow_id),
                 event_type=event_type,
+                criteria=validated_criteria,
                 input_mapping=input_mapping,
                 is_active=True,
                 created_by=user_email,
@@ -784,6 +793,7 @@ async def create_event_subscription(
                 "workflow_id": workflow_id,
                 "workflow_name": subscription.workflow.name if subscription.workflow else None,
                 "event_type": event_type,
+                "criteria": validated_criteria,
                 "input_mapping": input_mapping,
                 "is_active": True,
             }
@@ -802,10 +812,13 @@ async def update_event_subscription(
     source_id: str,
     subscription_id: str,
     event_type: str | None = None,
+    criteria: dict | None = None,
+    clear_criteria: bool = False,
     input_mapping: dict | None = None,
     is_active: bool | None = None,
 ) -> ToolResult:
     """Update an event subscription."""
+    from src.models.contracts.events import EventCriteria
     from src.models.orm.events import EventSubscription
     from src.repositories.events import EventSourceRepository
 
@@ -841,6 +854,12 @@ async def update_event_subscription(
 
             if event_type is not None:
                 subscription.event_type = event_type
+            if clear_criteria:
+                subscription.criteria = None
+            elif criteria is not None:
+                subscription.criteria = EventCriteria.model_validate(criteria).model_dump(
+                    mode="json"
+                )
             if input_mapping is not None:
                 subscription.input_mapping = input_mapping
             if is_active is not None:
@@ -855,6 +874,7 @@ async def update_event_subscription(
                 "workflow_id": str(subscription.workflow_id),
                 "workflow_name": subscription.workflow.name if subscription.workflow else None,
                 "event_type": subscription.event_type,
+                "criteria": subscription.criteria,
                 "input_mapping": subscription.input_mapping,
                 "is_active": subscription.is_active,
             }

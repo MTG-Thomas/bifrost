@@ -22,6 +22,7 @@ import sys
 import tempfile
 from typing import Any
 
+from src.jobs.execution_policy import broker_execution_policies
 from src.jobs.rabbitmq import BroadcastConsumer
 from src.services.execution.install_progress import report_phase
 
@@ -105,7 +106,10 @@ class PackageInstallConsumer(BroadcastConsumer):
     """
 
     def __init__(self):
-        super().__init__(exchange_name=EXCHANGE_NAME)
+        super().__init__(
+            exchange_name=EXCHANGE_NAME,
+            operations_policy=broker_execution_policies()[EXCHANGE_NAME],
+        )
 
     @property
     def _worker_id(self) -> str:

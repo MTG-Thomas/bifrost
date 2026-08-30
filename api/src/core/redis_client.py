@@ -18,7 +18,7 @@ import json
 import logging
 from decimal import Decimal
 from datetime import datetime, timezone
-from typing import Any, Awaitable, TypedDict, cast
+from typing import Any, Awaitable, NotRequired, TypedDict, cast
 
 import redis.asyncio as redis
 
@@ -74,6 +74,7 @@ class PendingExecution(TypedDict):
     artifact_workspace_id: str | None
     created_at: str  # ISO format
     cancelled: bool
+    execution_attempt_id: NotRequired[str]
 
 
 class RedisClient:

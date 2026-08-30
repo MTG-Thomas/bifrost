@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.config import get_settings
 from src.core.database import get_session_factory
+from src.jobs.execution_policy import broker_execution_policies
 from src.jobs.rabbitmq import BaseConsumer
 from src.models.orm.agent_runs import AgentRun
 from src.services.execution.run_summarizer import (
@@ -151,6 +152,7 @@ class SummarizeConsumer(BaseConsumer):
         super().__init__(
             queue_name=SUMMARIZE_QUEUE,
             prefetch_count=1,
+            operations_policy=broker_execution_policies()[SUMMARIZE_QUEUE],
         )
 
     async def process_message(self, body: dict[str, Any]) -> None:
@@ -170,6 +172,9 @@ class SummarizeBackfillConsumer(BaseConsumer):
         super().__init__(
             queue_name=SUMMARIZE_BACKFILL_QUEUE,
             prefetch_count=1,
+            operations_policy=broker_execution_policies()[
+                SUMMARIZE_BACKFILL_QUEUE
+            ],
         )
 
     async def process_message(self, body: dict[str, Any]) -> None:
@@ -184,6 +189,7 @@ class TuneChatConsumer(BaseConsumer):
         super().__init__(
             queue_name=TUNE_CHAT_QUEUE,
             prefetch_count=settings.max_concurrency,
+            operations_policy=broker_execution_policies()[TUNE_CHAT_QUEUE],
         )
 
     async def process_message(self, body: dict[str, Any]) -> None:

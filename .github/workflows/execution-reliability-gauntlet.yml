@@ -1,0 +1,56 @@
+name: Execution Reliability Gauntlet
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - ".github/workflows/execution-reliability-gauntlet.yml"
+      - "api/scripts/execution_reliability_gauntlet.py"
+      - "api/src/jobs/rabbitmq.py"
+      - "api/src/jobs/consumers/**"
+      - "api/src/services/execution/**"
+      - "api/src/services/execution_admission.py"
+      - "api/tests/unit/jobs/test_execution_reliability_gauntlet.py"
+      - "docker-compose.test.yml"
+      - "test.sh"
+  schedule:
+    - cron: "23 7 * * 3"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: execution-reliability-gauntlet-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gauntlet:
+    name: Real-service delivery failure matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Run isolated execution reliability gauntlet
+        run: |
+          set -o pipefail
+          ./test.sh stack up
+          ./test.sh reliability | tee /tmp/execution-reliability-gauntlet.log
+
+      - name: Upload reliability evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: execution-reliability-gauntlet-${{ github.run_id }}
+          path: |
+            /tmp/bifrost-*/execution-reliability-gauntlet.json
+            /tmp/execution-reliability-gauntlet.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Tear down isolated stack
+        if: always()
+        run: ./test.sh stack down

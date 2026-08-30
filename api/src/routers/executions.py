@@ -178,11 +178,10 @@ class ExecutionRepository:
         if exclude_local:
             query = query.where(ExecutionModel.is_local_execution == False)  # noqa: E712
 
-        # Order newest first with an id tiebreaker so the order is total:
-        # never-started rows (Scheduled/Pending, NULL started_at) sort first
-        # deterministically instead of "arbitrarily on the server" per page.
+        # Completed and running work is the useful history signal. Never-started
+        # rows remain visible after it instead of crowding the first page.
         query = query.order_by(
-            desc(ExecutionModel.started_at).nulls_first(),
+            desc(ExecutionModel.started_at).nulls_last(),
             desc(ExecutionModel.id),
         )
 
@@ -191,31 +190,30 @@ class ExecutionRepository:
         if cursor is not None:
             cursor_started, cursor_id = cursor
             if cursor_started is None:
-                # Last row served was in the leading NULL block: continue
-                # through older NULL rows, then everything started.
+                # Once pagination reaches never-started rows, only older rows
+                # in that trailing NULL block remain.
                 query = query.where(
-                    or_(
-                        and_(
-                            ExecutionModel.started_at.is_(None),
-                            ExecutionModel.id < cursor_id,
-                        ),
-                        ExecutionModel.started_at.is_not(None),
+                    and_(
+                        ExecutionModel.started_at.is_(None),
+                        ExecutionModel.id < cursor_id,
                     )
                 )
             else:
-                # Strictly older than the cursor row. Excludes the NULL block
-                # (already served on page one) — new Scheduled rows don't
-                # inject themselves into the middle of a pagination either.
+                # Strictly older started rows come next, followed by the
+                # never-started block.
                 query = query.where(
-                    and_(
-                        ExecutionModel.started_at.is_not(None),
-                        or_(
-                            ExecutionModel.started_at < cursor_started,
-                            and_(
-                                ExecutionModel.started_at == cursor_started,
-                                ExecutionModel.id < cursor_id,
+                    or_(
+                        and_(
+                            ExecutionModel.started_at.is_not(None),
+                            or_(
+                                ExecutionModel.started_at < cursor_started,
+                                and_(
+                                    ExecutionModel.started_at == cursor_started,
+                                    ExecutionModel.id < cursor_id,
+                                ),
                             ),
                         ),
+                        ExecutionModel.started_at.is_(None),
                     )
                 )
         elif offset:
@@ -1033,13 +1031,19 @@ async def get_stuck_executions(
     ).where(
         and_(
             ExecutionModel.status.in_([
+                ExecutionStatus.SCHEDULED.value,
                 ExecutionStatus.PENDING.value,
                 ExecutionStatus.RUNNING.value,
                 ExecutionStatus.CANCELLING.value,
             ]),
-            ExecutionModel.started_at < cutoff,
+            func.coalesce(
+                ExecutionModel.started_at,
+                ExecutionModel.scheduled_at,
+                ExecutionModel.created_at,
+            )
+            < cutoff,
         )
-    ).order_by(desc(ExecutionModel.started_at))
+    ).order_by(desc(ExecutionModel.started_at).nulls_last())
 
     result = await ctx.db.execute(query)
     executions = result.scalars().all()
@@ -1072,7 +1076,12 @@ async def trigger_cleanup(
     pending_query = select(ExecutionModel).where(
         and_(
             ExecutionModel.status == ExecutionStatus.PENDING.value,
-            ExecutionModel.started_at < cutoff,
+            func.coalesce(
+                ExecutionModel.started_at,
+                ExecutionModel.scheduled_at,
+                ExecutionModel.created_at,
+            )
+            < cutoff,
         )
     )
     pending_result = await ctx.db.execute(pending_query)
@@ -1082,7 +1091,12 @@ async def trigger_cleanup(
     running_query = select(ExecutionModel).where(
         and_(
             ExecutionModel.status == ExecutionStatus.RUNNING.value,
-            ExecutionModel.started_at < cutoff,
+            func.coalesce(
+                ExecutionModel.started_at,
+                ExecutionModel.scheduled_at,
+                ExecutionModel.created_at,
+            )
+            < cutoff,
         )
     )
     running_result = await ctx.db.execute(running_query)
@@ -1092,7 +1106,12 @@ async def trigger_cleanup(
     cancelling_query = select(ExecutionModel).where(
         and_(
             ExecutionModel.status == ExecutionStatus.CANCELLING.value,
-            ExecutionModel.started_at < cutoff,
+            func.coalesce(
+                ExecutionModel.started_at,
+                ExecutionModel.scheduled_at,
+                ExecutionModel.created_at,
+            )
+            < cutoff,
         )
     )
     cancelling_result = await ctx.db.execute(cancelling_query)

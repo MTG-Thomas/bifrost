@@ -603,6 +603,11 @@ class TestProcessPoolManagerHeartbeat:
         # KILLED handles are pending removal and never counted as idle/busy.
         assert heartbeat["idle_count"] == 0
         assert heartbeat["busy_count"] == 1
+        assert heartbeat["available_slots"] == pool.max_workers - 1
+        assert heartbeat["saturation_ratio"] == 1 / pool.max_workers
+        assert 0 <= heartbeat["estimated_drain_seconds"] <= 300
+        assert "wait_seconds_average" in heartbeat["admission"]
+        assert isinstance(heartbeat["health_reasons"], list)
         assert len(heartbeat["processes"]) == 2
 
         # Find busy process info
@@ -1630,7 +1635,7 @@ class TestProcessPoolCoverageBranches:
         assert calls == [(12345, signal.SIGTERM), (12345, signal.SIGKILL)]
 
     @pytest.mark.asyncio
-    async def test_handle_command_dispatches_recycle_actions_and_ignores_unknown(self):
+    async def test_handle_command_rejects_unaudited_recycle_actions(self):
         pool = ProcessPoolManager()
         pool._handle_recycle_process_command = AsyncMock()  # type: ignore[method-assign]
         pool._handle_recycle_all_command = AsyncMock()  # type: ignore[method-assign]
@@ -1639,12 +1644,18 @@ class TestProcessPoolCoverageBranches:
         await pool._handle_command({"action": "recycle_all"})
         await pool._handle_command({"action": "resize"})
 
-        pool._handle_recycle_process_command.assert_awaited_once_with(
-            {"action": "recycle_process", "pid": 10}
-        )
-        pool._handle_recycle_all_command.assert_awaited_once_with(
-            {"action": "recycle_all"}
-        )
+        pool._handle_recycle_process_command.assert_not_awaited()
+        pool._handle_recycle_all_command.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_handle_command_allows_identifierless_workspace_generation_event(self):
+        pool = ProcessPoolManager()
+        pool._handle_workspace_generation_changed_command = AsyncMock()  # type: ignore[method-assign]
+
+        command = {"action": "workspace_generation_changed", "generation": 7}
+        await pool._handle_command(command)
+
+        pool._handle_workspace_generation_changed_command.assert_awaited_once_with(command)
 
     @pytest.mark.asyncio
     async def test_recycle_commands_delegate_to_drain_with_default_and_custom_reason(self):

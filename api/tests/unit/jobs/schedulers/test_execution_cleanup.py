@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from src.jobs.schedulers import execution_cleanup
 from src.jobs.schedulers.execution_cleanup import (
+    _execution_age_anchor,
     _is_restart_orphan,
     _load_worker_heartbeat_state,
     _parse_heartbeat_time,
@@ -267,3 +268,170 @@ class TestExecutionCleanupAgentRuns:
         assert running_first.status == running_second.status == "timeout"
         assert fresh_first.status == fresh_second.status == "running"
         assert fresh_second.completed_at is None
+
+
+@pytest.mark.asyncio
+async def test_load_worker_heartbeat_failure_does_not_block_age_cleanup(monkeypatch):
+    redis = SimpleNamespace(
+        scan=AsyncMock(side_effect=ConnectionError("Redis DNS unavailable"))
+    )
+    monkeypatch.setattr(execution_cleanup, "get_redis_client", lambda: redis)
+
+    state = await _load_worker_heartbeat_state(datetime.now(timezone.utc))
+
+    assert state == {
+        "active_execution_ids": set(),
+        "oldest_worker_started_at": None,
+        "heartbeat_count": 0,
+    }
+
+
+def test_execution_age_anchor_uses_scheduled_then_created_for_null_start() -> None:
+    created_at = datetime(2026, 8, 17, tzinfo=timezone.utc)
+    scheduled_at = datetime(2026, 8, 18, tzinfo=timezone.utc)
+
+    assert _execution_age_anchor(
+        SimpleNamespace(
+            started_at=None,
+            scheduled_at=scheduled_at,
+            created_at=created_at,
+        )
+    ) == scheduled_at
+    assert _execution_age_anchor(
+        SimpleNamespace(
+            started_at=None,
+            scheduled_at=None,
+            created_at=created_at,
+        )
+    ) == created_at
+
+
+class _ScalarRows:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
+
+
+class _QueryResult:
+    def __init__(self, rows, *, tuple_rows=False):
+        self._rows = rows
+        self._tuple_rows = tuple_rows
+
+    def scalars(self):
+        assert not self._tuple_rows
+        return _ScalarRows(self._rows)
+
+    def all(self):
+        assert self._tuple_rows
+        return self._rows
+
+    def scalar_one_or_none(self):
+        assert not self._tuple_rows
+        assert len(self._rows) <= 1
+        return self._rows[0] if self._rows else None
+
+
+class _CleanupSession:
+    def __init__(self, results):
+        self._results = list(results)
+        self.execute = AsyncMock(side_effect=self._execute)
+        self.commit = AsyncMock()
+        self.add = MagicMock()
+
+    async def _execute(self, _query):
+        return self._results.pop(0)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_cleanup_sweeps_overdue_scheduled_and_null_start_running_rows() -> None:
+    from src.models.enums import ExecutionStatus
+
+    now = datetime.now(timezone.utc)
+
+    def row(status, age_minutes):
+        return SimpleNamespace(
+            id=uuid4(),
+            status=status.value,
+            started_at=None,
+            scheduled_at=now - timedelta(minutes=age_minutes),
+            created_at=now - timedelta(minutes=age_minutes + 1),
+            workflow_name=f"{status.value} workflow",
+            executed_by=uuid4(),
+            executed_by_name="Scheduler",
+            organization_id=None,
+        )
+
+    scheduled = row(ExecutionStatus.SCHEDULED, 2 * 24 * 60)
+    running = row(ExecutionStatus.RUNNING, 45)
+    running.scheduled_at = None
+    session = _CleanupSession(
+        [
+            _QueryResult([scheduled]),
+            _QueryResult([]),
+            _QueryResult([(running, 1800)], tuple_rows=True),
+            _QueryResult([]),
+            _QueryResult([]),
+        ]
+    )
+    redis = SimpleNamespace(
+        scan=AsyncMock(side_effect=ConnectionError("Redis DNS unavailable")),
+        delete_pending_execution=AsyncMock(
+            side_effect=ConnectionError("Redis DNS unavailable")
+        ),
+    )
+
+    with (
+        patch.object(execution_cleanup, "get_session_factory", return_value=lambda: session),
+        patch.object(execution_cleanup, "get_redis_client", return_value=redis),
+        patch(
+            "src.services.execution.queue_tracker.remove_from_queue",
+            new_callable=AsyncMock,
+            side_effect=ConnectionError("Redis DNS unavailable"),
+        ),
+        patch.object(
+            execution_cleanup,
+            "publish_execution_update",
+            new_callable=AsyncMock,
+        ),
+        patch.object(
+            execution_cleanup,
+            "publish_history_update",
+            new_callable=AsyncMock,
+        ),
+        patch.object(
+            execution_cleanup,
+            "_cleanup_stale_agent_runs",
+            new_callable=AsyncMock,
+            return_value={
+                "agent_run_queued_timeouts": 0,
+                "agent_run_running_timeouts": 0,
+                "agent_run_total_cleaned": 0,
+                "agent_run_errors": [],
+            },
+        ),
+    ):
+        result = await execution_cleanup.cleanup_stuck_executions()
+
+    assert result["scheduled_timeouts"] == 1
+    assert result["running_timeouts"] == 1
+    assert result["total_cleaned"] == 2
+    assert scheduled.status == ExecutionStatus.FAILED.value
+    assert running.status == ExecutionStatus.TIMEOUT.value
+    assert session.commit.await_count == 1
+    assert session.add.call_count == 2
+
+    scheduled_query = str(session.execute.await_args_list[0].args[0])
+    pending_query = str(session.execute.await_args_list[1].args[0])
+    assert "coalesce(executions.scheduled_at, executions.created_at)" in scheduled_query
+    assert (
+        "coalesce(executions.started_at, executions.scheduled_at, executions.created_at)"
+        in pending_query
+    )

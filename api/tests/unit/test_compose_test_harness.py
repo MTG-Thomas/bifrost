@@ -183,6 +183,33 @@ def test_test_sh_advertises_dockerized_api_quality_lane():
     assert "sh /app/scripts/quality_api.sh" in script
 
 
+def test_pytest_runner_releases_worktree_lock_between_pre_pr_phases():
+    """Sequential unit and e2e phases must not reject their own parent process."""
+    script = _find_repo_file("test.sh").read_text()
+    run_pytest = script.split("run_pytest() {", 1)[1].split(
+        "\n}\n\n# `unit`", 1
+    )[0]
+
+    assert 'runner_status="${PIPESTATUS[0]}"' in run_pytest
+    assert 'exec {runner_lock_fd}>&-' in run_pytest
+    assert run_pytest.index('runner_status="${PIPESTATUS[0]}"') < run_pytest.rindex(
+        'exec {runner_lock_fd}>&-'
+    )
+
+
+def test_production_candidate_smoke_supplies_required_secret_key():
+    """Importing the production app must satisfy required runtime settings."""
+    script = _find_repo_file("test.sh").read_text()
+    candidate_build = script.split("build_local_api_candidate() {", 1)[1].split(
+        "\n}\n\nstart_test_client()", 1
+    )[0]
+
+    assert (
+        '--env "BIFROST_SECRET_KEY=local-production-candidate-smoke-key"'
+        in candidate_build
+    )
+
+
 def test_test_harness_waits_for_both_api_replicas():
     script = _find_repo_file("test.sh").read_text()
     helpers = _find_repo_file("scripts/lib/test_helpers.sh").read_text()

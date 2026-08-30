@@ -380,6 +380,7 @@
 | GET | `/api/platform/scheduler/tasks/{task_id}/runs` |
 | GET | `/api/platform/stuck-history` |
 | GET | `/api/platform/workers` |
+| GET | `/api/platform/workers/commands/history` |
 | GET | `/api/platform/workers/metrics` |
 | GET | `/api/platform/workers/stats` |
 | GET | `/api/platform/workers/{worker_id}` |
@@ -576,6 +577,7 @@
 | POST | `/api/workspace-promotions/drafts` |
 | GET | `/api/workspace-promotions/live` |
 | POST | `/api/workspace-promotions/preview` |
+| POST | `/api/workspace-promotions/preview-jobs` |
 | GET | `/api/workspace-promotions/releases/{release_id}` |
 | POST | `/api/workspace-promotions/releases/{release_id}/activate` |
 | GET | `/api/workspace-promotions/solution-deploy-obligations` |

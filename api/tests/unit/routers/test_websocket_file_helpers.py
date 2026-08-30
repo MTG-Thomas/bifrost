@@ -396,8 +396,12 @@ class TestHandleTableMessage:
             assert resolved_id == table_id
             return None
 
+        async def populate_roles(user: UserPrincipal) -> None:
+            user.role_names = set()
+
         monkeypatch.setattr(ws_mod, "_resolve_table_id", resolve_table)
         monkeypatch.setattr(ws_mod, "_load_policies_for_table", missing_policies)
+        monkeypatch.setattr(ws_mod, "_populate_user_roles", populate_roles)
         websocket = FakeWebSocket()
 
         result = await ws_mod._authorize_table_subscribe(

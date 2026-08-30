@@ -6,15 +6,14 @@ PENDING and calling the shared ``_publish_pending`` helper.
 
 Design notes:
 
-- The promotion UPDATE is committed BEFORE the per-row publish loop, so
-  PENDING is the authoritative record that "this run belongs to RabbitMQ
-  now". If the broker publish fails we best-effort revert the row back to
-  SCHEDULED so the next tick retries.
-- ``SELECT ... FOR UPDATE SKIP LOCKED`` keeps the job safe to run in
-  parallel (multiple scheduler pods / APScheduler threads): each batch
-  picks a disjoint set of rows.
-- ``LIMIT 500`` bounds recovery bursts after an outage — if 10k rows
-  matured while the promoter was down, they drain in controlled batches.
+- Each row uses the same advisory transaction lock as immediate publication.
+  The broker publish is confirmed before SCHEDULED advances to PENDING, so a
+  scheduler crash cannot strand an unpublished PENDING row.
+- Multiple schedulers may discover the same candidate, but the advisory lock
+  plus row lock lets only the still-SCHEDULED owner publish it.
+- ``LIMIT 500`` bounds catch-up bursts, and reported worker free slots reduce
+  that bound when capacity is known. Redis diagnostics never replace the
+  PostgreSQL schedule authority.
 - ``user_email`` is intentionally an empty string: the Execution row does
   not persist the triggering user's email. The worker hydrates it from
   the User record keyed by ``executed_by``. ``startup=None`` for the same
@@ -24,16 +23,56 @@ Design notes:
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text
 
 from src.core.database import get_db_context
 from src.models.enums import ExecutionStatus
 from src.models.orm.executions import Execution
 from src.services.execution.async_executor import _publish_pending
+from src.services.execution.fault_injection import (
+    FailurePoint,
+    execution_failure_checkpoint,
+)
 
 logger = logging.getLogger(__name__)
 
 BATCH_LIMIT = 500
+
+
+async def _capacity_aware_batch_limit() -> int:
+    """Use reported free workflow slots without making Redis authoritative."""
+    from src.core.redis_client import get_redis_client
+
+    redis = get_redis_client()
+    if not redis:
+        raise RuntimeError("worker capacity is unavailable")
+    try:
+        cursor = 0
+        available = 0
+        reports = 0
+        while True:
+            cursor, keys = await redis.scan(
+                cursor, match="bifrost:pool:*:heartbeat", count=100
+            )
+            for key in keys:
+                import json
+
+                raw = await redis.get(key)
+                if not raw:
+                    continue
+                heartbeat = json.loads(raw)
+                slots = heartbeat.get("available_slots")
+                if slots is not None:
+                    reports += 1
+                    available += max(0, int(slots))
+            if cursor == 0:
+                break
+        if not reports:
+            raise RuntimeError("no valid worker capacity reports are available")
+        return min(BATCH_LIMIT, available)
+    except Exception as exc:
+        logger.warning("Unable to read worker capacity; deferring promotion")
+        raise RuntimeError("worker capacity could not be read") from exc
 
 
 async def promote_due_executions() -> tuple[int, int]:
@@ -44,73 +83,98 @@ async def promote_due_executions() -> tuple[int, int]:
     """
     promoted = 0
     failures = 0
+    batch_limit = await _capacity_aware_batch_limit()
+    if batch_limit == 0:
+        logger.info("deferred_execution_promoter: no reported worker capacity")
+        return 0, 0
 
     async with get_db_context() as db:
         result = await db.execute(
-            select(Execution)
+            select(Execution.id)
             .where(Execution.status == ExecutionStatus.SCHEDULED)
             .where(Execution.scheduled_at <= datetime.now(timezone.utc))
             .order_by(Execution.scheduled_at.asc())
-            .limit(BATCH_LIMIT)
-            .with_for_update(skip_locked=True)
+            .limit(batch_limit)
         )
-        rows = list(result.scalars().all())
+        candidate_ids = list(result.scalars().all())
 
-        if not rows:
+        if not candidate_ids:
             return 0, 0
-
-        ids = [r.id for r in rows]
-        await db.execute(
-            update(Execution)
-            .where(Execution.id.in_(ids))
-            .values(status=ExecutionStatus.PENDING, started_at=None)
-        )
         await db.commit()
 
-        for row in rows:
+        for execution_id in candidate_ids:
             try:
-                await _publish_pending(
-                    execution_id=str(row.id),
-                    workflow_id=str(row.workflow_id) if row.workflow_id else None,
-                    parameters=row.parameters or {},
-                    org_id=str(row.organization_id) if row.organization_id else None,
-                    user_id=str(row.executed_by) if row.executed_by else "",
-                    user_name=row.executed_by_name or "",
-                    user_email="",  # Not persisted on the row; worker hydrates from user record.
-                    form_id=str(row.form_id) if row.form_id else None,
-                    startup=None,  # Scheduled runs do not carry stale startup results.
-                    form_inputs={},
-                    embed={},
-                    api_key_id=str(row.api_key_id) if row.api_key_id else None,
-                    sync=False,
-                    is_platform_admin=bool(
-                        (row.execution_context or {}).get("is_platform_admin", False)
-                    ),
-                    is_provider_org=bool(
-                        (row.execution_context or {}).get("is_provider_org", False)
-                    ),
-                    is_external=bool(
-                        (row.execution_context or {}).get("is_external", False)
-                    ),
-                    file_path=None,
-                    solution_deployment_id=str(row.solution_deployment_id) if row.solution_deployment_id else None,
-                    runtime_evidence=(row.execution_context or {}).get("runtime_evidence"),
-                    runtime_mode=row.runtime_mode,
-                )
-                promoted += 1
+                async with get_db_context() as claim_db:
+                    await claim_db.execute(
+                        text(
+                            "SELECT pg_advisory_xact_lock("
+                            "hashtext('bifrost:workflow-execution:' || :execution_id))"
+                        ),
+                        {"execution_id": str(execution_id)},
+                    )
+                    row = (
+                        await claim_db.execute(
+                            select(Execution)
+                            .where(
+                                Execution.id == execution_id,
+                                Execution.status == ExecutionStatus.SCHEDULED,
+                                Execution.scheduled_at <= datetime.now(timezone.utc),
+                            )
+                            .with_for_update()
+                        )
+                    ).scalar_one_or_none()
+                    if row is None:
+                        continue
+                    execution_failure_checkpoint(FailurePoint.SCHEDULE_PUBLISH)
+                    await _publish_pending(
+                        execution_id=str(row.id),
+                        workflow_id=str(row.workflow_id) if row.workflow_id else None,
+                        parameters=row.parameters or {},
+                        org_id=str(row.organization_id) if row.organization_id else None,
+                        user_id=str(row.executed_by) if row.executed_by else "",
+                        user_name=row.executed_by_name or "",
+                        user_email="",
+                        form_id=str(row.form_id) if row.form_id else None,
+                        startup=None,
+                        form_inputs={},
+                        embed={},
+                        api_key_id=str(row.api_key_id) if row.api_key_id else None,
+                        sync=False,
+                        is_platform_admin=bool(
+                            (row.execution_context or {}).get(
+                                "is_platform_admin", False
+                            )
+                        ),
+                        is_provider_org=bool(
+                            (row.execution_context or {}).get(
+                                "is_provider_org", False
+                            )
+                        ),
+                        is_external=bool(
+                            (row.execution_context or {}).get("is_external", False)
+                        ),
+                        file_path=None,
+                        solution_deployment_id=(
+                            str(row.solution_deployment_id)
+                            if row.solution_deployment_id
+                            else None
+                        ),
+                        runtime_evidence=(row.execution_context or {}).get(
+                            "runtime_evidence"
+                        ),
+                        runtime_mode=row.runtime_mode,
+                        execution_record_exists=True,
+                    )
+                    row.status = ExecutionStatus.PENDING
+                    row.started_at = None
+                    await claim_db.commit()
+                    promoted += 1
             except Exception:
                 failures += 1
                 logger.exception(
-                    "deferred_execution_promoter: publish failed, reverting row",
-                    extra={"execution_id": str(row.id)},
+                    "deferred_execution_promoter: publish failed; row remains scheduled",
+                    extra={"execution_id": str(execution_id)},
                 )
-                await db.execute(
-                    update(Execution)
-                    .where(Execution.id == row.id)
-                    .where(Execution.status == ExecutionStatus.PENDING)
-                    .values(status=ExecutionStatus.SCHEDULED)
-                )
-                await db.commit()
 
         logger.info(
             "deferred_execution_promoter tick complete",
