@@ -2,7 +2,7 @@ from uuid import uuid4
 
 import pytest
 
-from src.services.artifacts import ArtifactService
+from src.services.artifacts import ArtifactService, is_browser_active_content_type
 
 
 class _FakeDB:
@@ -37,6 +37,19 @@ class _FakeStorage:
 
     async def delete_raw_from_s3(self, path: str) -> None:
         return None
+
+
+@pytest.mark.parametrize(
+    "content_type",
+    [
+        "text/html; charset=utf-8",
+        "Text/XML",
+        "image/svg+xml",
+        "application/atom+xml",
+    ],
+)
+def test_browser_active_media_types_are_classified(content_type):
+    assert is_browser_active_content_type(content_type)
 
 
 @pytest.mark.asyncio

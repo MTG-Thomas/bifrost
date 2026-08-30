@@ -350,15 +350,10 @@ class TestChatAttachments:
         assert content.headers["content-type"] == "text/html; charset=utf-8"
         assert content.headers["content-disposition"] == "attachment"
 
-    @pytest.mark.parametrize(
-        "content_type",
-        ["image/svg+xml", "application/atom+xml"],
-    )
     def test_sdk_serves_browser_active_xml_artifacts_as_downloads(
         self,
         e2e_client,
         platform_admin,
-        content_type,
     ):
         upload_headers = {
             key: value
@@ -367,7 +362,13 @@ class TestChatAttachments:
         }
         stored = e2e_client.post(
             "/api/sdk/artifacts",
-            files={"file": ("active.xml", b"<svg></svg>", content_type)},
+            files={
+                "file": (
+                    "active.xml",
+                    b"<svg></svg>",
+                    "text/xml; charset=utf-8",
+                )
+            },
             headers=upload_headers,
         )
 
