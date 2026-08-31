@@ -114,6 +114,14 @@ class Settings(BaseSettings):
         default=False,
         description="Enable atomic activation of prepared Workspace releases.",
     )
+    workspace_promotion_diagnostics_mode: Literal["off", "shadow", "enforce"] = Field(
+        default="off",
+        description=(
+            "Control differential Workspace promotion diagnostics. Off and shadow "
+            "retain legacy blocker enforcement; shadow records both decisions; "
+            "enforce accepts only valid immutable differential evidence."
+        ),
+    )
     workspace_source_release_oidc_repository: str | None = Field(
         default=None,
         description=(
