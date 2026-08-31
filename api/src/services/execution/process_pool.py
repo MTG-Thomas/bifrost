@@ -1704,7 +1704,13 @@ class ProcessPoolManager:
             # Child output is untrusted. Bind it to this handle's durable
             # ownership instead of accepting identity fields from the child.
             result["execution_id"] = exec_info.execution_id
-            result["attempt_token"] = exec_info.attempt_token
+            if exec_info.attempt_token is not None:
+                result["attempt_token"] = exec_info.attempt_token
+            else:
+                # Legacy inline executions have no durable attempt fence. Do
+                # not let a child invent one, and preserve their established
+                # callback payload shape rather than adding a null token.
+                result.pop("attempt_token", None)
 
         # Do not relinquish ownership until the authoritative callback commits.
         self._unregister_result_reader(handle)
