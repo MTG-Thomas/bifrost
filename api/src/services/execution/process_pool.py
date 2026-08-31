@@ -49,6 +49,14 @@ import redis.asyncio as redis
 
 from src.config import get_settings
 from src.services.execution.memory_monitor import get_cgroup_memory, has_sufficient_memory_cgroup
+from src.services.execution_admission import (
+    AdmissionOutcome,
+    record_admission_decision,
+)
+from src.services.execution.fault_injection import (
+    FailurePoint,
+    execution_failure_checkpoint,
+)
 from src.models.contracts.notifications import NotificationCategory, NotificationCreate, NotificationStatus
 from src.services.execution.simple_worker import install_requirements, RequirementsInstallResult
 from src.services.notification_service import get_notification_service
@@ -786,6 +794,7 @@ class ProcessPoolManager:
             context: Execution context sent to the child and retained in Redis
         """
         self._admission_attempts += 1
+        execution_failure_checkpoint(FailurePoint.WORKFLOW_ADMISSION)
         admission_started = time.monotonic()
 
         # Validate immutable draft limits before writing context or forking.
@@ -808,6 +817,13 @@ class ProcessPoolManager:
             self._admission_wait_seconds_max = max(
                 self._admission_wait_seconds_max,
                 wait_seconds,
+            )
+            record_admission_decision(
+                workload_class="interactive_workflow",
+                admission_policy="workflow_process_pool",
+                outcome=AdmissionOutcome.DEFERRED,
+                reason="memory_pressure",
+                wait_seconds=wait_seconds,
             )
             raise MemoryError(
                 f"Cannot route execution {execution_id[:8]}: memory pressure "
@@ -845,6 +861,13 @@ class ProcessPoolManager:
                     self._admission_wait_seconds_max,
                     wait_seconds,
                 )
+                record_admission_decision(
+                    workload_class="interactive_workflow",
+                    admission_policy="workflow_process_pool",
+                    outcome=AdmissionOutcome.DEFERRED,
+                    reason="slot_timeout",
+                    wait_seconds=wait_seconds,
+                )
                 raise ProcessPoolAdmissionRejected("No worker slot available after timeout")
 
         # Validate and fork while holding the same lock used by template
@@ -856,6 +879,7 @@ class ProcessPoolManager:
             # template dead after the restart lock is released. Heal that state
             # once, while preserving a concurrent stop as authoritative.
             await self._ensure_template_alive_for_route()
+            execution_failure_checkpoint(FailurePoint.CHILD_FORK)
             # _fork_process repeats the final template-alive validation and
             # returns a handle already in BUSY.
             handle = self._fork_process()
@@ -897,6 +921,13 @@ class ProcessPoolManager:
         self._admission_wait_seconds_max = max(
             self._admission_wait_seconds_max,
             wait_seconds,
+        )
+        record_admission_decision(
+            workload_class="interactive_workflow",
+            admission_policy="workflow_process_pool",
+            outcome=AdmissionOutcome.ADMITTED,
+            reason="capacity_available",
+            wait_seconds=wait_seconds,
         )
 
         logger.info(
@@ -1133,6 +1164,7 @@ class ProcessPoolManager:
                 r = await self._get_redis()
                 pubsub = r.pubsub()
                 await pubsub.subscribe(*channels)
+                next_durable_poll = 0.0
 
                 while not self._shutdown:
                     message = await pubsub.get_message(
@@ -1142,6 +1174,9 @@ class ProcessPoolManager:
                     if message and message["type"] == "message":
                         data = json.loads(message["data"])
                         await self._handle_command(data)
+                    if time.monotonic() >= next_durable_poll:
+                        await self._poll_durable_worker_command()
+                        next_durable_poll = time.monotonic() + 1.0
             except Exception as e:
                 logger.error(f"Command listener error: {e}; reconnecting in 1s")
                 await asyncio.sleep(1.0)
@@ -1163,6 +1198,60 @@ class ProcessPoolManager:
         Args:
             command: Command dict with 'action' field and action-specific data
         """
+        command_id = command.get("command_id")
+        if command_id:
+            from src.core.database import get_db_context
+            from src.services.worker_control_commands import (
+                claim_worker_control_command,
+                finish_worker_control_command,
+            )
+
+            async with get_db_context() as db:
+                claimed = await claim_worker_control_command(
+                    db,
+                    command_id=uuid.UUID(str(command_id)),
+                    worker_id=self.worker_id,
+                )
+                await db.commit()
+            if claimed is None:
+                logger.info("Ignoring completed or concurrently claimed command %s", command_id)
+                return
+            persisted_command = {
+                "command_id": str(claimed.id),
+                "action": claimed.action,
+                "pid": claimed.process_id,
+                "reason": claimed.reason,
+            }
+            try:
+                await self._dispatch_worker_command(persisted_command)
+            except Exception as exc:
+                async with get_db_context() as db:
+                    await finish_worker_control_command(
+                        db,
+                        command_id=uuid.UUID(str(command_id)),
+                        worker_id=self.worker_id,
+                        succeeded=False,
+                        failure_message=str(exc),
+                    )
+                    await db.commit()
+                raise
+            async with get_db_context() as db:
+                await finish_worker_control_command(
+                    db,
+                    command_id=uuid.UUID(str(command_id)),
+                    worker_id=self.worker_id,
+                    succeeded=True,
+                )
+                await db.commit()
+            return
+
+        action = command.get("action")
+        if action != "workspace_generation_changed":
+            logger.warning("Ignoring unaudited worker command without command_id: %s", action)
+            return
+        await self._dispatch_worker_command(command)
+
+    async def _dispatch_worker_command(self, command: dict[str, Any]) -> None:
         action = command.get("action")
         logger.info(f"Received command: {action}")
 
@@ -1174,6 +1263,29 @@ class ProcessPoolManager:
             await self._handle_workspace_generation_changed_command(command)
         else:
             logger.warning(f"Unknown command action: {action}")
+
+    async def _poll_durable_worker_command(self) -> None:
+        """Converge commands even when their Redis notification was lost."""
+
+        from src.core.database import get_db_context
+        from src.services.worker_control_commands import (
+            get_pending_worker_control_command,
+        )
+
+        async with get_db_context() as db:
+            command = await get_pending_worker_control_command(
+                db,
+                worker_id=self.worker_id,
+            )
+            if command is None:
+                return
+            data = {
+                "command_id": str(command.id),
+                "action": command.action,
+                "pid": command.process_id,
+                "reason": command.reason,
+            }
+        await self._handle_command(data)
 
     async def _handle_recycle_process_command(self, command: dict[str, Any]) -> None:
         """
@@ -1475,13 +1587,22 @@ class ProcessPoolManager:
         exec_info = handle.current_execution
         if self.on_result is None or exec_info is None:
             return
+        exit_code = handle.process.exitcode
+        signal_number = -exit_code if exit_code is not None and exit_code < 0 else None
+        worker_identity = f"{self.worker_id}:{handle.id}"
+        detail = (
+            f"exit_code={exit_code}, signal={signal_number}, worker={worker_identity}"
+        )
         handle.result_reported = await self._deliver_result(
             {
                 "type": "result",
                 "execution_id": exec_info.execution_id,
                 "success": False,
-                "error": "Worker process crashed unexpectedly",
+                "error": f"Worker process crashed unexpectedly ({detail})",
                 "error_type": "ProcessCrashError",
+                "exit_code": exit_code,
+                "signal": signal_number,
+                "worker_identity": worker_identity,
                 "duration_ms": int(exec_info.elapsed_seconds * 1000),
                 "attempt_token": exec_info.attempt_token,
             }
@@ -1834,6 +1955,35 @@ class ProcessPoolManager:
         available_slots = max(0, max_workers - busy_count)
 
         memory_current, memory_max = get_cgroup_memory()
+        admission_attempts = self._admission_attempts
+        admission_wait_total = self._admission_wait_seconds_total
+        active_executions = [
+            p.current_execution for p in self.processes.values() if p.current_execution
+        ]
+        estimated_drain_seconds = max(
+            (
+                max(0.0, info.timeout_seconds - info.elapsed_seconds)
+                for info in active_executions
+            ),
+            default=0.0,
+        )
+        memory_utilization = (
+            memory_current / memory_max
+            if memory_current >= 0 and memory_max > 0
+            else None
+        )
+        health_reasons = []
+        if self._shutdown:
+            health_reasons.append("shutting_down")
+        if available_slots == 0:
+            health_reasons.append("capacity_saturated")
+        if (
+            memory_utilization is not None
+            and memory_utilization >= get_settings().memory_pressure_threshold
+        ):
+            health_reasons.append("memory_pressure")
+        if self._requirements_installed < self._requirements_total:
+            health_reasons.append("requirements_incomplete")
 
         return {
             "type": "worker_heartbeat",
@@ -1851,19 +2001,24 @@ class ProcessPoolManager:
             "idle_count": idle_count,
             "busy_count": busy_count,
             "available_slots": available_slots,
+            "saturation_ratio": busy_count / max_workers if max_workers else None,
+            "memory_utilization": memory_utilization,
+            "estimated_drain_seconds": estimated_drain_seconds,
+            "health_reasons": health_reasons,
             "requirements_installed": self._requirements_installed,
             "requirements_total": self._requirements_total,
             "memory_current_bytes": memory_current,
             "memory_max_bytes": memory_max,
             "admission": {
-                "attempts": getattr(self, "_admission_attempts", 0),
-                "successes": getattr(self, "_admission_successes", 0),
-                "rejections": dict(getattr(self, "_admission_rejections", {})),
-                "wait_seconds_total": getattr(
-                    self, "_admission_wait_seconds_total", 0.0
-                ),
-                "wait_seconds_max": getattr(
-                    self, "_admission_wait_seconds_max", 0.0
+                "attempts": admission_attempts,
+                "successes": self._admission_successes,
+                "rejections": dict(self._admission_rejections),
+                "wait_seconds_total": admission_wait_total,
+                "wait_seconds_max": self._admission_wait_seconds_max,
+                "wait_seconds_average": (
+                    admission_wait_total / admission_attempts
+                    if admission_attempts
+                    else 0.0
                 ),
             },
         }

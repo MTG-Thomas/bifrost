@@ -33,6 +33,42 @@ logger = logging.getLogger(__name__)
 BATCH_LIMIT = 500
 
 
+async def _capacity_aware_batch_limit() -> int:
+    """Use reported free workflow slots without making Redis authoritative."""
+    from src.core.redis_client import get_redis_client
+
+    redis = get_redis_client()
+    if not redis:
+        raise RuntimeError("worker capacity is unavailable")
+    try:
+        cursor = 0
+        available = 0
+        reports = 0
+        while True:
+            cursor, keys = await redis.scan(
+                cursor, match="bifrost:pool:*:heartbeat", count=100
+            )
+            for key in keys:
+                import json
+
+                raw = await redis.get(key)
+                if not raw:
+                    continue
+                heartbeat = json.loads(raw)
+                slots = heartbeat.get("available_slots")
+                if slots is not None:
+                    reports += 1
+                    available += max(0, int(slots))
+            if cursor == 0:
+                break
+        if not reports:
+            raise RuntimeError("no valid worker capacity reports are available")
+        return min(BATCH_LIMIT, available)
+    except Exception as exc:
+        logger.warning("Unable to read worker capacity; deferring promotion")
+        raise RuntimeError("worker capacity could not be read") from exc
+
+
 async def promote_due_executions() -> tuple[int, int]:
     """Promote due SCHEDULED rows to PENDING and publish them.
 
@@ -41,27 +77,33 @@ async def promote_due_executions() -> tuple[int, int]:
     """
     promoted = 0
     failures = 0
+    batch_limit = await _capacity_aware_batch_limit()
+    if batch_limit == 0:
+        logger.info("deferred_execution_promoter: no reported worker capacity")
+        return 0, 0
 
     async with get_db_context() as db:
         result = await db.execute(
-            select(Execution)
+            select(Execution.id)
             .where(Execution.status == ExecutionStatus.SCHEDULED)
             .where(Execution.scheduled_at <= datetime.now(timezone.utc))
             .order_by(Execution.scheduled_at.asc())
-            .limit(BATCH_LIMIT)
-            .with_for_update(skip_locked=True)
+            .limit(batch_limit)
         )
-        rows = list(result.scalars().all())
+        candidate_ids = list(result.scalars().all())
 
-        if not rows:
+        if not candidate_ids:
             return 0, 0
-
         # Do not hold the batch row locks while waiting for broker confirms.
         # The per-row publisher reacquires the canonical advisory fence.
         await db.commit()
 
-        for row in rows:
+        for execution_id in candidate_ids:
             try:
+                async with get_db_context() as row_db:
+                    row = await row_db.get(Execution, execution_id)
+                    if row is None:
+                        continue
                 published = await _publish_scheduled_once(
                     execution_id=str(row.id),
                     publish_kwargs={
@@ -107,7 +149,7 @@ async def promote_due_executions() -> tuple[int, int]:
                 failures += 1
                 logger.exception(
                     "deferred_execution_promoter: publish failed; row remains scheduled",
-                    extra={"execution_id": str(row.id)},
+                    extra={"execution_id": str(execution_id)},
                 )
 
         logger.info(

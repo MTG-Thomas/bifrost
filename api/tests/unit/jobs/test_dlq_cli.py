@@ -138,7 +138,10 @@ async def test_replay_dry_run_describes_and_requeues_without_publish(monkeypatch
     channel = FakeChannel(messages)
     monkeypatch.setattr(dlq_cli, "_connect", AsyncMock(return_value=FakeConnection(channel)))
 
-    rows = await replay("workflow-executions", limit=1, dry_run=True)
+    rows = await replay(
+        "workflow-executions", limit=1, dry_run=True,
+        actor="operator@example.com", reason="verify replay",
+    )
 
     assert rows[0]["message_id"] == "one"
     assert messages[0].nacked is True
@@ -152,8 +155,13 @@ async def test_replay_publishes_with_incremented_replay_headers(monkeypatch):
     messages = [FakeMessage("one", body=b'{"execution_id":"one"}')]
     channel = FakeChannel(messages)
     monkeypatch.setattr(dlq_cli, "_connect", AsyncMock(return_value=FakeConnection(channel)))
+    record = AsyncMock()
+    monkeypatch.setattr(dlq_cli, "_record_disposition", record)
 
-    rows = await replay("workflow-executions", limit=1, dry_run=False)
+    rows = await replay(
+        "workflow-executions", limit=1, dry_run=False,
+        actor="operator@example.com", reason="retry delivery",
+    )
 
     assert rows[0]["message_id"] == "one"
     assert messages[0].acked is True
@@ -162,6 +170,7 @@ async def test_replay_publishes_with_incremented_replay_headers(monkeypatch):
     assert published.headers["x-replayed-count"] == 3
     assert published.headers["x-retry-count"] == 0
     assert published.headers["x-original-message-id"] == "one"
+    record.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -170,7 +179,10 @@ async def test_discard_dry_run_requeues_without_ack(monkeypatch):
     channel = FakeChannel(messages)
     monkeypatch.setattr(dlq_cli, "_connect", AsyncMock(return_value=FakeConnection(channel)))
 
-    rows = await discard("workflow-executions", limit=2, reason="bad payload", dry_run=True)
+    rows = await discard(
+        "workflow-executions", limit=2, reason="bad payload", dry_run=True,
+        actor="operator@example.com",
+    )
 
     assert [row["message_id"] for row in rows] == ["one", "two"]
     assert all(message.nacked for message in messages)
@@ -200,6 +212,8 @@ async def test_reconcile_discard_validates_exact_message_without_mutation(monkey
         expected_reason=reason,
         limit=10,
         dry_run=True,
+        actor="operator@example.com",
+        reason="verified stale poison message",
     )
 
     assert rows[0]["reconciliation"] == "validated_dry_run"
@@ -230,15 +244,21 @@ async def test_reconcile_discard_terminalizes_before_exact_ack(monkeypatch):
             )
         )
     )
+    record_disposition = AsyncMock(
+        side_effect=lambda *_args, **_kwargs: call_order.append("audited")
+    )
     monkeypatch.setattr(
         dlq_cli,
         "_connect",
         AsyncMock(return_value=FakeConnection(channel)),
     )
 
-    with patch(
-        "src.services.execution.poison.finalize_poisoned_execution",
-        finalize,
+    with (
+        patch(
+            "src.services.execution.poison.finalize_poisoned_execution",
+            finalize,
+        ),
+        patch.object(dlq_cli, "_record_disposition", record_disposition),
     ):
         rows = await reconcile_discard(
             "workflow-executions",
@@ -247,9 +267,11 @@ async def test_reconcile_discard_terminalizes_before_exact_ack(monkeypatch):
             expected_reason=reason,
             limit=10,
             dry_run=False,
+            actor="operator@example.com",
+            reason="verified stale poison message",
         )
 
-    assert call_order == ["terminalized", "acked"]
+    assert call_order == ["terminalized", "audited", "acked"]
     assert rows[0]["reconciliation"]["disposition"] == "terminalized"
     assert finalize.await_args.kwargs["require_matching_terminal"] is True
     assert finalize.await_args.kwargs["require_transient_cleanup"] is True
@@ -277,6 +299,8 @@ async def test_reconcile_discard_fails_closed_on_reason_mismatch(monkeypatch):
             expected_reason="expected reason",
             limit=10,
             dry_run=False,
+            actor="operator@example.com",
+            reason="verified stale poison message",
         )
 
     assert message.nacked is True

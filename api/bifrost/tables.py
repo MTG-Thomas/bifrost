@@ -179,7 +179,8 @@ class tables:
             json={
                 "scope": effective_scope,
                 "app": app,
-            }
+            },
+            retry_safe=True,
         )
         raise_for_status_with_detail(response)
         return [TableInfo.model_validate(t) for t in response.json()]
@@ -642,6 +643,7 @@ class tables:
                 "limit": limit,
                 "offset": offset,
             },
+            retry_safe=True,
         )
         if response.status_code == 404:
             return DocumentList(documents=[], total=0, limit=limit, offset=offset)

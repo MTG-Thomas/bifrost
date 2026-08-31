@@ -22,6 +22,7 @@ Execution Model:
 """
 
 import asyncio
+from dataclasses import replace
 import logging
 import time
 from datetime import datetime, timezone
@@ -35,6 +36,7 @@ from sqlalchemy import select, text
 from src.core.database import get_db_context
 from src.core.pubsub import publish_execution_update, publish_history_update
 from src.core.redis_client import get_redis_client
+from src.jobs.execution_policy import broker_execution_policies
 from src.jobs.rabbitmq import (
     BaseConsumer,
     DeliveryContext,
@@ -79,14 +81,19 @@ class WorkflowExecutionConsumer(BaseConsumer):
     Full execution context is read from Redis pending execution.
     """
 
-    def __init__(self):
+    def __init__(self, *, queue_name: str = QUEUE_NAME):
         from src.config import get_settings
         from src.services.execution.process_pool import get_process_pool
 
         settings = get_settings()
+        policy = broker_execution_policies()[QUEUE_NAME]
+        if queue_name != QUEUE_NAME:
+            policy = replace(policy, identifier=queue_name)
+        self._workflow_operations_policy = policy
         super().__init__(
-            queue_name=QUEUE_NAME,
+            queue_name=queue_name,
             prefetch_count=workflow_prefetch_count(settings),
+            operations_policy=policy,
         )
         self._redis_client = get_redis_client()
 
@@ -1540,7 +1547,9 @@ class WorkflowExecutionConsumer(BaseConsumer):
         """
         from src.core.database import get_db_context
         from src.models.enums import ExecutionStatus
-        from src.models.orm.executions import Execution, ExecutionAttempt
+        from src.models.orm.executions import Execution, WorkflowExecutionAttempt
+
+        ExecutionAttempt = WorkflowExecutionAttempt
 
         try:
             execution_uuid = UUID(execution_id)

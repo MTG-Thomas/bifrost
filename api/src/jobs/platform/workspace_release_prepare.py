@@ -7,6 +7,10 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from src.core.database import get_db_context
+from src.jobs.execution_policy import (
+    WorkloadClass,
+    platform_job_operations_policy,
+)
 from src.jobs.platform.base import (
     PlatformJobContext,
     PlatformJobDefinition,
@@ -94,5 +98,9 @@ WORKSPACE_RELEASE_PREPARE_DEFINITION = PlatformJobDefinition(
         max_concurrency=2,
         retry_on_runner_loss=True,
         min_memory_headroom_mb=512,
+    ),
+    operations_policy=platform_job_operations_policy(
+        WORKSPACE_RELEASE_PREPARE_JOB_TYPE,
+        workload_class=WorkloadClass.PLATFORM_INTERACTIVE,
     ),
 )

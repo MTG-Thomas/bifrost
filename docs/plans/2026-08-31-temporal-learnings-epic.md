@@ -8,7 +8,7 @@ Research: [Temporal Learnings for Bifrost](../research/temporal-for-bifrost.md)
 
 Implemented on 2026-08-31:
 
-- durable `execution_attempts` rows beginning at dispatch pin, with
+- durable `workflow_execution_attempts` rows beginning at dispatch pin, with
   broker-confirmed publication evidence, one-active-attempt, and ordinal
   constraints;
 - internal claim-token fencing from consumer claim through real and synthetic

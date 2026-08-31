@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -31,6 +32,91 @@ class FakeConsumer:
 @pytest.fixture
 def settings() -> SimpleNamespace:
     return SimpleNamespace(environment="test")
+
+
+def test_configured_consumers_default_to_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BIFROST_WORKER_CONSUMERS", raising=False)
+    assert worker_app.configured_consumer_names() == list(worker_app._CONSUMER_NAMES)
+
+
+def test_validate_worker_runtime_accepts_readable_ca_bundle(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ca_bundle = tmp_path / "cacert.pem"
+    ca_bundle.write_bytes(b"certificate")
+    monkeypatch.setattr("certifi.where", lambda: str(ca_bundle))
+
+    worker_app.validate_worker_runtime()
+
+
+def test_validate_worker_runtime_rejects_missing_ca_bundle(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    missing = tmp_path / "missing.pem"
+    monkeypatch.setattr("certifi.where", lambda: str(missing))
+
+    with pytest.raises(RuntimeError, match="CA bundle is missing"):
+        worker_app.validate_worker_runtime()
+
+
+def test_configured_consumers_allow_isolated_workflow(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BIFROST_WORKER_CONSUMERS", "workflow")
+    assert worker_app.configured_consumer_names() == ["workflow"]
+
+
+def test_configured_consumers_fail_closed_on_typo(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BIFROST_WORKER_CONSUMERS", "workflow,typo")
+    with pytest.raises(ValueError, match="typo"):
+        worker_app.configured_consumer_names()
+
+
+def test_configured_consumers_fail_closed_when_blank(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for value in ("   ", ",,,"):
+        monkeypatch.setenv("BIFROST_WORKER_CONSUMERS", value)
+        with pytest.raises(ValueError, match="at least one"):
+            worker_app.configured_consumer_names()
+
+
+@pytest.mark.parametrize("queue_name", [None, "workflow-executions"])
+def test_workflow_only_consumer_requires_isolated_queue(
+    monkeypatch: pytest.MonkeyPatch,
+    queue_name: str | None,
+) -> None:
+    monkeypatch.setenv("BIFROST_WORKER_CONSUMERS", "workflow")
+    if queue_name is None:
+        monkeypatch.delenv("BIFROST_WORKFLOW_QUEUE_NAME", raising=False)
+    else:
+        monkeypatch.setenv("BIFROST_WORKFLOW_QUEUE_NAME", queue_name)
+
+    with pytest.raises(ValueError, match="isolated -canary"):
+        worker_app.consumer_factories()["workflow"]()
+
+
+@pytest.mark.asyncio
+async def test_start_consumers_isolates_workflow_canary_queue(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: SimpleNamespace,
+) -> None:
+    monkeypatch.setattr(worker_app, "get_settings", lambda: settings)
+    monkeypatch.setenv("BIFROST_WORKER_CONSUMERS", "workflow")
+    monkeypatch.setenv("BIFROST_WORKFLOW_QUEUE_NAME", "workflow-executions-canary")
+    created: list[FakeConsumer] = []
+
+    def workflow_factory(*, queue_name: str) -> FakeConsumer:
+        consumer = FakeConsumer(queue_name)
+        created.append(consumer)
+        return consumer
+
+    monkeypatch.setattr(worker_app, "WorkflowExecutionConsumer", workflow_factory)
+
+    worker = worker_app.Worker()
+    await worker._start_consumers()
+
+    assert [consumer.queue_name for consumer in created] == [
+        "workflow-executions-canary"
+    ]
 
 
 @pytest.mark.asyncio

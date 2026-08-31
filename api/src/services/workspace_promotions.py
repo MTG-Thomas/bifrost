@@ -310,6 +310,26 @@ def _promotion_risk_class(
     return _risk_class_for_effects(effects)
 
 
+def _promotion_risk_class_for_paths(
+    effects: list[str],
+    registrations: Iterable[dict[str, Any]],
+    risk_paths: list[str] | None,
+) -> str:
+    """Classify only registrations in an explicit candidate risk cohort."""
+
+    if risk_paths is None:
+        return _promotion_risk_class(effects, registrations)
+    scoped = set(risk_paths)
+    return _promotion_risk_class(
+        effects,
+        (
+            registration
+            for registration in registrations
+            if registration.get("path") in scoped
+        ),
+    )
+
+
 def _literal_keyword(call: ast.Call, name: str, default: Any = None) -> Any:
     for keyword in call.keywords:
         if keyword.arg == name:
@@ -1055,6 +1075,34 @@ def _canonical_impact_diagnostics(
     return diagnostics, forward, affected
 
 
+async def build_workspace_promotion_preview_service(
+    db: AsyncSession, organization_id: UUID
+) -> WorkspacePromotionPreviewService:
+    """Build the reviewed-preview service with its protected Git reader."""
+    from src.config import get_settings
+    from src.services.github_config import get_github_config
+    from src.services.platform_commit_writer import GitHubAppCommitWriter
+
+    settings = get_settings()
+    config = await get_github_config(db, organization_id)
+    writer = None
+    if config and config.repo_url and settings.github_app_commit_writer_configured:
+        if (
+            settings.github_app_id is None
+            or settings.github_app_installation_id is None
+            or settings.github_app_private_key is None
+        ):
+            raise RuntimeError("GitHub App commit writer configuration is incomplete")
+        writer = GitHubAppCommitWriter(
+            repo_url=config.repo_url,
+            branch=config.branch,
+            app_id=settings.github_app_id,
+            installation_id=settings.github_app_installation_id,
+            private_key=settings.github_app_private_key.get_secret_value(),
+        )
+    return WorkspacePromotionPreviewService(db, organization_id, commit_writer=writer)
+
+
 class WorkspacePromotionPreviewService:
     """Build and persist immutable release artifacts without activating them."""
 
@@ -1319,7 +1367,16 @@ class WorkspacePromotionPreviewService:
             cohort_paths=request.cohort_paths,
         )
 
+        declared_cohort = bool(request.cohort_paths)
+        risk_paths = sorted(request.cohort_paths) if declared_cohort else []
         static_effects, diagnostics = _static_effects(files)
+        risk_static_effects = (
+            _static_effects(
+                {path: raw for path, raw in files.items() if path in risk_paths}
+            )[0]
+            if declared_cohort
+            else static_effects
+        )
         diagnostics.extend(impact_diagnostics)
         if any(item.code == "secret_material_detected" for item in diagnostics):
             raise WorkspacePromotionInvalid(
@@ -1328,7 +1385,7 @@ class WorkspacePromotionPreviewService:
         declared_effects = metadata["effects"]
         computed_effects, undeclared = _reconcile_effects(
             declared_effects,
-            static_effects,
+            risk_static_effects,
             effects_declared=metadata["effects_declared"],
         )
         if not metadata["effects_declared"]:
@@ -1477,9 +1534,26 @@ class WorkspacePromotionPreviewService:
         for workflow in active_workflows:
             path = workflow.path.replace("\\", "/").lstrip("/")
             key = f"{path}::{workflow.function_name}"
-            risk_registration_states[str(workflow.id)] = (
-                self._activation_state(workflow) or {}
-            )
+            in_risk_scope = not declared_cohort or path in risk_paths
+            if in_risk_scope:
+                risk_registration_states[str(workflow.id)] = (
+                    self._activation_state(workflow) or {}
+                )
+            elif _promotion_risk_class(
+                ["bifrost.read"], [self._activation_state(workflow) or {}]
+            ) == "R2":
+                diagnostics.append(
+                    PromotionDiagnostic(
+                        code="inherited_registration_exposure",
+                        severity="warning",
+                        message=(
+                            "inherited active registration has an elevated exposure; "
+                            "the unchanged registration is preserved outside the "
+                            "candidate risk cohort"
+                        ),
+                        path=path,
+                    )
+                )
             if key in base.registrations and path not in closure_hashes:
                 continue
             sibling_metadata = _registered_entity_metadata(
@@ -1519,15 +1593,24 @@ class WorkspacePromotionPreviewService:
                 active_static_effects[path],
                 effects_declared=sibling_metadata["effects_declared"],
             )
-            cohort_effects.update(sibling_effects)
+            if in_risk_scope:
+                cohort_effects.update(sibling_effects)
             if not sibling_metadata["effects_declared"] and key != registration_key:
                 diagnostics.append(
                     PromotionDiagnostic(
-                        code="active_sibling_effects_undeclared",
+                        code=(
+                            "active_sibling_effects_undeclared"
+                            if in_risk_scope
+                            else "inherited_active_sibling_effects_undeclared"
+                        ),
                         severity="warning",
                         message=(
                             "active sibling effects are undeclared; promotion binds "
                             "the unknown state and requires R2 acknowledgement"
+                            if in_risk_scope
+                            else "inherited active sibling effects are undeclared; "
+                            "the unchanged registration is preserved outside the "
+                            "candidate risk cohort"
                         ),
                         path=path,
                     )
@@ -1535,10 +1618,19 @@ class WorkspacePromotionPreviewService:
             if sibling_undeclared and key != registration_key:
                 diagnostics.append(
                     PromotionDiagnostic(
-                        code="active_sibling_undeclared_static_effect",
+                        code=(
+                            "active_sibling_undeclared_static_effect"
+                            if in_risk_scope
+                            else "inherited_active_sibling_undeclared_static_effect"
+                        ),
                         severity="warning",
                         message=(
-                            "active sibling source implies undeclared effects: "
+                            (
+                                "active sibling source implies undeclared effects: "
+                                if in_risk_scope
+                                else "inherited active sibling source implies "
+                                "undeclared effects outside the candidate risk cohort: "
+                            )
                             + ", ".join(sorted(sibling_undeclared))
                         ),
                         path=path,
@@ -1552,20 +1644,6 @@ class WorkspacePromotionPreviewService:
             )
             risk_registrations = list(risk_registration_states.values())
         risk = _promotion_risk_class(computed_effects, risk_registrations)
-        declared_cohort = bool(request.cohort_paths)
-        if declared_cohort:
-            risk = "R2"
-            diagnostics.append(
-                PromotionDiagnostic(
-                    code="multi_root_cohort_requires_r2",
-                    severity="warning",
-                    message=(
-                        "a declared reviewed cohort requires candidate-bound R2 "
-                        "acknowledgement; one selected-entry run is not proof for its "
-                        "complete declared release obligation"
-                    ),
-                )
-            )
         missing_bounds = REQUIRED_R0_BOUNDS - set(metadata["bounds"])
         effective_bounds = dict(metadata["bounds"])
         runtime_bounds_source = "declared"
@@ -1650,18 +1728,28 @@ class WorkspacePromotionPreviewService:
             sibling_metadata = active_metadata[key]
             sibling_bounds = dict(sibling_metadata["bounds"])
             missing_sibling_bounds = REQUIRED_R0_BOUNDS - set(sibling_bounds)
-            if missing_sibling_bounds and risk == "R2":
+            inherited_sibling = declared_cohort and path not in risk_paths
+            if missing_sibling_bounds and (risk == "R2" or inherited_sibling):
                 sibling_bounds = {
                     **R2_POLICY_DEFAULT_BOUNDS,
                     **sibling_bounds,
                 }
                 diagnostics.append(
                     PromotionDiagnostic(
-                        code="active_sibling_policy_bounds",
+                        code=(
+                            "inherited_active_sibling_policy_bounds"
+                            if inherited_sibling
+                            else "active_sibling_policy_bounds"
+                        ),
                         severity="warning",
                         message=(
-                            "active R2 sibling omits enforced bounds; the immutable "
-                            "registration uses platform policy defaults for: "
+                            (
+                                "inherited active sibling omits enforced bounds; "
+                                if inherited_sibling
+                                else "active R2 sibling omits enforced bounds; "
+                            )
+                            + "the immutable registration uses platform policy "
+                            "defaults for: "
                             + ", ".join(sorted(missing_sibling_bounds))
                         ),
                         path=path,
@@ -1697,7 +1785,11 @@ class WorkspacePromotionPreviewService:
             )
         effective_registrations = dict(sorted(effective_registrations.items()))
         expected_risk = (
-            "R2"
+            _promotion_risk_class_for_paths(
+                computed_effects,
+                effective_registrations.values(),
+                risk_paths,
+            )
             if declared_cohort
             else _promotion_risk_class(
                 computed_effects, effective_registrations.values()
@@ -1723,6 +1815,7 @@ class WorkspacePromotionPreviewService:
             "entry": request.entry.model_dump(),
             "validation_targets": [item.model_dump() for item in validation_targets],
             "risk_class": risk,
+            "risk_paths": risk_paths,
             "computed_effects": computed_effects,
             "registration_intent_fingerprint": registration_intent_fingerprint,
             "protected_source": protected_source.model_dump(),
@@ -1756,6 +1849,7 @@ class WorkspacePromotionPreviewService:
             "closure": [item.model_dump() for item in closure],
             "validation_targets": [item.model_dump() for item in validation_targets],
             "risk_class": risk,
+            "risk_paths": risk_paths,
             "protected_source": protected_source.model_dump(),
             "declared_effects": declared_effects,
             "static_effects": static_effects,
@@ -1893,6 +1987,7 @@ class WorkspacePromotionPreviewService:
             effective_registrations=effective_registrations,
             snapshot_id=request.snapshot.snapshot_id,
             risk_class=risk,
+            risk_paths=risk_paths,
             policy_version=PROMOTION_PREVIEW_POLICY,
             closure=closure,
             validation_targets=validation_targets,
@@ -2228,6 +2323,7 @@ class WorkspacePromotionPreviewService:
             closure=manifest["closure"],
             validation_targets=manifest["validation_targets"],
             risk_class=artifact.risk_class,
+            risk_paths=manifest.get("risk_paths", []),
             policy_version=artifact.policy_version,
             registration=manifest["registration"],
             protected_source=manifest["protected_source"],

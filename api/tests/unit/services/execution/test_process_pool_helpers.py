@@ -44,6 +44,7 @@ def _handle(
     execution_id: str | None = "exec-1",
     result_reported: bool = False,
     killed_at: datetime | None = None,
+    exitcode: int = 9,
 ) -> ProcessHandle:
     current_execution = None
     if execution_id:
@@ -54,7 +55,7 @@ def _handle(
         )
     return ProcessHandle(
         id=process_id,
-        process=SimpleNamespace(is_alive=lambda: alive, exitcode=9),
+        process=SimpleNamespace(is_alive=lambda: alive, exitcode=exitcode),
         pid=123,
         state=state,
         work_queue=SimpleNamespace(put_nowait=lambda _item: None),
@@ -188,6 +189,9 @@ async def test_report_timeout_cancellation_crash_and_orphan_shape_results():
     assert all(item["success"] is False for item in observed)
     assert timeout_handle.result_reported is True
     assert orphan_handle.result_reported is True
+    assert observed[2]["exit_code"] == 9
+    assert observed[2]["signal"] is None
+    assert observed[2]["worker_identity"].endswith(":process-1")
 
 
 @pytest.mark.asyncio
@@ -211,6 +215,18 @@ async def test_handle_result_frees_slot_and_forwards_callback():
     assert pool.processes == {}
     assert observed == [{"execution_id": "exec-1", "success": True}]
     assert notified == [True]
+
+
+@pytest.mark.asyncio
+async def test_report_crash_classifies_signal_exit():
+    observed = []
+    pool = ProcessPoolManager(on_result=AsyncMock(side_effect=observed.append))
+
+    await pool._report_crash(_handle(execution_id="exec-sigkill", exitcode=-9))
+
+    assert observed[0]["exit_code"] == -9
+    assert observed[0]["signal"] == 9
+    assert "signal=9" in observed[0]["error"]
 
 
 @pytest.mark.asyncio
@@ -640,7 +656,7 @@ async def test_route_execution_rejects_when_slot_wait_times_out(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_handle_command_dispatches_recycle_actions_and_ignores_unknown():
+async def test_handle_command_rejects_unaudited_controls_but_allows_generation_event():
     pool = ProcessPoolManager()
     process_commands: list[dict[str, object]] = []
     all_commands: list[dict[str, object]] = []
@@ -666,8 +682,8 @@ async def test_handle_command_dispatches_recycle_actions_and_ignores_unknown():
     await pool._handle_command(generation_changed)
     await pool._handle_command({"action": "unknown"})
 
-    assert process_commands == [recycle_process]
-    assert all_commands == [recycle_all]
+    assert process_commands == []
+    assert all_commands == []
     assert generation_commands == [generation_changed]
 
 

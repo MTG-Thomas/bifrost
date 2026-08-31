@@ -327,6 +327,11 @@ class _QueryResult:
         assert self._tuple_rows
         return self._rows
 
+    def scalar_one_or_none(self):
+        assert not self._tuple_rows
+        assert len(self._rows) <= 1
+        return self._rows[0] if self._rows else None
+
 
 class _CleanupSession:
     def __init__(self, results):
@@ -370,8 +375,8 @@ async def test_cleanup_sweeps_overdue_scheduled_and_null_start_running_rows() ->
     session = _CleanupSession(
         [
             _QueryResult([scheduled]),
-            _QueryResult([]),
             _QueryResult([(running, 1800)], tuple_rows=True),
+            _QueryResult([]),
             _QueryResult([]),
         ]
     )
@@ -423,9 +428,43 @@ async def test_cleanup_sweeps_overdue_scheduled_and_null_start_running_rows() ->
     assert session.add.call_count == 2
 
     scheduled_query = str(session.execute.await_args_list[0].args[0])
-    pending_query = str(session.execute.await_args_list[1].args[0])
     assert "coalesce(executions.scheduled_at, executions.created_at)" in scheduled_query
-    assert (
-        "coalesce(executions.started_at, executions.scheduled_at, executions.created_at)"
-        in pending_query
+
+
+@pytest.mark.asyncio
+async def test_cleanup_does_not_terminalize_old_pending_rows() -> None:
+    session = _CleanupSession(
+        [
+            _QueryResult([]),
+            _QueryResult([], tuple_rows=True),
+            _QueryResult([]),
+        ]
     )
+    with (
+        patch.object(execution_cleanup, "get_session_factory", return_value=lambda: session),
+        patch.object(
+            execution_cleanup,
+            "_load_worker_heartbeat_state",
+            new_callable=AsyncMock,
+            return_value={
+                "active_execution_ids": set(),
+                "oldest_worker_started_at": None,
+                "heartbeat_count": 0,
+            },
+        ),
+        patch.object(
+            execution_cleanup,
+            "_cleanup_stale_agent_runs",
+            new_callable=AsyncMock,
+            return_value={
+                "agent_run_queued_timeouts": 0,
+                "agent_run_running_timeouts": 0,
+                "agent_run_total_cleaned": 0,
+                "agent_run_errors": [],
+            },
+        ),
+    ):
+        result = await execution_cleanup.cleanup_stuck_executions()
+
+    assert result["pending_timeouts"] == 0
+    assert session.execute.await_count == 3

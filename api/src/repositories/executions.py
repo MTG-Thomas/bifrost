@@ -25,11 +25,13 @@ from src.models import (
     AIUsagePublicSimple,
     AIUsageTotalsSimple,
     Execution,
-    ExecutionAttempt,
     ExecutionLog,
     ExecutionLogPublic,
     WorkflowExecution,
 )
+from src.models.orm.executions import WorkflowExecutionAttempt
+
+ExecutionAttempt = WorkflowExecutionAttempt
 from src.models.enums import ExecutionStatus
 from src.repositories.base import BaseRepository
 

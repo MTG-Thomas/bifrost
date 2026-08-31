@@ -5,6 +5,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from src.jobs.execution_policy import (
+    WorkloadClass,
+    platform_job_operations_policy,
+)
 from src.jobs.platform.base import (
     PlatformJobContext,
     PlatformJobDefinition,
@@ -51,5 +55,9 @@ GIT_OPERATION_DEFINITION = PlatformJobDefinition(
         max_attempts=2,
         max_concurrency=1,
         min_memory_headroom_mb=512,
+    ),
+    operations_policy=platform_job_operations_policy(
+        "workspace.git",
+        workload_class=WorkloadClass.PLATFORM_INTERACTIVE,
     ),
 )

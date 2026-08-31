@@ -132,11 +132,11 @@ class Execution(Base):
     form: Mapped["Form | None"] = relationship(back_populates="executions")
     logs: Mapped[list["ExecutionLog"]] = relationship(back_populates="execution")
     ai_usages: Mapped[list["AIUsage"]] = relationship(back_populates="execution")
-    attempts: Mapped[list["ExecutionAttempt"]] = relationship(
+    attempts: Mapped[list["WorkflowExecutionAttempt"]] = relationship(
         back_populates="execution",
         cascade="all, delete-orphan",
         passive_deletes=True,
-        order_by="ExecutionAttempt.attempt_number",
+        order_by="WorkflowExecutionAttempt.attempt_number",
     )
 
     __table_args__ = (
@@ -152,7 +152,7 @@ class Execution(Base):
     )
 
 
-class ExecutionAttempt(Base):
+class WorkflowExecutionAttempt(Base):
     """One durable claim/run attempt for a logical workflow execution.
 
     Attempt rows contain bounded lifecycle evidence only. Inputs, results,
@@ -160,7 +160,7 @@ class ExecutionAttempt(Base):
     surfaces.
     """
 
-    __tablename__ = "execution_attempts"
+    __tablename__ = "workflow_execution_attempts"
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     execution_id: Mapped[UUID] = mapped_column(
@@ -201,32 +201,32 @@ class ExecutionAttempt(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "execution_id", "attempt_number", name="uq_execution_attempt_number"
+            "execution_id", "attempt_number", name="uq_workflow_execution_attempt_number"
         ),
-        UniqueConstraint("claim_token", name="uq_execution_attempt_claim_token"),
+        UniqueConstraint("claim_token", name="uq_workflow_execution_attempt_claim_token"),
         CheckConstraint(
             "status IN ('dispatching', 'published', 'claimed', 'running', "
             "'succeeded', 'failed', 'timed_out', "
             "'cancelled', 'admission_rejected', 'worker_lost')",
-            name="ck_execution_attempt_status",
+            name="ck_workflow_execution_attempt_status",
         ),
         CheckConstraint(
             "phase IN ('dispatch', 'queue', 'claim', 'admission', 'execution', "
             "'result', 'terminal')",
-            name="ck_execution_attempt_phase",
+            name="ck_workflow_execution_attempt_phase",
         ),
         CheckConstraint(
             "failure_phase IS NULL OR failure_phase IN ('dispatch', 'queue', "
             "'claim', 'admission', 'execution', 'result', 'worker', "
             "'cancellation')",
-            name="ck_execution_attempt_failure_phase",
+            name="ck_workflow_execution_attempt_failure_phase",
         ),
         CheckConstraint(
             "((status IN ('dispatching', 'published', 'claimed', 'running') "
             "AND completed_at IS NULL) OR (status IN ('succeeded', 'failed', "
             "'timed_out', 'cancelled', 'admission_rejected', 'worker_lost') "
             "AND completed_at IS NOT NULL))",
-            name="ck_execution_attempt_terminal_time",
+            name="ck_workflow_execution_attempt_terminal_time",
         ),
         CheckConstraint(
             "((status = 'dispatching' AND claim_token IS NULL AND "
@@ -238,16 +238,16 @@ class ExecutionAttempt(Base):
             "OR (status = 'running' AND claim_token IS NOT NULL AND "
             "published_at IS NOT NULL AND claimed_at IS NOT NULL AND "
             "started_at IS NOT NULL) OR completed_at IS NOT NULL)",
-            name="ck_execution_attempt_state_shape",
+            name="ck_workflow_execution_attempt_state_shape",
         ),
         Index(
-            "uq_execution_attempt_active",
+            "uq_workflow_execution_attempt_active",
             "execution_id",
             unique=True,
             postgresql_where=text("completed_at IS NULL"),
         ),
         Index(
-            "ix_execution_attempts_active_heartbeat",
+            "ix_workflow_execution_attempts_active_heartbeat",
             "status",
             "heartbeat_at",
             postgresql_where=text(

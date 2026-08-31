@@ -125,9 +125,10 @@ both the authored tests and those remaining scenarios before rollout.
 The Milestone 1 validation run on 2026-08-31 used the isolated
 `bifrost-platform-test-debian13-01` VM stack. It verified a clean migration,
 an explicit downgrade to `20260827_event_criteria`, and upgrade back to
-`20260831_execution_attempts`; the downgrade removed both the attempt table and
-parent tracking marker. PostgreSQL selected `uq_execution_attempt_number` for
-ordered execution-detail lookup and `ix_execution_attempts_active_heartbeat`
+`20260831_execution_attempts`; the downgrade removed both the workflow attempt
+table and parent tracking marker. PostgreSQL selected
+`uq_workflow_execution_attempt_number` for ordered execution-detail lookup and
+`ix_workflow_execution_attempts_active_heartbeat`
 for the active heartbeat scan. Focused backend, workflow E2E, generated-client
 typecheck, and attempt-history component tests passed. Production-cardinality
 `EXPLAIN (ANALYZE, BUFFERS)` and post-deployment failure counts remain rollout
