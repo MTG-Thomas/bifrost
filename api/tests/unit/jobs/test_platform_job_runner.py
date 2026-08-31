@@ -37,8 +37,9 @@ async def test_runner_restores_requesting_actor_for_handler(monkeypatch) -> None
         requested_by_email="operator@example.com",
         requested_by_name="Operator",
     )
-    db = AsyncMock()
-    db.execute.return_value.scalar_one_or_none.return_value = job
+    db = SimpleNamespace(
+        execute=AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=lambda: job))
+    )
 
     @asynccontextmanager
     async def db_context():
