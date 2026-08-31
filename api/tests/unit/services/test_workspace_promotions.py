@@ -96,7 +96,7 @@ def test_multi_root_impact_uses_union_forward_closure() -> None:
         "modules/vendor.py": b"def call(): return 1\n",
     }
 
-    diagnostics, forward, affected = _canonical_impact_diagnostics(
+    diagnostics, _baseline, forward, affected = _canonical_impact_diagnostics(
         entry_path="features/first.py",
         base_files={},
         closure_files=files,
@@ -988,7 +988,7 @@ async def test_autotask_shared_parser_reverse_dependents_become_validation_targe
         "features/cove/restore.py": live["features/cove/restore.py"],
         "features/autotask/_ticket_lifecycle.py": stale_helper,
     }
-    diagnostics, closure, affected = _canonical_impact_diagnostics(
+    diagnostics, _baseline, closure, affected = _canonical_impact_diagnostics(
         entry_path="features/cove/restore.py",
         base_files=live,
         closure_files=candidate,
@@ -1058,7 +1058,7 @@ def test_affected_graph_uncertainty_remains_fail_closed() -> None:
         ),
     }
 
-    diagnostics, _forward, _affected = _canonical_impact_diagnostics(
+    diagnostics, _baseline, _forward, _affected = _canonical_impact_diagnostics(
         entry_path="workflows/parent.py",
         base_files=files,
         closure_files=files,

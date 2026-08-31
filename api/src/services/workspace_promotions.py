@@ -50,6 +50,7 @@ from bifrost.workspace_release import (
 from src.models.contracts.workspace_promotions import (
     PromotionClosureMember,
     PromotionDiagnostic,
+    PromotionDiagnosticSubject,
     PromotionEntry,
     PromotionRegistrationEvidence,
     PromotionSourceEvidence,
@@ -80,8 +81,12 @@ from src.services.workflow_registration import (
     resolve_workflow_registration_id,
 )
 from src.services.workspace_promotion_storage import WorkspacePromotionArtifactStorage
+from src.services.workspace_promotion_diagnostics import (
+    blocking_diagnostics,
+    compare_promotion_diagnostics,
+)
 
-PROMOTION_PREVIEW_POLICY = "workspace-release-artifact/2026-08-24"
+PROMOTION_PREVIEW_POLICY = "workspace-release-artifact/2026-08-31-differential-v1"
 PROMOTION_BUNDLE_SCHEMA_V2 = "bifrost.workspace-promotion-bundle/v2"
 PROMOTION_ARTIFACT_SCHEMA = "bifrost.workspace-release-artifact/v1"
 ARTIFACT_TTL = timedelta(days=7)
@@ -981,7 +986,12 @@ def _canonical_impact_diagnostics(
     base_files: dict[str, bytes],
     closure_files: dict[str, bytes],
     cohort_paths: list[str] | None = None,
-) -> tuple[list[PromotionDiagnostic], set[str], set[str]]:
+) -> tuple[
+    list[PromotionDiagnostic],
+    list[PromotionDiagnostic],
+    set[str],
+    set[str],
+]:
     effective_python = {
         path: raw
         for path, raw in {**base_files, **closure_files}.items()
@@ -989,6 +999,14 @@ def _canonical_impact_diagnostics(
     }
     try:
         analysis = analyze_workspace_impact(effective_python)
+        base_analysis = analyze_workspace_impact(
+            {
+                path: raw
+                for path, raw in base_files.items()
+                if path.endswith(".py")
+                and path.split("/", 1)[0] in WORKSPACE_IMPORT_ROOTS
+            }
+        )
     except PromotionBundleError as exc:
         raise WorkspacePromotionInvalid(str(exc)) from exc
 
@@ -1016,47 +1034,67 @@ def _canonical_impact_diagnostics(
     for path in changed:
         affected.update(transitive_distances(path, reverse))
 
-    diagnostics: list[PromotionDiagnostic] = []
-    for path in sorted(affected):
-        if unresolved := analysis.unresolved_imports.get(path):
-            diagnostics.append(
-                PromotionDiagnostic(
-                    code="unresolved_repo_import",
-                    severity="blocker",
-                    message="unresolved repo-local imports: " + ", ".join(unresolved),
-                    path=path,
+    def graph_diagnostics(source_analysis: Any) -> list[PromotionDiagnostic]:
+        result: list[PromotionDiagnostic] = []
+        for path in sorted(affected):
+            for unresolved in source_analysis.unresolved_imports.get(path, ()):
+                result.append(
+                    PromotionDiagnostic(
+                        code="unresolved_repo_import",
+                        severity="blocker",
+                        message=f"unresolved repo-local import: {unresolved}",
+                        path=path,
+                        subject=PromotionDiagnosticSubject(
+                            kind="import", key=unresolved
+                        ),
+                        enforcement="differential",
+                    )
                 )
-            )
-        if ambiguous := analysis.ambiguous_references.get(path):
-            diagnostics.append(
-                PromotionDiagnostic(
-                    code="ambiguous_workflow_reference",
-                    severity="blocker",
-                    message="workflow reference resolves ambiguously: "
-                    + ", ".join(ambiguous),
-                    path=path,
+            for ambiguous in source_analysis.ambiguous_references.get(path, ()):
+                result.append(
+                    PromotionDiagnostic(
+                        code="ambiguous_workflow_reference",
+                        severity="blocker",
+                        message=f"workflow reference resolves ambiguously: {ambiguous}",
+                        path=path,
+                        subject=PromotionDiagnosticSubject(
+                            kind="workflow_reference", key=ambiguous
+                        ),
+                        enforcement="differential",
+                    )
                 )
-            )
-        if path in analysis.dynamic_importers:
-            diagnostics.append(
-                PromotionDiagnostic(
-                    code="dynamic_import_unresolved",
-                    severity="blocker",
-                    message="computed dynamic import prevents complete impact proof",
-                    path=path,
+            if path in source_analysis.dynamic_importers:
+                result.append(
+                    PromotionDiagnostic(
+                        code="dynamic_import_unresolved",
+                        severity="blocker",
+                        message="computed dynamic import prevents complete impact proof",
+                        path=path,
+                        subject=PromotionDiagnosticSubject(
+                            kind="dynamic_import", key=path
+                        ),
+                        enforcement="differential",
+                    )
                 )
-            )
-        if path in analysis.dynamic_reference_importers:
-            diagnostics.append(
-                PromotionDiagnostic(
-                    code="dynamic_workflow_reference_unresolved",
-                    severity="blocker",
-                    message=(
-                        "computed workflow reference prevents complete impact proof"
-                    ),
-                    path=path,
+            if path in source_analysis.dynamic_reference_importers:
+                result.append(
+                    PromotionDiagnostic(
+                        code="dynamic_workflow_reference_unresolved",
+                        severity="blocker",
+                        message=(
+                            "computed workflow reference prevents complete impact proof"
+                        ),
+                        path=path,
+                        subject=PromotionDiagnosticSubject(
+                            kind="dynamic_workflow_reference", key=path
+                        ),
+                        enforcement="differential",
+                    )
                 )
-            )
+        return result
+
+    diagnostics = graph_diagnostics(analysis)
+    baseline_diagnostics = graph_diagnostics(base_analysis)
 
     for changed_path in sorted(changed):
         outside = sorted(set(transitive_distances(changed_path, reverse)) - submitted)
@@ -1072,7 +1110,7 @@ def _canonical_impact_diagnostics(
                     path=changed_path,
                 )
             )
-    return diagnostics, forward, affected
+    return diagnostics, baseline_diagnostics, forward, affected
 
 
 async def build_workspace_promotion_preview_service(
@@ -1144,7 +1182,7 @@ class WorkspacePromotionPreviewService:
         metadata = _entry_metadata(
             files[request.entry.path], request.entry.path, request.entry.function
         )
-        graph_diagnostics, _, _ = _canonical_impact_diagnostics(
+        graph_diagnostics, _, _, _ = _canonical_impact_diagnostics(
             entry_path=request.entry.path,
             base_files=base.files,
             closure_files=files,
@@ -1360,7 +1398,12 @@ class WorkspacePromotionPreviewService:
         metadata = _entry_metadata(
             files[request.entry.path], request.entry.path, request.entry.function
         )
-        impact_diagnostics, _, affected_paths = _canonical_impact_diagnostics(
+        (
+            impact_diagnostics,
+            baseline_diagnostics,
+            _,
+            affected_paths,
+        ) = _canonical_impact_diagnostics(
             entry_path=request.entry.path,
             base_files=base.files,
             closure_files=files,
@@ -1566,17 +1609,46 @@ class WorkspacePromotionPreviewService:
                 if getattr(workflow, field) != sibling_metadata[field]
             ]
             if metadata_drift and key != registration_key:
-                diagnostics.append(
-                    PromotionDiagnostic(
-                        code="active_sibling_registration_metadata_drift",
-                        severity="blocker",
-                        message=(
-                            "active sibling registry metadata differs from reviewed "
-                            "source: " + ", ".join(metadata_drift)
-                        ),
-                        path=path,
+                for field in metadata_drift:
+                    diagnostics.append(
+                        PromotionDiagnostic(
+                            code="active_sibling_registration_metadata_drift",
+                            severity="blocker",
+                            message=(
+                                "active sibling registry metadata differs from "
+                                f"reviewed source: {field}"
+                            ),
+                            path=path,
+                            subject=PromotionDiagnosticSubject(
+                                kind="workflow_registration_field",
+                                key=f"{workflow.id}:{field}",
+                            ),
+                            enforcement="differential",
+                        )
                     )
+            if key != registration_key and path in base.files:
+                baseline_metadata = _registered_entity_metadata(
+                    base.files[path], path, workflow.function_name
                 )
+                for field in ("name", "type"):
+                    if getattr(workflow, field) == baseline_metadata[field]:
+                        continue
+                    baseline_diagnostics.append(
+                        PromotionDiagnostic(
+                            code="active_sibling_registration_metadata_drift",
+                            severity="blocker",
+                            message=(
+                                "active sibling registry metadata differs from "
+                                f"reviewed source: {field}"
+                            ),
+                            path=path,
+                            subject=PromotionDiagnosticSubject(
+                                kind="workflow_registration_field",
+                                key=f"{workflow.id}:{field}",
+                            ),
+                            enforcement="differential",
+                        )
+                    )
             if path not in active_static_effects:
                 path_effects, path_diagnostics = _static_effects(
                     {path: effective_source[path]}
@@ -1765,8 +1837,31 @@ class WorkspacePromotionPreviewService:
                             + ", ".join(sorted(missing_sibling_bounds))
                         ),
                         path=path,
+                        subject=PromotionDiagnosticSubject(
+                            kind="workflow_registration_bounds",
+                            key=str(workflow.id),
+                        ),
+                        enforcement="differential",
                     )
                 )
+            if key != registration_key and path in base.files:
+                baseline_metadata = _registered_entity_metadata(
+                    base.files[path], path, workflow.function_name
+                )
+                if REQUIRED_R0_BOUNDS - set(baseline_metadata["bounds"]):
+                    baseline_diagnostics.append(
+                        PromotionDiagnostic(
+                            code="active_sibling_registration_bounds_missing",
+                            severity="blocker",
+                            message="active sibling lacks enforced bounds",
+                            path=path,
+                            subject=PromotionDiagnosticSubject(
+                                kind="workflow_registration_bounds",
+                                key=str(workflow.id),
+                            ),
+                            enforcement="differential",
+                        )
+                    )
             effective_registrations[key] = _preserved_effective_registration(
                 workflow,
                 source_sha256=effective_files[path],
@@ -1802,6 +1897,20 @@ class WorkspacePromotionPreviewService:
         effective_registration_manifest_id = workspace_registration_manifest_id(
             effective_registrations
         )
+        diagnostic_delta = compare_promotion_diagnostics(
+            baseline_release_id=base.release_id,
+            baseline_manifest_id=base.manifest_id,
+            affected_paths=affected_paths,
+            baseline=baseline_diagnostics,
+            candidate=diagnostics,
+        )
+        legacy_blocked = any(item.severity == "blocker" for item in diagnostics)
+        differential_blocked = bool(blocking_diagnostics(diagnostic_delta))
+        diagnostic_decision = {
+            "schema_version": "bifrost.workspace-diagnostic-decision/v1",
+            "legacy_blocked": legacy_blocked,
+            "differential_blocked": differential_blocked,
+        }
         release_payload = {
             "organization_id": str(self.organization_id),
             "base_release_id": base.release_id,
@@ -1859,6 +1968,8 @@ class WorkspacePromotionPreviewService:
             "runtime_bounds_source": runtime_bounds_source,
             "requested_bounds": metadata["requested_bounds"],
             "diagnostics": [item.model_dump() for item in diagnostics],
+            "diagnostic_delta": diagnostic_delta.model_dump(),
+            "diagnostic_decision": diagnostic_decision,
             "registration": {
                 "intent": registration_intent,
                 "intent_fingerprint": registration_intent_fingerprint,
@@ -1954,6 +2065,17 @@ class WorkspacePromotionPreviewService:
                 "entry_function": request.entry.function,
                 "risk_class": risk,
                 "policy_version": PROMOTION_PREVIEW_POLICY,
+                "diagnostic_policy_version": diagnostic_delta.schema_version,
+                "diagnostic_introduced": len(diagnostic_delta.introduced),
+                "diagnostic_worsened": len(diagnostic_delta.worsened),
+                "diagnostic_unchanged": len(diagnostic_delta.unchanged),
+                "diagnostic_resolved": len(diagnostic_delta.resolved),
+                "diagnostic_unrelated": len(diagnostic_delta.unrelated),
+                "legacy_blocked": legacy_blocked,
+                "differential_blocked": differential_blocked,
+                "diagnostic_decision_diverged": (
+                    legacy_blocked != differential_blocked
+                ),
                 "closure": [
                     {"path": item.path, "sha256": item.sha256} for item in closure
                 ],
@@ -2004,6 +2126,8 @@ class WorkspacePromotionPreviewService:
             supersedes_candidate_id=request.supersedes_candidate_id,
             source_artifact_key=artifact.source_artifact_key,
             diagnostics=diagnostics,
+            diagnostic_delta=diagnostic_delta,
+            diagnostic_decision=diagnostic_decision,
             expires_at=artifact.expires_at,
         )
 
@@ -2336,6 +2460,8 @@ class WorkspacePromotionPreviewService:
             requested_bounds=manifest["requested_bounds"],
             local_run=manifest.get("local_run"),
             diagnostics=manifest.get("diagnostics", []),
+            diagnostic_delta=manifest.get("diagnostic_delta"),
+            diagnostic_decision=manifest.get("diagnostic_decision"),
             lifecycle_status=await self._lifecycle(artifact),
             supersedes_candidate_id=manifest.get("supersedes_candidate_id"),
             source_artifact_key=artifact.source_artifact_key,
