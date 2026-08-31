@@ -302,10 +302,9 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
                         and locked_anchor >= scheduled_cutoff
                     ):
                         continue
-                    if (
-                        execution.status == ExecutionStatus.PENDING.value
-                        and locked_anchor >= pending_cutoff
-                    ):
+                    # PENDING rows are not cleanup candidates in this sweep.
+                    # Reaching it here means publication won after discovery.
+                    if execution.status == ExecutionStatus.PENDING.value:
                         continue
                     if (
                         execution.status == ExecutionStatus.CANCELLING.value
