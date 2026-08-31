@@ -257,7 +257,7 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # retain their existing request and response behavior.
     # Promotion responses gained optional risk_paths (2026-08-29). ADDITIVE:
     # old clients ignore it and retain their existing risk-class handling.
-    "9aa08854f3f37f03139643d568cd032e21a6b70be49d44179c25943cc5517dfa"
+    "7be790668fda1514867b67b863933f25fbbc51625b7568e1914c78d31ce68d2b"
 )
 
 
