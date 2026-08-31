@@ -314,12 +314,11 @@ def _check_cli_version() -> None:
             f"(server reported no version). Continuing."
         )
         return
-    if server_version != installed:
-        _warn(
-            f"Could not verify contract compatibility — {api_url} predates "
-            f"contract versioning (CLI {installed}, server {server_version}). "
-            f"Continuing; consider upgrading the server."
-        )
+    _warn(
+        f"Could not verify contract compatibility — {api_url} predates "
+        f"contract versioning (CLI {installed}, server {server_version}). "
+        f"Continuing; consider upgrading the server."
+    )
 
 
 def _resolve_login_api_url(api_url: str | None) -> str | None:
