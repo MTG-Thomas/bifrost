@@ -24,13 +24,15 @@
  */
 
 import { StrictMode } from "react";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
+	act,
 	renderWithProviders,
 	screen,
 	waitFor,
 	fireEvent,
 } from "@/test-utils";
+import type { WebMcpTool } from "@/lib/app-sdk/webmcp";
 import type { FormField } from "@/lib/client-types";
 
 // Mock the submit mutation. Each test can override mutateAsync/isPending.
@@ -47,9 +49,7 @@ vi.mock("@/hooks/useForms", () => ({
 const mockNavigate = vi.fn();
 vi.mock("react-router", async () => {
 	const actual =
-		await vi.importActual<typeof import("react-router")>(
-			"react-router",
-		);
+		await vi.importActual<typeof import("react-router")>("react-router");
 	return {
 		...actual,
 		useNavigate: () => mockNavigate,
@@ -159,6 +159,104 @@ beforeEach(() => {
 	mockMutateAsync.mockResolvedValue({
 		execution_id: "exec-1",
 		status: "Pending",
+	});
+});
+
+afterEach(() => {
+	delete (document as Document & { modelContext?: unknown }).modelContext;
+});
+
+describe("FormRenderer — WebMCP pilot", () => {
+	it("fills and validates the visible form without submitting", async () => {
+		const registered: WebMcpTool[] = [];
+		Object.defineProperty(document, "modelContext", {
+			configurable: true,
+			value: {
+				registerTool: vi.fn((tool: WebMcpTool) => {
+					registered.push(tool);
+				}),
+			},
+		});
+		const form = makeForm([
+			{ name: "email", label: "Email", type: "email", required: true },
+		]);
+		const view = renderWithProviders(
+			<FormRenderer form={form} enableWebMcp />,
+		);
+
+		await waitFor(() =>
+			expect(registered.length).toBeGreaterThanOrEqual(4),
+		);
+		const fill = [...registered]
+			.reverse()
+			.find((tool) => tool.name === "fill-current-form");
+		const validate = [...registered]
+			.reverse()
+			.find((tool) => tool.name === "validate-current-form");
+		expect(fill).toBeDefined();
+		expect(validate).toBeDefined();
+
+		await act(async () => {
+			await fill!.execute(
+				{ values: { email: "agent@example.com" } },
+				{ signal: new AbortController().signal },
+			);
+		});
+		expect(screen.getByLabelText(/email/i)).toHaveValue(
+			"agent@example.com",
+		);
+		const result = await validate!.execute(
+			{},
+			{ signal: new AbortController().signal },
+		);
+		expect(result).toMatchObject({ valid: true, authoritative: false });
+		expect(mockMutateAsync).not.toHaveBeenCalled();
+
+		view.unmount();
+	});
+
+	it("rejects hidden, file, and display-only fields instead of filling them", async () => {
+		const registered: WebMcpTool[] = [];
+		Object.defineProperty(document, "modelContext", {
+			configurable: true,
+			value: {
+				registerTool: (tool: WebMcpTool) => registered.push(tool),
+			},
+		});
+		const form = makeForm([
+			{
+				name: "attachment",
+				label: "Attachment",
+				type: "file",
+				required: false,
+			},
+			{
+				name: "instructions",
+				label: "Instructions",
+				type: "html",
+				required: false,
+			},
+		]);
+		renderWithProviders(<FormRenderer form={form} enableWebMcp />);
+		await waitFor(() =>
+			expect(registered.length).toBeGreaterThanOrEqual(4),
+		);
+		const fill = [...registered]
+			.reverse()
+			.find((tool) => tool.name === "fill-current-form")!;
+
+		await expect(
+			fill.execute(
+				{ values: { attachment: "_files/forged" } },
+				{ signal: new AbortController().signal },
+			),
+		).rejects.toThrow(/file uploads/i);
+		await expect(
+			fill.execute(
+				{ values: { instructions: "forged" } },
+				{ signal: new AbortController().signal },
+			),
+		).rejects.toThrow(/display-only/i);
 	});
 });
 
@@ -277,7 +375,9 @@ describe("FormRenderer — required validation", () => {
 
 		const submit = screen.getByRole("button", { name: /submit/i });
 		expect(submit).toBeDisabled();
-		await user.click(screen.getByRole("button", { name: "Verify visitor" }));
+		await user.click(
+			screen.getByRole("button", { name: "Verify visitor" }),
+		);
 		await waitFor(() => expect(submit).toBeEnabled());
 		await user.click(submit);
 

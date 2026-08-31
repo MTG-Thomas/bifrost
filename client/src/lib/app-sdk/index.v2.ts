@@ -20,8 +20,8 @@ export type { BifrostHeaderProps } from "./bifrost-header";
 // low-level building block they wrap.
 export { useWorkflowQuery, useWorkflowMutation } from "./use-workflow-hooks";
 export type {
-  UseWorkflowQueryState,
-  UseWorkflowMutationState,
+	UseWorkflowQueryState,
+	UseWorkflowMutationState,
 } from "./use-workflow-hooks";
 
 export { useWorkflow } from "./use-workflow";
@@ -29,10 +29,10 @@ export type { UseWorkflowState } from "./use-workflow";
 
 export { useTable } from "./use-table";
 export type {
-  DocumentFilter,
-  FilterValue,
-  TableRow,
-  UseTableQuery,
+	DocumentFilter,
+	FilterValue,
+	TableRow,
+	UseTableQuery,
 } from "./use-table";
 
 export { useInfiniteTable } from "./use-infinite-table";
@@ -59,3 +59,18 @@ export type {
 
 export { useFiles } from "./use-files";
 export type { UseFilesOptions, UseFilesResult } from "./use-files";
+
+export {
+	isWebMcpAvailable,
+	registerWebMcpTool,
+	useWebMcpTool,
+	useWebMcpWorkflowTool,
+} from "./webmcp";
+export type {
+	UseWebMcpToolOptions,
+	UseWebMcpWorkflowToolDefinition,
+	WebMcpExecuteOptions,
+	WebMcpRegisterOptions,
+	WebMcpTool,
+	WebMcpToolAnnotations,
+} from "./webmcp";
