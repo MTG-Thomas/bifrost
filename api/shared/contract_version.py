@@ -1,15 +1,11 @@
-"""Legacy transition marker for CLIs released without minimum-version gating.
+"""Server-side source of truth for CLI contract compatibility.
 
-Version 10 is returned by ``GET /api/version`` so already-installed CLIs that
-still treat ``contract_version`` as a hard gate upgrade once into a CLI that
-honors the server's ``min_cli_version``. New CLIs ignore this value at runtime.
-
-Keep this marker frozen at 10. The ongoing compatibility mechanism is
-``MIN_CLI_VERSION`` in ``shared/version.py``; the contract fingerprint test is
-the development-time tripwire that prompts an explicit minimum-version decision.
+The API returns this value from ``GET /api/version``. CLIs hard-block only when
+their baked contract version differs, while ordinary build drift remains a soft
+upgrade notice.
 """
 
-#: Frozen one-release bridge for legacy CLIs. See module docstring.
+#: Breaking-change counter for the CLI/server contract. See module docstring.
 # v2: claims organization_id widened to nullable for global/solution-managed claims (2026-06-13)
 # v4: unified --org standard — SolutionCreate/SolutionBase drop `scope` (install
 #     kind is derived from organization_id); SolutionRepoPreviewRequest gains
@@ -41,7 +37,7 @@ CONTRACT_VERSION: int = 11
 
 
 def get_contract_version() -> int:
-    """Return the server's frozen legacy bridge version.
+    """Return the server's CLI contract version.
 
     Prefer this accessor over importing the bare constant: it gives the value a
     single resolved read site (callers go through a function, not a module
