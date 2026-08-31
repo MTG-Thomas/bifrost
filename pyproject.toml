@@ -111,9 +111,9 @@ dependencies = [
     # Logging & Monitoring
     # =========================================================================
     "psutil",  # Process monitoring for worker heartbeats
-    "sentry-sdk[fastapi]==2.60.0",  # Optional error reporting imported by src.core.sentry
-    "opentelemetry-sdk==1.41.1",  # Optional telemetry providers imported by src.core.telemetry
-    "opentelemetry-exporter-otlp-proto-grpc==1.41.1",  # Optional OTLP exporters
+    "sentry-sdk[fastapi]==2.68.1",  # Optional error reporting imported by src.core.sentry
+    "opentelemetry-sdk==1.44.0",  # Optional telemetry providers imported by src.core.telemetry
+    "opentelemetry-exporter-otlp-proto-grpc==1.44.0",  # Optional OTLP exporters
 
     # =========================================================================
     # Testing
@@ -140,13 +140,13 @@ dependencies = [
     # =========================================================================
     # Exact pins are intentional: the Harness API is still pre-1.0 and is the
     # execution boundary for every Bifrost agent surface.
-    "pydantic-ai-slim[openai,anthropic,google,retries]==2.33.0",
-    "pydantic-ai-harness==0.24.0",
+    "pydantic-ai-slim[openai,anthropic,google,retries]==2.35.3",
+    "pydantic-ai-harness==0.27.0",
 
     # =========================================================================
     # MCP (Model Context Protocol)
     # =========================================================================
-    "mcp==2.0.0",  # MCP v2 protocol engine; exact pin contains compatibility risk
+    "mcp==2.1.1",  # MCP v2 protocol engine; exact pin contains compatibility risk
     "fastmcp==4.0.0b1",  # FastMCP 4 prerelease; exact pin until the stable release
     "jsonschema>=4.26.0,<5",  # Validate live gateway tool arguments
 
