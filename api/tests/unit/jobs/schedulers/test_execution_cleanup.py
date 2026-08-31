@@ -41,6 +41,7 @@ def test_is_restart_orphan_when_execution_predates_current_workers():
     )
     heartbeat_state = {
         "active_execution_ids": set(),
+        "live_worker_incarnation_ids": set(),
         "oldest_worker_started_at": now - timedelta(minutes=5),
         "heartbeat_count": 3,
     }
@@ -57,6 +58,7 @@ def test_is_restart_orphan_keeps_execution_claimed_by_heartbeat():
     )
     heartbeat_state = {
         "active_execution_ids": {str(execution_id)},
+        "live_worker_incarnation_ids": set(),
         "oldest_worker_started_at": now - timedelta(minutes=5),
         "heartbeat_count": 3,
     }
@@ -72,6 +74,7 @@ def test_is_restart_orphan_waits_for_worker_grace_period():
     )
     heartbeat_state = {
         "active_execution_ids": set(),
+        "live_worker_incarnation_ids": set(),
         "oldest_worker_started_at": now - timedelta(seconds=30),
         "heartbeat_count": 3,
     }
@@ -134,6 +137,7 @@ async def test_load_worker_heartbeat_state_returns_empty_state_without_redis(mon
 
     assert state == {
         "active_execution_ids": set(),
+        "live_worker_incarnation_ids": set(),
         "oldest_worker_started_at": None,
         "heartbeat_count": 0,
     }
@@ -281,6 +285,7 @@ async def test_load_worker_heartbeat_failure_does_not_block_age_cleanup(monkeypa
 
     assert state == {
         "active_execution_ids": set(),
+        "live_worker_incarnation_ids": set(),
         "oldest_worker_started_at": None,
         "heartbeat_count": 0,
     }
@@ -336,12 +341,36 @@ class _QueryResult:
 class _CleanupSession:
     def __init__(self, results):
         self._results = list(results)
+        self._executions = {}
+        for result in self._results:
+            for row in result._rows:
+                execution = row[0] if result._tuple_rows else row
+                if hasattr(execution, "id"):
+                    self._executions[execution.id] = execution
         self.execute = AsyncMock(side_effect=self._execute)
+        self.scalar = AsyncMock(side_effect=self._scalar)
         self.commit = AsyncMock()
         self.add = MagicMock()
 
-    async def _execute(self, _query):
+    async def _execute(self, query):
+        if "pg_advisory_xact_lock" in str(query):
+            return _QueryResult([])
         return self._results.pop(0)
+
+    async def _scalar(self, query):
+        statement = str(query)
+        if "FROM executions" in statement:
+            params = query.compile().params
+            execution_id = next(
+                (value for value in params.values() if value in self._executions),
+                None,
+            )
+            return self._executions.get(execution_id)
+        if "FROM workflows" in statement:
+            return 1800
+        if "FROM workflow_execution_attempts" in statement:
+            return None
+        raise AssertionError(f"unexpected scalar query: {statement}")
 
     async def __aenter__(self):
         return self
@@ -364,6 +393,7 @@ async def test_cleanup_sweeps_overdue_scheduled_and_null_start_running_rows() ->
             scheduled_at=now - timedelta(minutes=age_minutes),
             created_at=now - timedelta(minutes=age_minutes + 1),
             workflow_name=f"{status.value} workflow",
+            workflow_id=None,
             executed_by=uuid4(),
             executed_by_name="Scheduler",
             organization_id=None,
@@ -415,6 +445,12 @@ async def test_cleanup_sweeps_overdue_scheduled_and_null_start_running_rows() ->
                 "agent_run_total_cleaned": 0,
                 "agent_run_errors": [],
             },
+        ),
+        patch.object(
+            execution_cleanup,
+            "transition_execution_attempt",
+            new_callable=AsyncMock,
+            return_value=None,
         ),
     ):
         result = await execution_cleanup.cleanup_stuck_executions()

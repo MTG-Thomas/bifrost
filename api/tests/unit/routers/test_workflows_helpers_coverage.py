@@ -35,6 +35,12 @@ class _Db:
             raise AssertionError("unexpected execute call")
         return _ScalarResult(self.values.pop(0))
 
+    async def scalar(self, _stmt):
+        return None
+
+    async def flush(self):
+        return None
+
     def add(self, value):
         self.added.append(value)
 
@@ -293,8 +299,11 @@ async def test_insert_scheduled_execution_persists_expected_execution_fields():
 
     assert isinstance(execution_id, UUID)
     assert db.committed is True
-    assert len(db.added) == 1
-    execution = db.added[0]
+    assert len(db.added) == 2
+    execution = next(row for row in db.added if hasattr(row, "workflow_name"))
+    attempt = next(row for row in db.added if hasattr(row, "attempt_number"))
+    assert attempt.execution_id == execution_id
+    assert attempt.status == "dispatching"
     assert execution.id == execution_id
     assert execution.workflow_id == workflow_id
     assert execution.workflow_name == "sync_records"
