@@ -257,6 +257,8 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # retain their existing request and response behavior.
     # Promotion responses gained optional risk_paths (2026-08-29). ADDITIVE:
     # old clients ignore it and retain their existing risk-class handling.
+    # Promotion responses gained optional diagnostic delta/decision evidence
+    # (2026-08-31). ADDITIVE: old clients ignore the extra response fields.
     "7be790668fda1514867b67b863933f25fbbc51625b7568e1914c78d31ce68d2b"
 )
 
