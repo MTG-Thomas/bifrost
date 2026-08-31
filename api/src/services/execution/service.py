@@ -510,6 +510,17 @@ async def _enqueue_workflow_async(
     result = await redis_client.wait_for_result(execution_id, timeout_seconds=wait_timeout)
 
     if result is None:
+        # Redis delivery is an optimization, not the result authority. A
+        # terminal PostgreSQL projection may already exist when BLPOP times out
+        # (for example after bounded sync-result fan-out retries are exhausted).
+        durable = await _wait_for_persisted_workflow_result(
+            execution_id=execution_id,
+            workflow_id=workflow_id,
+            workflow_name=workflow_name,
+            timeout_seconds=1,
+        )
+        if durable.status != ExecutionStatus.TIMEOUT:
+            return durable
         return WorkflowExecutionResponse(
             execution_id=execution_id,
             workflow_id=workflow_id,

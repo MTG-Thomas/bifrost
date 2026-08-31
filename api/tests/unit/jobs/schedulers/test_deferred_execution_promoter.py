@@ -11,7 +11,7 @@ from src.models.enums import ExecutionStatus
 from src.models.orm.executions import Execution
 
 
-PATH_PUBLISH = "src.jobs.schedulers.deferred_execution_promoter._publish_pending"
+PATH_PUBLISH = "src.jobs.schedulers.deferred_execution_promoter._publish_scheduled_once"
 PATH_DB_CTX = "src.jobs.schedulers.deferred_execution_promoter.get_db_context"
 PATH_DATETIME = "src.jobs.schedulers.deferred_execution_promoter.datetime"
 
@@ -79,7 +79,7 @@ async def test_promotes_due_rows(db_session):
     with (
         patch(PATH_DB_CTX, return_value=_DbCtx(db_session)),
         patch(PATH_DATETIME) as promoter_datetime,
-        patch(PATH_PUBLISH, new=AsyncMock()) as pub,
+        patch(PATH_PUBLISH, new=AsyncMock(return_value=True)) as pub,
     ):
         promoter_datetime.now.return_value = now + timedelta(hours=2)
         promoted, failed = await promote_due_executions()
@@ -87,11 +87,14 @@ async def test_promotes_due_rows(db_session):
     assert promoted == 1
     assert failed == 0
     pub.assert_awaited_once()
-    assert pub.await_args.kwargs["is_provider_org"] is True
-    assert pub.await_args.kwargs["is_external"] is True
+    publish_kwargs = pub.await_args.kwargs["publish_kwargs"]
+    assert publish_kwargs["is_provider_org"] is True
+    assert publish_kwargs["is_external"] is True
+    assert publish_kwargs["execution_record_exists"] is True
 
     await db_session.refresh(due)
-    assert due.status == ExecutionStatus.PENDING
+    # The canonical publisher owns the transition; this test mocks that helper.
+    assert due.status == ExecutionStatus.SCHEDULED
 
 
 @pytest.mark.asyncio
@@ -105,7 +108,7 @@ async def test_leaves_future_rows(db_session):
 
     with (
         patch(PATH_DB_CTX, return_value=_DbCtx(db_session)),
-        patch(PATH_PUBLISH, new=AsyncMock()) as pub,
+        patch(PATH_PUBLISH, new=AsyncMock(return_value=True)) as pub,
     ):
         promoted, failed = await promote_due_executions()
 
@@ -128,7 +131,7 @@ async def test_skips_cancelled_rows(db_session):
 
     with (
         patch(PATH_DB_CTX, return_value=_DbCtx(db_session)),
-        patch(PATH_PUBLISH, new=AsyncMock()),
+        patch(PATH_PUBLISH, new=AsyncMock(return_value=True)),
     ):
         promoted, _ = await promote_due_executions()
 
@@ -138,7 +141,7 @@ async def test_skips_cancelled_rows(db_session):
 
 
 @pytest.mark.asyncio
-async def test_reverts_on_publish_failure(db_session):
+async def test_publish_failure_leaves_row_scheduled(db_session):
     from src.jobs.schedulers.deferred_execution_promoter import promote_due_executions
 
     await _cancel_existing_scheduled(db_session)
@@ -159,5 +162,5 @@ async def test_reverts_on_publish_failure(db_session):
     assert failed == 1
 
     await db_session.refresh(due)
-    # Reverted so next tick can retry.
+    # It never moved, so the next tick can retry without best-effort rollback.
     assert due.status == ExecutionStatus.SCHEDULED

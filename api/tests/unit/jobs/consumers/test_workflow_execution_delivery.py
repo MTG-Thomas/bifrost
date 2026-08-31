@@ -35,7 +35,13 @@ def make_consumer() -> WorkflowExecutionConsumer:
         consumer = WorkflowExecutionConsumer()
 
     consumer._redis_client = AsyncMock()
-    consumer._claim_durable_execution = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    consumer._pool = SimpleNamespace(
+        worker_id="worker-test",
+        worker_incarnation_id=uuid4(),
+    )
+    # Empty token represents the legacy inline path without a durable
+    # PostgreSQL execution row. Registered workflows return a UUID token.
+    consumer._claim_durable_execution = AsyncMock(return_value="")  # type: ignore[method-assign]
     consumer._release_durable_execution_claim = AsyncMock()  # type: ignore[method-assign]
     consumer._fail_missing_pending_execution = AsyncMock(return_value=None)  # type: ignore[method-assign]
     return consumer
@@ -49,6 +55,33 @@ def pending_context() -> dict[str, object]:
         "user_name": "Test User",
         "user_email": "test@example.com",
     }
+
+
+@pytest.mark.asyncio
+async def test_derived_step_retries_without_replaying_durable_callback() -> None:
+    operation = AsyncMock(side_effect=[RuntimeError("redis down"), None])
+
+    with patch("asyncio.sleep", new_callable=AsyncMock) as sleep:
+        accepted = await WorkflowExecutionConsumer._run_derived_step(
+            "sync-result", operation
+        )
+
+    assert accepted is True
+    assert operation.await_count == 2
+    sleep.assert_awaited_once_with(0.1)
+
+
+@pytest.mark.asyncio
+async def test_derived_step_exhaustion_is_non_authoritative() -> None:
+    operation = AsyncMock(side_effect=RuntimeError("pubsub down"))
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        accepted = await WorkflowExecutionConsumer._run_derived_step(
+            "execution-update", operation
+        )
+
+    assert accepted is False
+    assert operation.await_count == 3
 
 
 def delivery_context(execution_id: str, *, sync: bool = False) -> DeliveryContext:
@@ -72,6 +105,9 @@ def delivery_context(execution_id: str, *, sync: bool = False) -> DeliveryContex
 class _Session:
     def __init__(self) -> None:
         self.commit = AsyncMock()
+        self.execute = AsyncMock()
+        self.scalar = AsyncMock(return_value=None)
+        self.rollback = AsyncMock()
 
     async def __aenter__(self):
         return self
@@ -511,19 +547,35 @@ async def test_durable_execution_claim_serializes_with_publisher(
         yield db
 
     execution_id = str(uuid4())
-    with patch(
-        "src.core.database.get_db_context",
-        side_effect=db_context,
+    claim_token = uuid4()
+    claim = SimpleNamespace(claim_token=claim_token)
+    with (
+        patch(
+            "src.core.database.get_db_context",
+            side_effect=db_context,
+        ),
+        patch(
+            "src.services.execution.attempts.create_claimed_attempt",
+            new_callable=AsyncMock,
+            return_value=claim,
+        ) as create_claimed_attempt,
     ):
         result = await consumer._claim_durable_execution(execution_id)
 
-    assert result is claimable
+    assert result == (str(claim_token) if claimable else None)
     assert "bifrost:workflow-execution:" in str(db.execute.await_args.args[0])
     if claimable:
         assert row.status == ExecutionStatus.RUNNING
         db.commit.assert_awaited_once()
+        create_claimed_attempt.assert_awaited_once_with(
+            db,
+            row,
+            worker_id="worker-test",
+            worker_incarnation_id=consumer._pool.worker_incarnation_id,
+        )
     else:
         db.commit.assert_not_awaited()
+        create_claimed_attempt.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -765,17 +817,18 @@ async def test_workspace_release_routes_with_verified_immutable_duration_bound()
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("status", "released"),
+    ("status", "expected_status", "committed"),
     [
-        ("Running", True),
-        ("Cancelling", False),
-        ("Cancelled", False),
-        ("Success", False),
+        ("Running", "Pending", True),
+        ("Cancelling", "Cancelled", True),
+        ("Cancelled", "Cancelled", False),
+        ("Success", "Success", False),
     ],
 )
 async def test_release_execution_claim_preserves_concurrent_terminal_state(
     status: str,
-    released: bool,
+    expected_status: str,
+    committed: bool,
 ) -> None:
     from src.models.enums import ExecutionStatus
 
@@ -792,11 +845,10 @@ async def test_release_execution_claim_preserves_concurrent_terminal_state(
     with patch("src.core.database.get_db_context", side_effect=db_context):
         await consumer._release_durable_execution_claim(str(uuid4()))
 
-    if released:
-        assert row.status == ExecutionStatus.PENDING
+    assert row.status == ExecutionStatus(expected_status)
+    if committed:
         db.commit.assert_awaited_once()
     else:
-        assert row.status == ExecutionStatus(status)
         db.commit.assert_not_awaited()
 
 

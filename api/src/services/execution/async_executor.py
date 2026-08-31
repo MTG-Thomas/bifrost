@@ -2,11 +2,11 @@
 Async Workflow Execution
 Handles queueing of workflows via Redis + RabbitMQ
 
-Flow:
-1. API stores pending execution in Redis
-2. API publishes message to RabbitMQ
-3. API returns execution_id immediately (<100ms)
-4. Worker reads from Redis, writes to PostgreSQL, executes
+Flow for durable workflows:
+1. API pins the logical execution and dispatching attempt in PostgreSQL
+2. API stores ephemeral context in Redis and publishes to RabbitMQ
+3. Broker confirmation advances the execution/attempt to Pending/published
+4. Worker claims the published attempt and executes in an isolated child
 
 For sync execution (sync=True):
 - Caller provides execution_id (already stored in Redis)
@@ -272,6 +272,7 @@ async def _persist_execution_pin(
                 runtime_evidence_hash=evidence_hash,
                 dispatch_evidence=dispatch,
                 dispatch_evidence_hash=sha256_digest(canonical_json(dispatch)),
+                attempt_tracking_version="v1",
                 # SCHEDULED is the durable, retryable pre-publication state.
                 # The queue claimant atomically advances it to PENDING only
                 # after RabbitMQ confirms publication.
@@ -284,6 +285,13 @@ async def _persist_execution_pin(
                 organization_id=(uuid.UUID(org_value) if org_value else None),
             )
         )
+        await db.flush()
+        from src.services.execution.attempts import ensure_dispatch_attempt
+
+        pinned_execution = await db.get(Execution, uuid.UUID(execution_id))
+        if pinned_execution is None:  # pragma: no cover - flush invariant
+            raise RuntimeError("durable execution pin disappeared before commit")
+        await ensure_dispatch_attempt(db, pinned_execution)
         await db.commit()
         return dict(dispatch["publish"]), True
 
@@ -313,6 +321,9 @@ async def _publish_scheduled_once(
         # Hold the transaction-scoped claim through broker confirmation. A
         # failure rolls the transaction back, so a retry can claim SCHEDULED.
         await _publish_pending(**publish_kwargs)
+        from src.services.execution.attempts import mark_attempt_published
+
+        await mark_attempt_published(db, execution)
         await db.execute(
             update(Execution)
             .where(

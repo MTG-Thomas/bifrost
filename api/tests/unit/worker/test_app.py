@@ -204,7 +204,7 @@ async def test_stop_uses_default_deadline_for_invalid_env(
 
 
 @pytest.mark.asyncio
-async def test_stop_logs_drain_exceptions_and_continues(
+async def test_stop_retries_a_failed_drain_before_closing_resources(
     monkeypatch: pytest.MonkeyPatch,
     settings: SimpleNamespace,
 ) -> None:
@@ -216,16 +216,56 @@ async def test_stop_logs_drain_exceptions_and_continues(
     worker = worker_app.Worker()
     worker._consumers = [FakeConsumer("broken")]
 
+    attempts = 0
+
     async def fail_drain(consumer, deadline: float) -> None:
         raise RuntimeError("drain failed")
 
+    async def retry_stop() -> None:
+        nonlocal attempts
+        attempts += 1
+
     worker._drain_consumer = fail_drain  # type: ignore[method-assign]
+    worker._consumers[0].stop = retry_stop  # type: ignore[method-assign]
 
     await worker.stop()
 
+    assert attempts == 1
     rabbit_close.assert_awaited_once()
     close_db.assert_awaited_once()
     assert worker._shutdown_event.is_set()
+
+
+@pytest.mark.asyncio
+async def test_stop_fails_closed_when_durable_consumer_surrender_keeps_failing(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: SimpleNamespace,
+) -> None:
+    monkeypatch.setattr(worker_app, "get_settings", lambda: settings)
+    close_db = AsyncMock()
+    rabbit_close = AsyncMock()
+    monkeypatch.setattr(worker_app, "close_db", close_db)
+    monkeypatch.setattr(worker_app.rabbitmq, "close", rabbit_close)
+    consumer = FakeConsumer("workflow")
+    worker = worker_app.Worker()
+    worker._consumers = [consumer]
+
+    async def fail_drain(_consumer, deadline: float) -> None:
+        raise RuntimeError("database unavailable during surrender")
+
+    async def fail_stop() -> None:
+        raise RuntimeError("database still unavailable")
+
+    worker._drain_consumer = fail_drain  # type: ignore[method-assign]
+    consumer.stop = fail_stop  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="could not durably stop consumers"):
+        await worker.stop()
+
+    rabbit_close.assert_not_awaited()
+    close_db.assert_not_awaited()
+    assert worker._shutdown_event.is_set()
+    assert worker._stopping is False
 
 
 @pytest.mark.asyncio
@@ -248,6 +288,26 @@ async def test_handle_signal_schedules_single_shutdown(
     assert first_task is not None
     await first_task
     assert stop_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_signal_shutdown_surfaces_stop_failure_through_start_waiter(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: SimpleNamespace,
+) -> None:
+    monkeypatch.setattr(worker_app, "get_settings", lambda: settings)
+    worker = worker_app.Worker()
+
+    async def fail_stop() -> None:
+        raise RuntimeError("durable surrender failed")
+
+    worker.stop = fail_stop  # type: ignore[method-assign]
+    worker.handle_signal(15, None)
+    assert worker._stop_task is not None
+    await worker._stop_task
+
+    assert isinstance(worker._stop_error, RuntimeError)
+    assert worker._shutdown_event.is_set()
 
 
 @pytest.mark.asyncio

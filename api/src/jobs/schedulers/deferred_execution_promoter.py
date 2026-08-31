@@ -1,15 +1,12 @@
 """Deferred execution promoter.
 
-Every 60 seconds, moves SCHEDULED executions whose ``scheduled_at`` has
-matured onto the RabbitMQ workflow-executions queue by flipping them to
-PENDING and calling the shared ``_publish_pending`` helper.
+Every 60 seconds, moves due SCHEDULED executions onto RabbitMQ through the
+same serialized, publisher-confirmed transition used by run-now dispatch.
 
 Design notes:
 
-- The promotion UPDATE is committed BEFORE the per-row publish loop, so
-  PENDING is the authoritative record that "this run belongs to RabbitMQ
-  now". If the broker publish fails we best-effort revert the row back to
-  SCHEDULED so the next tick retries.
+- Each row remains SCHEDULED until broker confirmation. An execution-keyed
+  advisory lock prevents a concurrent publisher from dispatching it twice.
 - ``SELECT ... FOR UPDATE SKIP LOCKED`` keeps the job safe to run in
   parallel (multiple scheduler pods / APScheduler threads): each batch
   picks a disjoint set of rows.
@@ -24,12 +21,12 @@ Design notes:
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from src.core.database import get_db_context
 from src.models.enums import ExecutionStatus
 from src.models.orm.executions import Execution
-from src.services.execution.async_executor import _publish_pending
+from src.services.execution.async_executor import _publish_scheduled_once
 
 logger = logging.getLogger(__name__)
 
@@ -59,58 +56,59 @@ async def promote_due_executions() -> tuple[int, int]:
         if not rows:
             return 0, 0
 
-        ids = [r.id for r in rows]
-        await db.execute(
-            update(Execution)
-            .where(Execution.id.in_(ids))
-            .values(status=ExecutionStatus.PENDING, started_at=None)
-        )
+        # Do not hold the batch row locks while waiting for broker confirms.
+        # The per-row publisher reacquires the canonical advisory fence.
         await db.commit()
 
         for row in rows:
             try:
-                await _publish_pending(
+                published = await _publish_scheduled_once(
                     execution_id=str(row.id),
-                    workflow_id=str(row.workflow_id) if row.workflow_id else None,
-                    parameters=row.parameters or {},
-                    org_id=str(row.organization_id) if row.organization_id else None,
-                    user_id=str(row.executed_by) if row.executed_by else "",
-                    user_name=row.executed_by_name or "",
-                    user_email="",  # Not persisted on the row; worker hydrates from user record.
-                    form_id=str(row.form_id) if row.form_id else None,
-                    startup=None,  # Scheduled runs do not carry stale startup results.
-                    form_inputs={},
-                    embed={},
-                    api_key_id=str(row.api_key_id) if row.api_key_id else None,
-                    sync=False,
-                    is_platform_admin=bool(
-                        (row.execution_context or {}).get("is_platform_admin", False)
-                    ),
-                    is_provider_org=bool(
-                        (row.execution_context or {}).get("is_provider_org", False)
-                    ),
-                    is_external=bool(
-                        (row.execution_context or {}).get("is_external", False)
-                    ),
-                    file_path=None,
-                    solution_deployment_id=str(row.solution_deployment_id) if row.solution_deployment_id else None,
-                    runtime_evidence=(row.execution_context or {}).get("runtime_evidence"),
-                    runtime_mode=row.runtime_mode,
+                    publish_kwargs={
+                        "execution_id": str(row.id),
+                        "workflow_id": str(row.workflow_id) if row.workflow_id else None,
+                        "parameters": row.parameters or {},
+                        "org_id": str(row.organization_id) if row.organization_id else None,
+                        "user_id": str(row.executed_by) if row.executed_by else "",
+                        "user_name": row.executed_by_name or "",
+                        "user_email": "",
+                        "form_id": str(row.form_id) if row.form_id else None,
+                        "startup": None,
+                        "form_inputs": {},
+                        "embed": {},
+                        "api_key_id": str(row.api_key_id) if row.api_key_id else None,
+                        "sync": False,
+                        "is_platform_admin": bool(
+                            (row.execution_context or {}).get(
+                                "is_platform_admin", False
+                            )
+                        ),
+                        "is_provider_org": bool(
+                            (row.execution_context or {}).get(
+                                "is_provider_org", False
+                            )
+                        ),
+                        "is_external": bool(
+                            (row.execution_context or {}).get("is_external", False)
+                        ),
+                        "file_path": None,
+                        "solution_deployment_id": (
+                            str(row.solution_deployment_id)
+                            if row.solution_deployment_id
+                            else None
+                        ),
+                        "runtime_evidence": row.runtime_evidence,
+                        "runtime_mode": row.runtime_mode,
+                        "execution_record_exists": True,
+                    },
                 )
-                promoted += 1
+                promoted += int(published)
             except Exception:
                 failures += 1
                 logger.exception(
-                    "deferred_execution_promoter: publish failed, reverting row",
+                    "deferred_execution_promoter: publish failed; row remains scheduled",
                     extra={"execution_id": str(row.id)},
                 )
-                await db.execute(
-                    update(Execution)
-                    .where(Execution.id == row.id)
-                    .where(Execution.status == ExecutionStatus.PENDING)
-                    .values(status=ExecutionStatus.SCHEDULED)
-                )
-                await db.commit()
 
         logger.info(
             "deferred_execution_promoter tick complete",

@@ -13,7 +13,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import select, and_, desc, func, or_
+from sqlalchemy import select, and_, desc, func, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer, selectinload
 
@@ -29,11 +29,14 @@ from src.models import (
 from src.models.contracts.executions import (
     AIUsagePublicSimple,
     AIUsageTotalsSimple,
+    ExecutionAttemptHistory,
+    ExecutionAttemptPublic,
     ExecutionSummary,
     LogsListResponse,
     LogListEntry,
 )
 from src.models.orm.ai_usage import AIUsage
+from src.models.orm.executions import ExecutionAttempt
 
 from bifrost._logging import read_logs_from_stream
 from shared.pending_execution import get_pending_execution_fallback
@@ -50,6 +53,66 @@ from src.repositories.execution_logs import ExecutionLogRepository
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/executions", tags=["Executions"])
+
+
+async def _load_attempt_history(
+    db: AsyncSession,
+    execution_id: UUID,
+    user: UserPrincipal,
+    *,
+    tracking_enabled: bool,
+) -> ExecutionAttemptHistory:
+    """Load bounded attempt evidence after execution authorization succeeds."""
+
+    rows = (
+        await db.execute(
+            select(ExecutionAttempt)
+            .where(ExecutionAttempt.execution_id == execution_id)
+            .order_by(ExecutionAttempt.attempt_number)
+        )
+    ).scalars().all()
+    if not rows:
+        return ExecutionAttemptHistory(
+            coverage="recorded" if tracking_enabled else "legacy_unavailable",
+            attempts=[],
+        )
+    return ExecutionAttemptHistory(
+        coverage="recorded",
+        attempts=[
+            ExecutionAttemptPublic(
+                attempt_id=row.id,
+                attempt_number=row.attempt_number,
+                status=row.status,
+                phase=row.phase,
+                failure_phase=row.failure_phase,
+                failure_code=row.failure_code,
+                worker_id=row.worker_id if user.is_superuser else None,
+                worker_incarnation_id=(
+                    row.worker_incarnation_id if user.is_superuser else None
+                ),
+                process_id=row.process_id if user.is_superuser else None,
+                runtime_mode=row.runtime_mode,
+                runtime_evidence_hash=(
+                    row.runtime_evidence_hash if user.is_superuser else None
+                ),
+                dispatch_evidence_hash=(
+                    row.dispatch_evidence_hash if user.is_superuser else None
+                ),
+                policy_digest=(row.policy_digest if user.is_superuser else None),
+                policy_version=row.policy_version,
+                created_at=row.created_at,
+                published_at=row.published_at,
+                claimed_at=row.claimed_at,
+                started_at=row.started_at,
+                heartbeat_at=row.heartbeat_at,
+                completed_at=row.completed_at,
+                duration_ms=row.duration_ms,
+                peak_memory_bytes=(row.peak_memory_bytes if user.is_superuser else None),
+                cpu_total_seconds=(row.cpu_total_seconds if user.is_superuser else None),
+            )
+            for row in rows
+        ],
+    )
 
 
 # =============================================================================
@@ -380,6 +443,15 @@ class ExecutionRepository:
         else:
             org_name = "Global"
 
+        attempt_history = await _load_attempt_history(
+            self.db,
+            execution_id,
+            user,
+            tracking_enabled=(
+                getattr(execution, "attempt_tracking_version", None) is not None
+            ),
+        )
+
         return WorkflowExecution(
             execution_id=str(execution.id),
             workflow_name=execution.workflow_name,
@@ -410,6 +482,7 @@ class ExecutionRepository:
             # AI usage tracking (available to all users)
             ai_usage=ai_usage_list if ai_usage_list else None,
             ai_totals=ai_totals,
+            attempt_history=attempt_history,
         ), None
 
     async def get_execution_result(
@@ -534,10 +607,18 @@ class ExecutionRepository:
         user: UserPrincipal,
     ) -> tuple[WorkflowExecution | None, str | None]:
         """Cancel a pending or running execution."""
+        await self.db.execute(
+            text(
+                "SELECT pg_advisory_xact_lock("
+                "hashtext('bifrost:workflow-execution:' || :execution_id))"
+            ),
+            {"execution_id": str(execution_id)},
+        )
         result = await self.db.execute(
             select(ExecutionModel)
             .options(selectinload(ExecutionModel.organization), selectinload(ExecutionModel.executed_by_user))
             .where(ExecutionModel.id == execution_id)
+            .with_for_update()
         )
         execution = result.scalar_one_or_none()
 
@@ -552,35 +633,80 @@ class ExecutionRepository:
             return self._to_pydantic(execution, user), None
 
         # Can only cancel pending or running executions
-        if execution.status not in [ExecutionStatus.PENDING.value, ExecutionStatus.RUNNING.value]:
+        if execution.status not in [
+            ExecutionStatus.SCHEDULED.value,
+            ExecutionStatus.PENDING.value,
+            ExecutionStatus.RUNNING.value,
+        ]:
             return None, "BadRequest"
 
         # For PENDING executions, cancel immediately - no worker has started it yet
         # For RUNNING executions, set to CANCELLING and let the worker handle it
-        if execution.status == ExecutionStatus.PENDING.value:
+        prior_status = execution.status
+        if execution.status in {
+            ExecutionStatus.SCHEDULED.value,
+            ExecutionStatus.PENDING.value,
+        }:
             new_status = ExecutionStatus.CANCELLED.value
         else:
             new_status = ExecutionStatus.CANCELLING.value
 
         execution.status = new_status  # type: ignore[assignment]
 
-        await self.db.flush()
+        if prior_status in {
+            ExecutionStatus.SCHEDULED.value,
+            ExecutionStatus.PENDING.value,
+        }:
+            attempt = await self.db.scalar(
+                select(ExecutionAttempt)
+                .where(
+                    ExecutionAttempt.execution_id == execution_id,
+                    ExecutionAttempt.completed_at.is_(None),
+                )
+                .with_for_update()
+            )
+            if attempt is not None:
+                completed_at = datetime.now(timezone.utc)
+                attempt.status = "cancelled"
+                attempt.phase = "terminal"
+                attempt.failure_phase = "cancellation"
+                attempt.failure_code = "cancelled_before_claim"
+                attempt.completed_at = completed_at
+                attempt.heartbeat_at = completed_at
+                execution.completed_at = completed_at
+
+        await self.db.commit()
         await self.db.refresh(execution)
 
-        # Publish update
-        await publish_execution_update(
-            execution_id=execution_id,
-            status=new_status,
-        )
-        await publish_history_update(
-            execution_id=execution_id,
-            status=new_status,
-            executed_by=execution.executed_by,
-            executed_by_name=execution.executed_by_name,
-            workflow_name=execution.workflow_name,
-            org_id=execution.organization_id,
-            started_at=execution.started_at,
-        )
+        # Live fan-out is derived from the committed projection. It must never
+        # prevent the endpoint from sending the authoritative Redis kill signal.
+        try:
+            await publish_execution_update(
+                execution_id=execution_id,
+                status=new_status,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Cancellation update fan-out failed for %s: %s",
+                execution_id,
+                exc,
+            )
+        try:
+            await publish_history_update(
+                execution_id=execution_id,
+                status=new_status,
+                executed_by=execution.executed_by,
+                executed_by_name=execution.executed_by_name,
+                workflow_name=execution.workflow_name,
+                org_id=execution.organization_id,
+                started_at=execution.started_at,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Cancellation history fan-out failed for %s: %s",
+                execution_id,
+                exc,
+            )
 
         return self._to_pydantic(execution, user), None
 
@@ -934,7 +1060,7 @@ async def get_execution_variables(
     "/{execution_id}/cancel",
     response_model=WorkflowExecution | dict,
     summary="Cancel execution",
-    description="Cancel a pending or running execution",
+    description="Cancel a scheduled, pending, or running execution",
 )
 async def cancel_execution(
     execution_id: UUID,
@@ -967,7 +1093,10 @@ async def cancel_execution(
     elif error == "BadRequest":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Cannot cancel execution {execution_id} - must be Pending or Running",
+            detail=(
+                f"Cannot cancel execution {execution_id} - must be Scheduled, "
+                "Pending, or Running"
+            ),
         )
     elif execution is not None:
         # Found in PostgreSQL and status was updated
@@ -1121,29 +1250,96 @@ async def trigger_cleanup(
     failed_count = 0
     now = datetime.now(timezone.utc)
 
-    # PENDING and RUNNING -> FAILED with timeout message
-    for execution in list(pending_executions) + list(running_executions):
+    cleaned_count = 0
+    candidates = [
+        *( (execution, ExecutionStatus.FAILED) for execution in pending_executions ),
+        *( (execution, ExecutionStatus.FAILED) for execution in running_executions ),
+        *( (execution, ExecutionStatus.CANCELLED) for execution in cancelling_executions ),
+    ]
+    for candidate, final_status in candidates:
         try:
-            execution.status = ExecutionStatus.FAILED.value  # type: ignore[assignment]
-            execution.error_message = f"Execution timed out after {hours} hours"
+            await ctx.db.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtext('bifrost:workflow-execution:' || :execution_id))"
+                ),
+                {"execution_id": str(candidate.id)},
+            )
+            execution = await ctx.db.scalar(
+                select(ExecutionModel)
+                .where(ExecutionModel.id == candidate.id)
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            )
+            expected_statuses = (
+                {ExecutionStatus.CANCELLING.value}
+                if final_status == ExecutionStatus.CANCELLED
+                else {
+                    ExecutionStatus.PENDING.value,
+                    ExecutionStatus.RUNNING.value,
+                }
+            )
+            if execution is None or execution.status not in expected_statuses:
+                await ctx.db.rollback()
+                continue
+            age_anchor = (
+                execution.started_at
+                or execution.scheduled_at
+                or execution.created_at
+            )
+            if age_anchor.tzinfo is None:
+                age_anchor = age_anchor.replace(tzinfo=timezone.utc)
+            if age_anchor >= cutoff:
+                await ctx.db.rollback()
+                continue
+
+            attempt = await ctx.db.scalar(
+                select(ExecutionAttempt)
+                .where(
+                    ExecutionAttempt.execution_id == execution.id,
+                    ExecutionAttempt.completed_at.is_(None),
+                )
+                .with_for_update()
+            )
+            if attempt is not None:
+                attempt.status = (
+                    "cancelled"
+                    if final_status == ExecutionStatus.CANCELLED
+                    else "timed_out"
+                )
+                attempt.phase = "terminal"
+                attempt.failure_phase = (
+                    "cancellation"
+                    if final_status == ExecutionStatus.CANCELLED
+                    else (
+                        "queue"
+                        if execution.status == ExecutionStatus.PENDING.value
+                        else "execution"
+                    )
+                )
+                attempt.failure_code = (
+                    "manual_cancellation_cleanup"
+                    if final_status == ExecutionStatus.CANCELLED
+                    else "manual_execution_timeout"
+                )
+                attempt.completed_at = now
+                attempt.heartbeat_at = now
+
+            execution.status = final_status.value  # type: ignore[assignment]
+            execution.error_message = (
+                "Cancellation completed by cleanup job"
+                if final_status == ExecutionStatus.CANCELLED
+                else f"Execution timed out after {hours} hours"
+            )
             execution.completed_at = now
+            await ctx.db.commit()
+            cleaned_count += 1
         except Exception as e:
-            logger.error(f"Failed to cleanup execution {execution.id}: {e}")
+            await ctx.db.rollback()
+            logger.error(f"Failed to cleanup execution {candidate.id}: {e}")
             failed_count += 1
 
-    # CANCELLING -> CANCELLED (they were being cancelled but got stuck)
-    for execution in cancelling_executions:
-        try:
-            execution.status = ExecutionStatus.CANCELLED.value  # type: ignore[assignment]
-            execution.error_message = "Cancellation completed by cleanup job"
-            execution.completed_at = now
-        except Exception as e:
-            logger.error(f"Failed to cleanup cancelling execution {execution.id}: {e}")
-            failed_count += 1
-
-    await ctx.db.flush()
-
-    total_cleaned = len(pending_executions) + len(running_executions) + len(cancelling_executions) - failed_count
+    total_cleaned = cleaned_count
 
     logger.info(
         f"Cleanup triggered: {total_cleaned} executions cleaned "

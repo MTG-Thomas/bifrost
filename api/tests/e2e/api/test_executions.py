@@ -501,6 +501,35 @@ async def e2e_cancellation_workflow(sleep_seconds: int = 30):
 class TestExecutionDetails:
     """Test execution details retrieval with access control."""
 
+    def test_completed_execution_exposes_durable_attempt_history(
+        self, e2e_client, platform_admin, sync_workflow
+    ):
+        """Execution detail converges to the terminal durable attempt projection."""
+        data = execute_workflow_sync(
+            e2e_client,
+            platform_admin.headers,
+            sync_workflow["id"],
+            {"message": "Attempt history", "count": 1},
+        )
+        execution_id = data.get("execution_id") or data.get("executionId")
+
+        response = e2e_client.get(
+            f"/api/executions/{execution_id}",
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 200, response.text
+        history = response.json()["attempt_history"]
+        assert history["coverage"] == "recorded"
+        assert [attempt["attempt_number"] for attempt in history["attempts"]] == [1]
+        attempt = history["attempts"][0]
+        assert attempt["status"] == "succeeded"
+        assert attempt["phase"] == "terminal"
+        assert attempt["published_at"] is not None
+        assert attempt["claimed_at"] is not None
+        assert attempt["started_at"] is not None
+        assert attempt["completed_at"] is not None
+        assert "claim_token" not in attempt
+
     def test_org_user_gets_own_execution_details(self, e2e_client, org1_user):
         """Org user can retrieve details of their own execution."""
         # This test verifies org users can see their own executions
