@@ -347,6 +347,7 @@ class _CleanupSession:
                 execution = row[0] if result._tuple_rows else row
                 if hasattr(execution, "id"):
                     self._executions[execution.id] = execution
+        self._execution_rereads = list(self._executions.values())
         self.execute = AsyncMock(side_effect=self._execute)
         self.scalar = AsyncMock(side_effect=self._scalar)
         self.commit = AsyncMock()
@@ -360,12 +361,9 @@ class _CleanupSession:
     async def _scalar(self, query):
         statement = str(query)
         if "FROM executions" in statement:
-            params = query.compile().params
-            execution_id = next(
-                (value for value in params.values() if value in self._executions),
-                None,
-            )
-            return self._executions.get(execution_id)
+            if not self._execution_rereads:
+                raise AssertionError("unexpected execution row re-read")
+            return self._execution_rereads.pop(0)
         if "FROM workflows" in statement:
             return 1800
         if "FROM workflow_execution_attempts" in statement:
