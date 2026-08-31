@@ -147,7 +147,7 @@ dependencies = [
     # MCP (Model Context Protocol)
     # =========================================================================
     "mcp==2.0.0",  # MCP v2 protocol engine; exact pin contains compatibility risk
-    "fastmcp==4.0.0b1",  # FastMCP 4 prerelease; exact pin until the stable release
+    "fastmcp==4.0.0b5",  # FastMCP 4 prerelease; exact pin until the stable release
     "jsonschema>=4.26.0,<5",  # Validate live gateway tool arguments
 
     # =========================================================================
