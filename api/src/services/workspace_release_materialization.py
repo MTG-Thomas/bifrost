@@ -36,12 +36,22 @@ from bifrost.workspace_release_authorization import (
     activation_challenge,
     computed_effects_id,
 )
+from src.config import get_settings
+from src.models.contracts.workspace_promotions import (
+    PromotionDiagnostic,
+    PromotionDiagnosticDecision,
+    PromotionDiagnosticDelta,
+)
 from src.models.orm.workspace_promotions import (
     WorkspacePromotionArtifact,
     WorkspacePromotionRelease,
 )
 from src.services.repo_storage import RepoStorage
 from src.services.workspace_promotion_storage import WorkspacePromotionArtifactStorage
+from src.services.workspace_promotion_diagnostics import (
+    blocking_diagnostics,
+    validate_diagnostic_delta,
+)
 from src.services.workspace_promotions import (
     PROMOTION_ARTIFACT_SCHEMA,
     PROMOTION_BUNDLE_SCHEMA_V2,
@@ -603,10 +613,37 @@ class WorkspaceReleaseMaterializer:
                 "artifact risk class does not match its explicit effects"
             )
         diagnostics = manifest.get("diagnostics")
-        if not isinstance(diagnostics, list) or any(
-            not isinstance(item, dict) or item.get("severity") == "blocker"
-            for item in diagnostics
+        try:
+            parsed_diagnostics = [
+                PromotionDiagnostic.model_validate(item) for item in diagnostics
+            ]
+            diagnostic_delta = PromotionDiagnosticDelta.model_validate(
+                manifest.get("diagnostic_delta")
+            )
+            diagnostic_decision = PromotionDiagnosticDecision.model_validate(
+                manifest.get("diagnostic_decision")
+            )
+            validate_diagnostic_delta(
+                diagnostic_delta,
+                expected_baseline_release_id=str(artifact.base_release_id),
+                expected_baseline_manifest_id=str(artifact.base_manifest_id),
+            )
+        except (TypeError, ValueError) as exc:
+            raise WorkspaceReleasePreparationError(
+                "artifact differential diagnostic evidence is invalid"
+            ) from exc
+        legacy_blocked = any(item.severity == "blocker" for item in parsed_diagnostics)
+        differential_blocked = bool(blocking_diagnostics(diagnostic_delta))
+        if (
+            diagnostic_decision.legacy_blocked != legacy_blocked
+            or diagnostic_decision.differential_blocked != differential_blocked
         ):
+            raise WorkspaceReleasePreparationError(
+                "artifact diagnostic decision does not match its immutable evidence"
+            )
+        mode = get_settings().workspace_promotion_diagnostics_mode
+        blocked = differential_blocked if mode == "enforce" else legacy_blocked
+        if blocked:
             raise WorkspaceReleasePreparationError(
                 "artifact diagnostics do not prove a blocker-free release"
             )
