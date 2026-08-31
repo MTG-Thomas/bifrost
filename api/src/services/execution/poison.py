@@ -11,9 +11,11 @@ from src.core.database import get_db_context
 from src.core.pubsub import publish_execution_update, publish_history_update
 from src.core.redis_client import get_redis_client
 from src.models.enums import ExecutionStatus
-from src.models.orm.executions import Execution, ExecutionLog, WorkflowExecutionAttempt
-
-ExecutionAttempt = WorkflowExecutionAttempt
+from src.models.orm.executions import (
+    Execution,
+    ExecutionLog,
+    WorkflowExecutionAttempt as ExecutionAttempt,
+)
 
 logger = logging.getLogger(__name__)
 

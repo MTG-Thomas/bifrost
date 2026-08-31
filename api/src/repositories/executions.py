@@ -29,9 +29,7 @@ from src.models import (
     ExecutionLogPublic,
     WorkflowExecution,
 )
-from src.models.orm.executions import WorkflowExecutionAttempt
-
-ExecutionAttempt = WorkflowExecutionAttempt
+from src.models.orm.executions import WorkflowExecutionAttempt as ExecutionAttempt
 from src.models.enums import ExecutionStatus
 from src.repositories.base import BaseRepository
 

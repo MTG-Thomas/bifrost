@@ -10,9 +10,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 
 from src.models.enums import ExecutionStatus
-from src.models.orm.executions import Execution, WorkflowExecutionAttempt
-
-ExecutionAttempt = WorkflowExecutionAttempt
+from src.models.orm.executions import Execution, WorkflowExecutionAttempt as ExecutionAttempt
 
 from src.services.execution.attempts import (
     create_claimed_attempt,

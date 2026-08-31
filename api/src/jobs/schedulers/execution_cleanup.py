@@ -24,9 +24,7 @@ from src.core.redis_client import get_redis_client
 from src.models.orm.agent_runs import AgentRun
 from src.models.orm.agents import Agent
 from src.models import Execution as ExecutionModel, ExecutionLog
-from src.models.orm.executions import WorkflowExecutionAttempt
-
-ExecutionAttempt = WorkflowExecutionAttempt
+from src.models.orm.executions import WorkflowExecutionAttempt as ExecutionAttempt
 from src.models.orm.workflows import Workflow
 from src.services.execution_attempts import transition_execution_attempt
 

@@ -9,9 +9,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models.orm.executions import Execution, WorkflowExecutionAttempt
-
-ExecutionAttempt = WorkflowExecutionAttempt
+from src.models.orm.executions import Execution, WorkflowExecutionAttempt as ExecutionAttempt
 
 
 def _policy_digest(execution: Execution) -> str:

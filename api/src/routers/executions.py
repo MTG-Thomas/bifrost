@@ -36,9 +36,7 @@ from src.models.contracts.executions import (
     LogListEntry,
 )
 from src.models.orm.ai_usage import AIUsage
-from src.models.orm.executions import WorkflowExecutionAttempt
-
-ExecutionAttempt = WorkflowExecutionAttempt
+from src.models.orm.executions import WorkflowExecutionAttempt as ExecutionAttempt
 
 from bifrost._logging import read_logs_from_stream
 from shared.pending_execution import get_pending_execution_fallback
