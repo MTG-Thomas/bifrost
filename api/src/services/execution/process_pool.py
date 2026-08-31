@@ -1517,13 +1517,22 @@ class ProcessPoolManager:
         if self.on_result is None or exec_info is None:
             return
         handle.result_reported = True
+        exit_code = handle.process.exitcode
+        signal_number = -exit_code if exit_code is not None and exit_code < 0 else None
+        worker_identity = f"{self.worker_id}:{handle.id}"
+        detail = (
+            f"exit_code={exit_code}, signal={signal_number}, worker={worker_identity}"
+        )
         try:
             await self.on_result({
                 "type": "result",
                 "execution_id": exec_info.execution_id,
                 "success": False,
-                "error": "Worker process crashed unexpectedly",
+                "error": f"Worker process crashed unexpectedly ({detail})",
                 "error_type": "ProcessCrashError",
+                "exit_code": exit_code,
+                "signal": signal_number,
+                "worker_identity": worker_identity,
                 "duration_ms": int(exec_info.elapsed_seconds * 1000),
             })
         except Exception as e:

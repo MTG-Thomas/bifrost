@@ -152,6 +152,18 @@ async def test_async_post_does_not_retry_on_503(force_no_refresh):
 
 
 @pytest.mark.asyncio
+async def test_async_retry_safe_post_retries_transient_503(force_no_refresh):
+    handler, calls = _seq_handler([503, 200])
+    client = _make_fixed_client(handler)
+    try:
+        response = await client.post("/api/read-query", retry_safe=True)
+        assert response.status_code == 200
+        assert len(calls) == 2
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_async_put_exhausts_retry_budget(force_no_refresh):
     """PUT 503 x6 → returns the 6th (final) 503 after 1 + 5 retries = 6 transport calls."""
     handler, calls = _seq_handler([503] * 6)

@@ -2,7 +2,7 @@
 Execution Cleanup Scheduler
 
 Cleans up stuck workflow executions and stale autonomous agent runs that
-remain in in-progress states for too long.
+remain in claimed or otherwise recoverably orphaned states for too long.
 
 Runs every 5 minutes to find and timeout stuck executions.
 """
@@ -30,7 +30,6 @@ from src.services.execution_attempts import transition_execution_attempt
 logger = logging.getLogger(__name__)
 
 # Timeout thresholds
-PENDING_TIMEOUT_MINUTES = 10  # If PENDING for 10+ minutes, it's stuck in queue
 SCHEDULED_TIMEOUT_MINUTES = 24 * 60  # Leave a full day for deferred recovery
 RUNNING_TIMEOUT_MINUTES = 30  # If RUNNING for 30+ minutes, worker likely crashed
 CANCELLING_TIMEOUT_MINUTES = 3  # If CANCELLING for 3+ minutes, worker failed to cancel
@@ -152,8 +151,9 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
     """
     Clean up stuck executions.
 
-    Finds executions that have been stuck in PENDING, RUNNING, or CANCELLING
-    status for longer than the timeout threshold and marks them as TIMEOUT/CANCELLED.
+    Finds executions that have been stuck after worker claim or cancellation
+    and marks them as TIMEOUT/CANCELLED. PENDING rows remain queued: age alone
+    is not evidence that their broker delivery was lost.
 
     Returns:
         Summary of cleanup results
@@ -202,23 +202,6 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
                 )
             )
             scheduled_stuck = list(scheduled_result.scalars().all())
-
-            # Find stuck PENDING executions
-            pending_cutoff = now - timedelta(minutes=PENDING_TIMEOUT_MINUTES)
-            pending_result = await db.execute(
-                select(ExecutionModel).where(
-                    and_(
-                        ExecutionModel.status == ExecutionStatus.PENDING.value,
-                        func.coalesce(
-                            ExecutionModel.started_at,
-                            ExecutionModel.scheduled_at,
-                            ExecutionModel.created_at,
-                        )
-                        < pending_cutoff,
-                    )
-                )
-            )
-            pending_stuck = list(pending_result.scalars().all())
 
             # Find stuck RUNNING executions — respect per-workflow timeout
             # Join with Workflow to get configured timeout_seconds.
@@ -269,7 +252,6 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
 
             all_stuck = (
                 scheduled_stuck
-                + pending_stuck
                 + running_stuck
                 + cancelling_stuck
             )
@@ -288,14 +270,6 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
                         )
                         final_status = ExecutionStatus.FAILED
                         results["scheduled_timeouts"] += 1
-
-                    elif execution.status == ExecutionStatus.PENDING.value:
-                        timeout_reason = (
-                            f"Stuck in PENDING status for {PENDING_TIMEOUT_MINUTES}+ minutes. "
-                            "Likely queue processing issue or worker not running."
-                        )
-                        final_status = ExecutionStatus.TIMEOUT
-                        results["pending_timeouts"] += 1
 
                     elif execution.status == ExecutionStatus.RUNNING.value:
                         elapsed_min = int((now - age_anchor).total_seconds() / 60)
