@@ -183,8 +183,9 @@ class Worker:
 
         # Keep running until shutdown
         await self._shutdown_event.wait()
-        if self._stop_error is not None:
-            raise self._stop_error
+        stop_error = self._stop_error
+        if stop_error is not None:
+            raise stop_error
 
     async def _cleanup_after_failed_start(self) -> None:
         """Best-effort teardown of any resources started before a failure.

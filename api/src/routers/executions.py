@@ -685,11 +685,10 @@ class ExecutionRepository:
                 execution_id=execution_id,
                 status=new_status,
             )
-        except Exception as exc:
+        except Exception:
             logger.warning(
-                "Cancellation update fan-out failed for %s: %s",
-                execution_id,
-                exc,
+                "Cancellation update fan-out failed",
+                exc_info=True,
             )
         try:
             await publish_history_update(
@@ -701,11 +700,10 @@ class ExecutionRepository:
                 org_id=execution.organization_id,
                 started_at=execution.started_at,
             )
-        except Exception as exc:
+        except Exception:
             logger.warning(
-                "Cancellation history fan-out failed for %s: %s",
-                execution_id,
-                exc,
+                "Cancellation history fan-out failed",
+                exc_info=True,
             )
 
         return self._to_pydantic(execution, user), None

@@ -390,8 +390,9 @@ async def test_signal_shutdown_surfaces_stop_failure_through_start_waiter(
     worker.stop = fail_stop  # type: ignore[method-assign]
     worker.handle_signal(15, None)
     assert worker._stop_task is not None
-    await worker._stop_task
+    stop_result = await worker._stop_task
 
+    assert stop_result is None
     assert isinstance(worker._stop_error, RuntimeError)
     assert worker._shutdown_event.is_set()
 
