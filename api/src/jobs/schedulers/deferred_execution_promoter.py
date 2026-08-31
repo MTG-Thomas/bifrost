@@ -27,6 +27,10 @@ from src.core.database import get_db_context
 from src.models.enums import ExecutionStatus
 from src.models.orm.executions import Execution
 from src.services.execution.async_executor import _publish_scheduled_once
+from src.services.execution.fault_injection import (
+    FailurePoint,
+    execution_failure_checkpoint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +108,7 @@ async def promote_due_executions() -> tuple[int, int]:
                     row = await row_db.get(Execution, execution_id)
                     if row is None:
                         continue
+                execution_failure_checkpoint(FailurePoint.SCHEDULE_PUBLISH)
                 published = await _publish_scheduled_once(
                     execution_id=str(row.id),
                     publish_kwargs={
