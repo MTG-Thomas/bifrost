@@ -353,7 +353,7 @@ class _CleanupSession:
         self.commit = AsyncMock()
         self.add = MagicMock()
 
-    async def _execute(self, query):
+    async def _execute(self, query, _params=None):
         if "pg_advisory_xact_lock" in str(query):
             return _QueryResult([])
         return self._results.pop(0)
