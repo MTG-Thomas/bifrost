@@ -17,6 +17,7 @@ import asyncio
 import logging
 import os
 import signal
+from pathlib import Path
 
 from src.config import get_settings
 from src.core.database import init_db, close_db
@@ -59,6 +60,21 @@ _CONSUMER_NAMES = (
     "summarize-backfill",
     "tune-chat",
 )
+
+
+def validate_worker_runtime() -> None:
+    """Fail before queue consumption when required TLS runtime files are unusable."""
+    import certifi
+
+    ca_bundle = Path(certifi.where())
+    if not ca_bundle.is_file():
+        raise RuntimeError(f"Worker CA bundle is missing: {ca_bundle}")
+    try:
+        with ca_bundle.open("rb") as stream:
+            if not stream.read(1):
+                raise RuntimeError(f"Worker CA bundle is empty: {ca_bundle}")
+    except OSError as exc:
+        raise RuntimeError(f"Worker CA bundle is unreadable: {ca_bundle}") from exc
 
 
 def consumer_factories():
@@ -135,6 +151,8 @@ class Worker:
         logger.info(f"Environment: {self.settings.environment}")
 
         try:
+            validate_worker_runtime()
+
             # Initialize database connection
             logger.info("Initializing database connection...")
             await init_db()

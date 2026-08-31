@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -36,6 +37,26 @@ def settings() -> SimpleNamespace:
 def test_configured_consumers_default_to_all(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("BIFROST_WORKER_CONSUMERS", raising=False)
     assert worker_app.configured_consumer_names() == list(worker_app._CONSUMER_NAMES)
+
+
+def test_validate_worker_runtime_accepts_readable_ca_bundle(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ca_bundle = tmp_path / "cacert.pem"
+    ca_bundle.write_bytes(b"certificate")
+    monkeypatch.setattr("certifi.where", lambda: str(ca_bundle))
+
+    worker_app.validate_worker_runtime()
+
+
+def test_validate_worker_runtime_rejects_missing_ca_bundle(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    missing = tmp_path / "missing.pem"
+    monkeypatch.setattr("certifi.where", lambda: str(missing))
+
+    with pytest.raises(RuntimeError, match="CA bundle is missing"):
+        worker_app.validate_worker_runtime()
 
 
 def test_configured_consumers_allow_isolated_workflow(monkeypatch: pytest.MonkeyPatch) -> None:
