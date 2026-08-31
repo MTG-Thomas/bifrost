@@ -613,6 +613,10 @@ class WorkspaceReleaseMaterializer:
                 "artifact risk class does not match its explicit effects"
             )
         diagnostics = manifest.get("diagnostics")
+        if not isinstance(diagnostics, list):
+            raise WorkspaceReleasePreparationError(
+                "artifact differential diagnostic evidence is invalid"
+            )
         try:
             parsed_diagnostics = [
                 PromotionDiagnostic.model_validate(item) for item in diagnostics
