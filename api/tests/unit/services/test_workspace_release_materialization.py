@@ -421,6 +421,36 @@ def test_prepare_enforce_accepts_unchanged_blocker(monkeypatch) -> None:
     WorkspaceReleaseMaterializer._validate_manifest(artifact, artifact.manifest)
 
 
+def test_prepare_shadow_accepts_legacy_artifact_without_delta(monkeypatch) -> None:
+    artifact, _base, _closure = _artifact(uuid4())
+    del artifact.manifest["diagnostic_delta"]
+    del artifact.manifest["diagnostic_decision"]
+    artifact.candidate_id = _canonical_candidate(artifact.manifest)
+    monkeypatch.setattr(
+        "src.services.workspace_release_materialization.get_settings",
+        lambda: SimpleNamespace(workspace_promotion_diagnostics_mode="shadow"),
+    )
+
+    WorkspaceReleaseMaterializer._validate_manifest(artifact, artifact.manifest)
+
+
+def test_prepare_enforce_rejects_legacy_artifact_without_delta(monkeypatch) -> None:
+    artifact, _base, _closure = _artifact(uuid4())
+    del artifact.manifest["diagnostic_delta"]
+    del artifact.manifest["diagnostic_decision"]
+    artifact.candidate_id = _canonical_candidate(artifact.manifest)
+    monkeypatch.setattr(
+        "src.services.workspace_release_materialization.get_settings",
+        lambda: SimpleNamespace(workspace_promotion_diagnostics_mode="enforce"),
+    )
+
+    with pytest.raises(
+        WorkspaceReleasePreparationError,
+        match="differential diagnostic evidence is invalid",
+    ):
+        WorkspaceReleaseMaterializer._validate_manifest(artifact, artifact.manifest)
+
+
 def test_prepare_accepts_preserved_endpoint_as_r2_source_promotion() -> None:
     state = {
         "workflow_id": str(uuid4()),

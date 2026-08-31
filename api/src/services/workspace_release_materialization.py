@@ -621,31 +621,44 @@ class WorkspaceReleaseMaterializer:
             parsed_diagnostics = [
                 PromotionDiagnostic.model_validate(item) for item in diagnostics
             ]
-            diagnostic_delta = PromotionDiagnosticDelta.model_validate(
-                manifest.get("diagnostic_delta")
-            )
-            diagnostic_decision = PromotionDiagnosticDecision.model_validate(
-                manifest.get("diagnostic_decision")
-            )
-            validate_diagnostic_delta(
-                diagnostic_delta,
-                expected_baseline_release_id=str(artifact.base_release_id),
-                expected_baseline_manifest_id=str(artifact.base_manifest_id),
-            )
         except (TypeError, ValueError) as exc:
             raise WorkspaceReleasePreparationError(
                 "artifact differential diagnostic evidence is invalid"
             ) from exc
         legacy_blocked = any(item.severity == "blocker" for item in parsed_diagnostics)
-        differential_blocked = bool(blocking_diagnostics(diagnostic_delta))
-        if (
-            diagnostic_decision.legacy_blocked != legacy_blocked
-            or diagnostic_decision.differential_blocked != differential_blocked
-        ):
-            raise WorkspaceReleasePreparationError(
-                "artifact diagnostic decision does not match its immutable evidence"
-            )
         mode = get_settings().workspace_promotion_diagnostics_mode
+        has_delta = "diagnostic_delta" in manifest
+        has_decision = "diagnostic_decision" in manifest
+        differential_blocked = True
+        if has_delta or has_decision:
+            try:
+                diagnostic_delta = PromotionDiagnosticDelta.model_validate(
+                    manifest.get("diagnostic_delta")
+                )
+                diagnostic_decision = PromotionDiagnosticDecision.model_validate(
+                    manifest.get("diagnostic_decision")
+                )
+                validate_diagnostic_delta(
+                    diagnostic_delta,
+                    expected_baseline_release_id=str(artifact.base_release_id),
+                    expected_baseline_manifest_id=str(artifact.base_manifest_id),
+                )
+            except (TypeError, ValueError) as exc:
+                raise WorkspaceReleasePreparationError(
+                    "artifact differential diagnostic evidence is invalid"
+                ) from exc
+            differential_blocked = bool(blocking_diagnostics(diagnostic_delta))
+            if (
+                diagnostic_decision.legacy_blocked != legacy_blocked
+                or diagnostic_decision.differential_blocked != differential_blocked
+            ):
+                raise WorkspaceReleasePreparationError(
+                    "artifact diagnostic decision does not match its immutable evidence"
+                )
+        elif mode == "enforce":
+            raise WorkspaceReleasePreparationError(
+                "artifact differential diagnostic evidence is invalid"
+            )
         blocked = differential_blocked if mode == "enforce" else legacy_blocked
         if blocked:
             raise WorkspaceReleasePreparationError(
