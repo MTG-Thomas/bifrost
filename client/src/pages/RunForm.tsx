@@ -152,6 +152,7 @@ export function RunForm() {
 				form={form}
 				devMode={isPlatformAdmin && devMode}
 				onDevModeChange={isPlatformAdmin ? setDevMode : undefined}
+				enableWebMcp
 			/>
 		</div>
 	);
