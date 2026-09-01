@@ -9,6 +9,11 @@ Tests that MCP REST endpoints are properly protected:
 Uses real HTTP requests to the running API server.
 """
 
+import json
+import os
+import zipfile
+from io import BytesIO
+
 import pytest
 import requests
 
@@ -17,10 +22,7 @@ from tests.fixtures.auth import (
     create_test_jwt,
 )
 
-
 # Base URL for test API (set by docker-compose.test.yml)
-import os
-
 TEST_API_URL = os.getenv("TEST_API_URL", "http://api:8000")
 
 
@@ -373,12 +375,155 @@ class TestMCPStatusEndpoint:
         assert "tools_count" in data
         assert "tools" in data
         assert set(data["tools"]) == {
-            "bifrost_find_agents",
-            "bifrost_get_agent",
-            "bifrost_get_tool_schema",
+            "bifrost_get_required_instructions",
+            "bifrost_search_capabilities",
             "bifrost_execute_tool",
+            "bifrost_get_execution",
+            "bifrost_search_memory",
+            "bifrost_save_memory",
+            "bifrost_remove_memory",
         }
-        assert data["tools_count"] == 4
+        assert data["tools_count"] == 7
+
+
+# ==================== Bifrost Agent Plugin Endpoint Tests ====================
+
+
+class TestMCPRunEndpoint:
+    """Tests for /api/mcp/run and /api/mcp/run/plugin."""
+
+    @pytest.fixture(autouse=True)
+    def reset_config(self):
+        token = create_test_jwt(is_superuser=True)
+        headers = auth_headers(token)
+
+        pre = requests.delete(f"{TEST_API_URL}/api/mcp/config", headers=headers)
+        assert pre.status_code == 200, (
+            f"reset_config pre-test DELETE failed: {pre.status_code} {pre.text}"
+        )
+
+        yield
+
+        post = requests.delete(f"{TEST_API_URL}/api/mcp/config", headers=headers)
+        assert post.status_code == 200, (
+            f"reset_config post-test DELETE failed: {post.status_code} {post.text}"
+        )
+
+    @pytest.mark.e2e
+    def test_run_info_requires_auth(self):
+        response = requests.get(f"{TEST_API_URL}/api/mcp/run")
+
+        assert response.status_code == 401
+
+    @pytest.mark.e2e
+    def test_run_info_allows_non_admin_and_reports_disabled(self):
+        admin_headers = auth_headers(create_test_jwt(is_superuser=True))
+        configured = requests.put(
+            f"{TEST_API_URL}/api/mcp/config",
+            json={"enabled": False},
+            headers=admin_headers,
+        )
+        assert configured.status_code == 200
+
+        user_headers = auth_headers(
+            create_test_jwt(email="user@org.local", is_superuser=False)
+        )
+        response = requests.get(
+            f"{TEST_API_URL}/api/mcp/run",
+            headers=user_headers,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["enabled"] is False
+        assert data["mcp_url"].endswith("/mcp")
+        assert data["setup_prompt"].startswith(
+            "Help me create a reusable skill or agent with this exact prompt:"
+        )
+        assert "bifrost_search_capabilities" in data["setup_prompt"]
+        assert "bifrost_get_required_instructions" in data["setup_prompt"]
+
+    @pytest.mark.e2e
+    def test_run_plugin_requires_auth(self):
+        response = requests.get(f"{TEST_API_URL}/api/mcp/run/plugin")
+
+        assert response.status_code == 401
+
+    @pytest.mark.e2e
+    def test_run_plugin_downloads_zip_for_active_non_admin(self):
+        headers = auth_headers(
+            create_test_jwt(email="user@org.local", is_superuser=False)
+        )
+
+        response = requests.get(
+            f"{TEST_API_URL}/api/mcp/run/plugin",
+            headers=headers,
+        )
+
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/zip"
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["content-disposition"] == (
+            'attachment; filename="bifrost-agent.zip"'
+        )
+
+        with zipfile.ZipFile(BytesIO(response.content)) as archive:
+            assert sorted(archive.namelist()) == [
+                ".agents/plugins/marketplace.json",
+                ".claude-plugin/marketplace.json",
+                ".claude-plugin/plugin.json",
+                ".codex-plugin/plugin.json",
+                ".cursor-plugin/plugin.json",
+                ".github/plugin/plugin.json",
+                ".mcp.json",
+                "README.md",
+                "assets/icon.png",
+                "assets/logo.png",
+                "gemini-extension.json",
+                "mcp.json",
+                "plugin.json",
+                "server.json",
+                "skills/bifrost-agent/SKILL.md",
+                "skills/bifrost-agent/agents/openai.yaml",
+            ]
+            assert "bifrost_execute_tool" in archive.read(
+                "skills/bifrost-agent/SKILL.md"
+            ).decode()
+            codex_marketplace = json.loads(
+                archive.read(".agents/plugins/marketplace.json")
+            )
+            assert codex_marketplace["name"] == "bifrost-agent"
+            assert json.loads(
+                archive.read(".claude-plugin/marketplace.json")
+            )["name"] == "bifrost-agent"
+            assert (
+                'display_name: "Assist"'
+                in archive.read(
+                    "skills/bifrost-agent/agents/openai.yaml"
+                ).decode()
+            )
+            assert (
+                "codex plugin add bifrost-agent@bifrost-agent"
+                in archive.read("README.md").decode()
+            )
+
+    @pytest.mark.e2e
+    def test_run_plugin_disabled_returns_forbidden(self):
+        headers = auth_headers(create_test_jwt(is_superuser=True))
+        configured = requests.put(
+            f"{TEST_API_URL}/api/mcp/config",
+            json={"enabled": False},
+            headers=headers,
+        )
+        assert configured.status_code == 200
+
+        response = requests.get(
+            f"{TEST_API_URL}/api/mcp/run/plugin",
+            headers=headers,
+        )
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "External MCP access is disabled"
 
 
 # ==================== Config Whitelist/Blacklist Tests ====================
@@ -515,9 +660,10 @@ class TestMCPConfigToolFiltering:
         )
         assert configured.status_code == 200
 
-        response = requests.get(
-            f"{TEST_API_URL}/api/mcp/gateway/agents",
+        response = requests.post(
+            f"{TEST_API_URL}/api/mcp/gateway/capabilities/search",
             headers=headers,
+            json={"query": "anything"},
         )
         assert response.status_code == 403
         assert response.json()["detail"] == "External MCP access is disabled"

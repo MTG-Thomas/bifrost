@@ -1,11 +1,24 @@
 """Tests for bifrost.credentials backend abstraction and multi-record store."""
 
 import os
+from collections.abc import Iterator
 
 import pytest
 
 from bifrost import credentials as creds_mod
 from bifrost.credentials import Credentials, EnvBackend, JsonBackend
+
+
+@pytest.fixture(autouse=True)
+def restore_auth_environment() -> Iterator[None]:
+    """Keep direct dotenv imports from leaking into later unit tests."""
+    original = {key: os.environ.get(key) for key in creds_mod.AUTH_ENV_KEYS}
+    yield
+    for key, value in original.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
 
 
 # ---------- Credentials dataclass ----------

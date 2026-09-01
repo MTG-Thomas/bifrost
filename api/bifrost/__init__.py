@@ -93,6 +93,7 @@ from .tables import tables
 from .users import users
 from .workflows import workflows
 from .agents import agents
+from .artifacts import artifacts
 
 # SDK Models (single source of truth)
 from .models import (
@@ -102,12 +103,16 @@ from .models import (
     FormPublic,
     WorkflowMetadata,
     WorkflowExecution,
+    AgentRun,
+    AgentRunHandle,
     IntegrationData,
     OAuthCredentials,
     IntegrationMappingResponse,
     ConfigData,
     AIResponse,
     AIStreamChunk,
+    AIInputFile,
+    ArtifactRef,
     KnowledgeDocument,
     NamespaceInfo,
     TableInfo,
@@ -119,6 +124,14 @@ from .models import (
 
 # ExecutionContext lives in bifrost/ — available in both CLI and platform
 from ._execution_context import ExecutionContext
+
+# Workspace promotion source declarations. Platform execution uses the shared
+# runtime classes so decorator validation and isinstance checks agree; the
+# downloadable SDK falls back to its packaged copy.
+try:
+    from shared.workspace_effects import WorkflowBounds, WorkflowEffect
+except ImportError:
+    from .workspace_effects import WorkflowBounds, WorkflowEffect
 
 # Import decorators - try platform module first, fall back to local SDK version
 try:
@@ -234,6 +247,7 @@ def __getattr__(name: str):
 __all__ = [
     # SDK Modules
     'agents',
+    'artifacts',
     'api',
     'ai',
     'config',
@@ -255,12 +269,16 @@ __all__ = [
     'FormPublic',
     'WorkflowMetadata',
     'WorkflowExecution',
+    'AgentRun',
+    'AgentRunHandle',
     'IntegrationData',
     'OAuthCredentials',
     'IntegrationMappingResponse',
     'ConfigData',
     'AIResponse',
     'AIStreamChunk',
+    'AIInputFile',
+    'ArtifactRef',
     'KnowledgeDocument',
     'NamespaceInfo',
     'TableInfo',
@@ -268,6 +286,9 @@ __all__ = [
     'DocumentList',
     'BatchResult',
     'BatchDeleteResult',
+    # Workspace promotion source declarations
+    'WorkflowBounds',
+    'WorkflowEffect',
     # Decorators
     'workflow',
     'data_provider',

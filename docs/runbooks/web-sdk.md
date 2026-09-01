@@ -27,8 +27,18 @@ dependencies. The `/api/sdk/download` endpoint returns a gzip npm tarball with:
 - package entry: `dist/index.mjs`
 - peer dependencies: React, React DOM, and lucide-react
 
-This mirrors `/api/cli/download`: the SDK is tied to the instance that served
-it.
+This mirrors `/api/cli/download/bifrost-cli.tar.gz`: the SDK is tied to the
+instance that served it.
+
+The package also includes experimental WebMCP progressive enhancement through
+`isWebMcpAvailable`, `registerWebMcpTool`, `useWebMcpTool`, and
+`useWebMcpWorkflowTool`. Direct access to the changing browser proposal is
+isolated in the SDK. These APIs register page-local browser tools; they do not
+replace or proxy Bifrost's remote MCP server.
+
+Treat workflow tools as side-effecting once invoked. A signal already aborted
+at invocation prevents submission, but a later browser-tool abort cannot stop
+or undo the workflow; use the platform's execution controls instead.
 
 ## Local Apps
 

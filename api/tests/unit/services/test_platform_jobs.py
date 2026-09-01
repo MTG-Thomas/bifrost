@@ -126,14 +126,20 @@ async def test_websocket_event_matches_public_http_contract_and_hides_payload(
 
     await service.publish_platform_job_update(job)
 
-    channel, event = broadcast.await_args.args
-    assert channel == f"notification:{job.requested_by_user_id}"
-    assert event["type"] == "platform_job_updated"
-    assert event["job"] == service.platform_job_to_public(job).model_dump(
-        mode="json"
-    )
-    assert "payload" not in event["job"]
-    assert "requested_by_email" not in event["job"]
+    assert broadcast.await_count == 2
+    channels = {call.args[0] for call in broadcast.await_args_list}
+    assert channels == {
+        f"notification:{job.requested_by_user_id}",
+        "notification:admins",
+    }
+    for call in broadcast.await_args_list:
+        event = call.args[1]
+        assert event["type"] == "platform_job_updated"
+        assert event["job"] == service.platform_job_to_public(job).model_dump(
+            mode="json"
+        )
+        assert "payload" not in event["job"]
+        assert "requested_by_email" not in event["job"]
 
 
 @pytest.mark.asyncio
@@ -198,6 +204,37 @@ async def test_progress_and_terminal_writes_are_fenced(
 
 
 @pytest.mark.asyncio
+async def test_finish_platform_job_bounds_error_code_for_job_and_attempt(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = await _enqueue(db_session)
+    token = uuid4()
+    job.status = "running"
+    job.lease_token = token
+    job.lease_expires_at = datetime.now(timezone.utc) + timedelta(minutes=1)
+    await db_session.commit()
+
+    @asynccontextmanager
+    async def test_context() -> AsyncGenerator[AsyncSession, None]:
+        yield db_session
+
+    monkeypatch.setattr(service, "get_db_context", test_context)
+    monkeypatch.setattr(service, "publish_platform_job_update", AsyncMock())
+
+    assert await service.finish_platform_job(
+        job.id,
+        token,
+        status="failed",
+        error_code="x" * 200,
+        error_message="failed",
+    )
+
+    await db_session.refresh(job)
+    assert job.error_code == "x" * 100
+
+
+@pytest.mark.asyncio
 async def test_cancel_is_idempotent(
     db_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
@@ -223,8 +260,90 @@ async def test_non_interruptible_handler_rejects_running_cancel(
     job = await _enqueue(db_session)
     job.status = "running"
     job.lease_token = uuid4()
+    job.lease_owner = "scheduler-a"
+    job.lease_expires_at = datetime.now(timezone.utc) + timedelta(minutes=1)
     await db_session.commit()
     job, accepted = await service.request_platform_job_cancel(db_session, job)
     assert accepted is False
     assert job.status == "running"
     assert job.cancel_requested_at is None
+
+
+@pytest.mark.asyncio
+async def test_deferred_job_releases_lease_and_finishes_from_child_work(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = await _enqueue(db_session)
+    token = uuid4()
+    job.status = "running"
+    job.lease_token = token
+    job.lease_owner = "scheduler-a"
+    job.lease_expires_at = datetime.now(timezone.utc) + timedelta(minutes=1)
+    await db_session.commit()
+
+    @asynccontextmanager
+    async def test_context() -> AsyncGenerator[AsyncSession, None]:
+        yield db_session
+
+    published = AsyncMock()
+    monkeypatch.setattr(service, "get_db_context", test_context)
+    monkeypatch.setattr(service, "publish_platform_job_update", published)
+
+    assert await service.defer_platform_job(
+        job.id,
+        token,
+        phase="Waiting for child work",
+        result={"children": 2},
+    )
+    await db_session.refresh(job)
+    assert job.status == "waiting"
+    assert job.lease_token is None
+    assert job.lease_owner is None
+    assert service.platform_job_to_public(job).can_cancel is True
+
+    assert await service.update_deferred_platform_job_progress(
+        job.id,
+        phase="Completed 1/2",
+        current=1,
+        total=2,
+    )
+    assert await service.finish_deferred_platform_job(
+        job.id,
+        status="succeeded",
+        result={"children": 2, "succeeded": 2},
+    )
+    await db_session.refresh(job)
+    assert job.status == "succeeded"
+    assert job.progress_percent == 100
+    assert job.result == {"children": 2, "succeeded": 2}
+    assert job.completed_at is not None
+    assert published.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_stale_runner_cannot_defer_job(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = await _enqueue(db_session)
+    job.status = "running"
+    job.lease_token = uuid4()
+    job.lease_owner = "scheduler-a"
+    job.lease_expires_at = datetime.now(timezone.utc) + timedelta(minutes=1)
+    await db_session.commit()
+
+    @asynccontextmanager
+    async def test_context() -> AsyncGenerator[AsyncSession, None]:
+        yield db_session
+
+    monkeypatch.setattr(service, "get_db_context", test_context)
+    monkeypatch.setattr(service, "publish_platform_job_update", AsyncMock())
+
+    assert not await service.defer_platform_job(
+        job.id,
+        uuid4(),
+        phase="Stale child work",
+    )
+    await db_session.refresh(job)
+    assert job.status == "running"

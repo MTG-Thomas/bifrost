@@ -82,8 +82,10 @@ def test_collect_workflows_rejects_manifest_path_outside_workspace(
         _collect_workflows(ws)
 
 
-def test_unregistered_workflow_files_flags_decorated_source_without_manifest_entry():
-    from bifrost.commands.solution import _unregistered_workflow_files
+def test_compile_solution_plan_flags_each_decorated_function_without_exact_manifest_row(
+    tmp_path,
+):
+    from bifrost.commands.solution import compile_solution_plan
 
     python_files = {
         "functions/registered.py": "from bifrost import workflow\n\n@workflow\nasync def main():\n    return 1\n",
@@ -92,11 +94,32 @@ def test_unregistered_workflow_files_flags_decorated_source_without_manifest_ent
     }
     workflows = [{"path": "functions/registered.py", "function_name": "main", "name": "reg"}]
 
-    assert _unregistered_workflow_files(python_files, workflows) == ["functions/loose.py"]
+    plan = compile_solution_plan(
+        tmp_path,
+        python_files=python_files,
+        workflows=workflows,
+    )
+
+    assert plan.valid is False
+    assert plan.counts == {
+        "python_files": 3,
+        "workflow_manifest_rows": 1,
+        "decorated_workflows": 2,
+        "errors": 1,
+    }
+    assert [finding.ref for finding in plan.diagnostics] == [
+        "functions/loose.py::main"
+    ]
+    finding = plan.diagnostics[0]
+    assert finding.code == "solution.workflow_manifest_row_missing"
+    assert finding.path == "functions/loose.py"
+    assert finding.function_name == "main"
+    assert "live references would return 404" in finding.message
+    assert "function_name: main" in (finding.remediation or "")
 
 
-def test_unregistered_workflow_files_flags_partially_registered_file():
-    from bifrost.commands.solution import _unregistered_workflow_files
+def test_compile_solution_plan_matches_path_and_function_not_counts(tmp_path):
+    from bifrost.commands.solution import compile_solution_plan
 
     src = (
         "from bifrost import workflow\n\n"
@@ -106,7 +129,137 @@ def test_unregistered_workflow_files_flags_partially_registered_file():
     python_files = {"functions/two.py": src}
 
     one_entry = [{"path": "functions/two.py", "function_name": "a", "name": "a"}]
-    assert _unregistered_workflow_files(python_files, one_entry) == ["functions/two.py"]
+    plan = compile_solution_plan(
+        tmp_path,
+        python_files=python_files,
+        workflows=one_entry,
+    )
+    assert [finding.ref for finding in plan.diagnostics] == ["functions/two.py::b"]
 
     both_entries = one_entry + [{"path": "functions/two.py", "function_name": "b", "name": "B"}]
-    assert _unregistered_workflow_files(python_files, both_entries) == []
+    plan = compile_solution_plan(
+        tmp_path,
+        python_files=python_files,
+        workflows=both_entries,
+    )
+    assert plan.valid is True
+    assert plan.diagnostics == ()
+
+
+def test_compile_solution_plan_ast_ignores_comments_and_supports_qualified_decorator(
+    tmp_path,
+):
+    from bifrost.commands.solution import compile_solution_plan
+
+    python_files = {
+        "functions/qualified.py": (
+            "import bifrost\n\n"
+            "# @workflow async def fake(): pass\n"
+            "@bifrost.workflow(name='Real')\n"
+            "async def real():\n"
+            "    return 1\n"
+        ),
+    }
+    plan = compile_solution_plan(
+        tmp_path,
+        python_files=python_files,
+        workflows=[],
+    )
+
+    assert [finding.ref for finding in plan.diagnostics] == [
+        "functions/qualified.py::real"
+    ]
+
+
+def test_solution_plan_json_contract_is_stable(tmp_path):
+    from bifrost.commands.solution import compile_solution_plan
+
+    plan = compile_solution_plan(
+        tmp_path,
+        python_files={
+            "functions/hello.py": "from bifrost import workflow\n@workflow\ndef hello(): pass\n"
+        },
+        workflows=[],
+    )
+
+    document = plan.to_dict()
+    assert document["schema_version"] == 1
+    assert document["mode"] == "solution"
+    assert document["root"] == str(tmp_path.resolve())
+    assert document["valid"] is False
+    assert document["entities"] == {
+        "decorated_workflows": ["functions/hello.py::hello"],
+        "registered_workflows": [],
+    }
+    assert document["diagnostics"][0]["code"] == (
+        "solution.workflow_manifest_row_missing"
+    )
+
+
+def test_compile_solution_plan_rejects_manifest_row_without_decorated_source(
+    tmp_path,
+):
+    from bifrost.commands.solution import compile_solution_plan
+
+    plan = compile_solution_plan(
+        tmp_path,
+        python_files={"functions/tasks.py": "def task():\n    return True\n"},
+        workflows=[
+            {"path": "functions/tasks.py", "function_name": "task", "name": "Task"}
+        ],
+    )
+
+    assert plan.valid is False
+    assert plan.diagnostics[0].code == (
+        "solution.workflow_source_missing_or_undecorated"
+    )
+
+
+def test_compile_solution_plan_understands_aliased_bifrost_decorator(tmp_path):
+    from bifrost.commands.solution import compile_solution_plan
+
+    plan = compile_solution_plan(
+        tmp_path,
+        python_files={
+            "functions/tasks.py": (
+                "from bifrost import workflow as bifrost_workflow\n\n"
+                "@bifrost_workflow\n"
+                "async def task():\n"
+                "    return True\n"
+            )
+        },
+        workflows=[
+            {"path": "functions/tasks.py", "function_name": "task", "name": "Task"}
+        ],
+    )
+
+    assert plan.valid is True
+
+
+def test_compile_solution_plan_reports_decorated_source_syntax_error(tmp_path):
+    from bifrost.commands.solution import compile_solution_plan
+
+    plan = compile_solution_plan(
+        tmp_path,
+        python_files={
+            "functions/broken.py": "from bifrost import workflow\n@workflow\ndef broken(:\n"
+        },
+        workflows=[],
+    )
+
+    assert plan.valid is False
+    assert [item.code for item in plan.diagnostics] == [
+        "solution.workflow_source_invalid"
+    ]
+
+
+def test_compile_solution_plan_ignores_unrelated_helper_syntax_error(tmp_path):
+    from bifrost.commands.solution import compile_solution_plan
+
+    plan = compile_solution_plan(
+        tmp_path,
+        python_files={"helpers/broken.py": "def broken(:\n"},
+        workflows=[],
+    )
+
+    assert plan.diagnostics == ()

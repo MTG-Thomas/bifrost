@@ -67,6 +67,7 @@ def aggregate_phases(phases: dict[str, WorkerPhase], total: int) -> dict[str, An
             )
     return {
         "total": max(total, len(phases)),
+        "reported": len(phases),
         "installing": counts["installing"],
         "installed": counts["installed"] + counts["recycling"] + counts["recycled"],
         "recycling": counts["recycling"],
@@ -74,6 +75,37 @@ def aggregate_phases(phases: dict[str, WorkerPhase], total: int) -> dict[str, An
         "failed": counts["failed"],
         "failures": failures,
     }
+
+
+async def get_run_progress(run_id: str) -> dict[str, Any]:
+    """Return durable fleet progress for one package recycle operation."""
+    redis = await _raw_redis()
+    raw = await cast(
+        Awaitable[dict[str, str]], redis.hgetall(f"{_HASH_PREFIX}{run_id}")
+    )
+    phases: dict[str, WorkerPhase] = {}
+    for worker_id, value in raw.items():
+        try:
+            data = json.loads(value)
+            phases[worker_id] = WorkerPhase(
+                phase=data.get("phase", ""),
+                package=data.get("package"),
+                error=data.get("error"),
+            )
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+    aggregate = aggregate_phases(phases, await _live_worker_count(redis))
+    terminal = aggregate["recycled"] + aggregate["failed"]
+    if not phases:
+        operation_status = "pending"
+    elif terminal < aggregate["total"]:
+        operation_status = "running"
+    elif aggregate["failed"]:
+        operation_status = "failed"
+    else:
+        operation_status = "succeeded"
+    return {"run_id": run_id, "status": operation_status, **aggregate}
 
 
 def summary_line(agg: dict[str, Any], action: str) -> str:

@@ -10,7 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, computed_field
+from pydantic import Field, SecretStr, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -88,6 +88,71 @@ class Settings(BaseSettings):
     )
     execution_timeout_seconds: int = Field(
         default=300, description="Default execution timeout in seconds (5 minutes)"
+    )
+    workspace_rapid_promotion_preview_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable the preview-only immutable Workspace promotion API. "
+            "This flag does not enable activation."
+        ),
+    )
+    workspace_rapid_promotion_draft_upload_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable inert, expiring local Workspace draft storage. Drafts cannot "
+            "be prepared, canaried, registered, or activated."
+        ),
+    )
+    workspace_release_prepare_canary_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable immutable reviewed-artifact preparation and bounded canaries. "
+            "This flag does not enable activation."
+        ),
+    )
+    workspace_release_activation_enabled: bool = Field(
+        default=False,
+        description="Enable atomic activation of prepared Workspace releases.",
+    )
+    workspace_promotion_diagnostics_mode: Literal["off", "shadow", "enforce"] = Field(
+        default="off",
+        description=(
+            "Control differential Workspace promotion diagnostics. Off and shadow "
+            "retain legacy blocker enforcement; shadow records both decisions; "
+            "enforce accepts only valid immutable differential evidence."
+        ),
+    )
+    workspace_source_release_oidc_repository: str | None = Field(
+        default=None,
+        description=(
+            "Exact GitHub owner/repository allowed to declare protected-main "
+            "Workspace source releases with GitHub Actions OIDC."
+        ),
+    )
+    workspace_source_release_oidc_repository_id: int | None = Field(
+        default=None,
+        gt=0,
+        description="Immutable GitHub repository ID allowed by source-release OIDC.",
+    )
+    workspace_source_release_oidc_repository_owner_id: int | None = Field(
+        default=None,
+        gt=0,
+        description="Immutable GitHub repository owner ID allowed by source-release OIDC.",
+    )
+    workspace_source_release_oidc_workflow_ref: str | None = Field(
+        default=None,
+        description=(
+            "Exact GitHub Actions workflow_ref allowed to declare source releases."
+        ),
+    )
+    workspace_source_release_oidc_organization_id: str | None = Field(
+        default=None,
+        description="Bifrost organization UUID receiving source-release declarations.",
+    )
+    deferred_execution_promoter_interval_seconds: int = Field(
+        default=60,
+        ge=1,
+        description="Interval between checks for due scheduled executions",
     )
     graceful_shutdown_seconds: int = Field(
         default=5, description="Seconds to wait after SIGTERM before SIGKILL"
@@ -343,6 +408,57 @@ class Settings(BaseSettings):
         default="http://localhost:8000",
         description="Public URL for the Bifrost platform (used for MCP OAuth, workflow URLs, etc.)",
     )
+
+    @computed_field
+    @property
+    def mcp_allowed_origins(self) -> list[str]:
+        """Explicit browser origins permitted to call the MCP transport."""
+        from urllib.parse import urlsplit
+
+        origins = {
+            origin for origin in self.cors_origins_list if origin != "*"
+        }
+        public = urlsplit(self.public_url)
+        if public.scheme and public.netloc:
+            origins.add(f"{public.scheme}://{public.netloc}")
+        return sorted(origins)
+
+    @computed_field
+    @property
+    def mcp_allowed_hosts(self) -> list[str]:
+        """Explicit Host header values permitted on the MCP transport."""
+        from urllib.parse import urlsplit
+
+        public = urlsplit(self.public_url)
+        return [public.netloc] if public.netloc else []
+
+    # ==========================================================================
+    # GitHub App (verified platform-authored workspace history)
+    # ==========================================================================
+    github_app_id: int | None = Field(
+        default=None,
+        gt=0,
+        description="GitHub App ID used for verified platform commits",
+    )
+    github_app_installation_id: int | None = Field(
+        default=None,
+        gt=0,
+        description="Repository-scoped GitHub App installation ID",
+    )
+    github_app_private_key: SecretStr | None = Field(
+        default=None,
+        min_length=1,
+        description="PEM private key for minting short-lived GitHub App tokens",
+    )
+
+    @computed_field
+    @property
+    def github_app_commit_writer_configured(self) -> bool:
+        return bool(
+            self.github_app_id
+            and self.github_app_installation_id
+            and self.github_app_private_key
+        )
 
     # ==========================================================================
     # Anthropic API (for Claude Agent SDK)

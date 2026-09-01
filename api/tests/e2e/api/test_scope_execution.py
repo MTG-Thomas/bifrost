@@ -301,10 +301,22 @@ def embedding_config_for_scope_tests(
     if not embeddings_test_key:
         pytest.skip("EMBEDDINGS_AI_TEST_KEY not configured - skipping knowledge tests")
 
+    connection_response = e2e_client.post(
+        "/api/admin/ai/connections",
+        json={
+            "name": "Scope Embeddings",
+            "provider": "openai",
+            "api_key": embeddings_test_key,
+        },
+        headers=platform_admin.headers,
+    )
+    assert connection_response.status_code == 201, (
+        f"Failed to configure embedding connection: {connection_response.text}"
+    )
+    connection = connection_response.json()
     config = {
-        "provider": "openai",
+        "connection_id": connection["id"],
         "model": "text-embedding-3-small",
-        "api_key": embeddings_test_key,
     }
 
     # Configure embedding provider
@@ -324,6 +336,10 @@ def embedding_config_for_scope_tests(
     try:
         e2e_client.delete(
             "/api/admin/llm/embedding-config",
+            headers=platform_admin.headers,
+        )
+        e2e_client.delete(
+            f"/api/admin/ai/connections/{connection['id']}",
             headers=platform_admin.headers,
         )
         logger.info("Cleaned up embedding config")
@@ -475,7 +491,6 @@ from bifrost import workflow, tables, config, knowledge, context
 @workflow(
     name="{workflow_name}",
     description="Tests scope resolution across all SDK modules",
-    execution_mode="sync",
 )
 async def {workflow_name}():
     """
@@ -601,7 +616,6 @@ from bifrost import workflow, tables, config, knowledge, context
 @workflow(
     name="{workflow_name}",
     description="Tests scope resolution across all SDK modules (global workflow)",
-    execution_mode="sync",
 )
 async def {workflow_name}():
     """
@@ -678,6 +692,7 @@ async def {workflow_name}():
         workflow_path,
         workflow_content,
         workflow_name,
+        organization_id=None,
     )
     workflow_id = result["id"]
 
@@ -971,7 +986,18 @@ class TestExplicitScopeOverride:
         assert response.status_code == 200, (
             f"Failed to store provider knowledge: {response.text}"
         )
-        return {"scope_marker": "provider"}
+        yield {"scope_marker": "provider"}
+
+        cleanup = e2e_client.post(
+            "/api/sdk/knowledge/delete",
+            headers=platform_admin.headers,
+            json={
+                "key": "provider-doc",
+                "namespace": scope_test_knowledge_namespace,
+                "scope": self.PROVIDER_ORG_ID,
+            },
+        )
+        assert cleanup.status_code == 200, cleanup.text
 
     @pytest.fixture(scope="class")
     def scope_override_workflow(
@@ -999,7 +1025,6 @@ from bifrost import workflow, tables, config, knowledge, context
 @workflow(
     name="{workflow_name}",
     description="Tests explicit scope override in SDK operations",
-    execution_mode="sync",
 )
 async def {workflow_name}():
     """
@@ -1220,7 +1245,6 @@ from bifrost import workflow, context
 @workflow(
     name="{workflow_name}",
     description="Tests org user execution of authenticated workflow",
-    execution_mode="sync",
 )
 async def {workflow_name}():
     """Returns execution context info."""
@@ -1285,7 +1309,6 @@ from bifrost import workflow, context
 @workflow(
     name="{workflow_name}",
     description="Tests org user execution of global authenticated workflow",
-    execution_mode="sync",
 )
 async def {workflow_name}():
     """Returns execution context info."""
@@ -1351,7 +1374,6 @@ from bifrost import workflow, context
 @workflow(
     name="{workflow_name}",
     description="Tests cross-org access denial",
-    execution_mode="sync",
 )
 async def {workflow_name}():
     """Returns execution context info."""
@@ -1503,5 +1525,22 @@ async def {workflow_name}():
             platform_admin.headers,
             org2_authenticated_workflow["id"],
         )
+        assert data["status"] == "Success", f"Execution failed: {data}"
+        assert data.get("result", {}).get("org_id") == org2["id"]
+
+    def test_superuser_explicit_org_override_wins_for_org_scoped_workflow(
+        self,
+        e2e_client,
+        platform_admin,
+        org2,
+        org1_authenticated_workflow,
+    ):
+        data = execute_workflow_sync(
+            e2e_client,
+            platform_admin.headers,
+            org1_authenticated_workflow["id"],
+            org_id=org2["id"],
+        )
+
         assert data["status"] == "Success", f"Execution failed: {data}"
         assert data.get("result", {}).get("org_id") == org2["id"]

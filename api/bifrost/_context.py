@@ -136,13 +136,15 @@ def resolve_scope(scope: str | None) -> str | None:
     CLI mode (no ExecutionContext) returns the requested scope unchanged
     — the API will apply its own resolver against the user's JWT.
     """
-    if scope == "global":
+    requested_scope = scope
+    explicit_global = scope == "global"
+    if explicit_global:
         ctx = _execution_context.get()
         if ctx is None:
             return "global"  # CLI mode — preserve explicit global scope token
         scope = None
     default = get_default_scope()
-    if scope is None:
+    if scope is None and not explicit_global:
         return default
     if scope == default:
         return scope
@@ -153,7 +155,7 @@ def resolve_scope(scope: str | None) -> str | None:
     if is_platform_admin or ctx.is_provider_org:
         return scope
     raise PermissionError(
-        f"Scope override to '{scope}' denied. "
+        f"Scope override to '{requested_scope}' denied. "
         "Platform admins or provider-org members only."
     )
 

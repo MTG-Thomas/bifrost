@@ -288,7 +288,8 @@ def _check_cli_version() -> None:
                 f"Your CLI is incompatible with this server "
                 f"(CLI contract v{CONTRACT_VERSION}, server contract "
                 f"v{server_contract}). You must upgrade:\n"
-                f"  pipx install --force {api_url}/api/cli/download"
+                f"  pipx install --force "
+                f"{api_url}/api/cli/download/bifrost-cli.tar.gz"
             )
             sys.exit(1)
         # Gate 2 — build drift (SOFT, deduped). Contract is fine; just nudge.
@@ -300,7 +301,8 @@ def _check_cli_version() -> None:
                     f"A newer Bifrost CLI is available "
                     f"({installed} → {server_version}); your current CLI is still "
                     f"compatible. Update when convenient:\n"
-                    f"  pipx install --force {api_url}/api/cli/download"
+                    f"  pipx install --force "
+                    f"{api_url}/api/cli/download/bifrost-cli.tar.gz"
                 )
                 _version_notice.mark_notified(api_url, server_version)
         return
@@ -312,12 +314,11 @@ def _check_cli_version() -> None:
             f"(server reported no version). Continuing."
         )
         return
-    if server_version != installed:
-        _warn(
-            f"Could not verify contract compatibility — {api_url} predates "
-            f"contract versioning (CLI {installed}, server {server_version}). "
-            f"Continuing; consider upgrading the server."
-        )
+    _warn(
+        f"Could not verify contract compatibility — {api_url} predates "
+        f"contract versioning (CLI {installed}, server {server_version}). "
+        f"Continuing; consider upgrading the server."
+    )
 
 
 def _resolve_login_api_url(api_url: str | None) -> str | None:
@@ -889,6 +890,10 @@ def main(args: list[str] | None = None) -> int:
         if command == "run":
             return handle_run(args[1:])
 
+        if command == "promote":
+            from bifrost.commands.promote import handle_promote
+            return handle_promote(args[1:])
+
         if command == "git":
             return handle_git(args[1:])
 
@@ -948,10 +953,11 @@ Usage:
 Commands:
   sync        Bidirectional sync between local files and Bifrost platform
   run         Run a workflow directly (silent JSON output) or interactively via browser
+  promote     Build a local-only draft or preview exact protected-main bytes
   git         Git source control operations (fetch, status, commit, push, resolve, diff, discard)
   push        Push local files to Bifrost platform (alias for sync)
   pull        Pull files from Bifrost platform to local directory (alias for sync)
-  solution    Manage Solution installs (create, bind, scaffold-app, start, deploy, install)
+  solution    Manage Solutions (create, add-workflow, plan, start, deploy, install)
   deploy      Deploy the current Solution workspace (alias for 'solution deploy')
   watch       Watch for file changes and auto-push
   api         Generic authenticated API request
@@ -984,9 +990,11 @@ Entity mutation commands (see 'bifrost <entity> --help'):
 
 Workspace/file targets:
   _repo source files:
-    bifrost push|pull|sync|watch [path]          # local directory <-> global _repo
-    bifrost files list [path]                    # direct API access to global _repo files
-    bifrost files write <path> --content ...     # one direct API write, no local tree sync
+    bifrost files list [path]                    # list instance _repo files
+    bifrost files search <query>                 # search instance _repo text
+    bifrost files read <path>                    # read one source file
+    bifrost files stat <path> --json             # capture its version before editing
+    bifrost files write <path> --from-file ...   # guarded direct write
 
   Solution source files:
     bifrost solution create --slug <slug>
@@ -998,18 +1006,16 @@ Workspace/file targets:
     bifrost files list --solution <id-or-slug>   # installed app/workflow file data
     bifrost files read <path> --solution <id-or-slug>
 
-Push vs files write:
-  bifrost push [path] walks a local file or directory, applies sync ignore rules,
-  compares server state, and uploads source files to global _repo. Use it when
-  local disk is the source of truth. A pushed file lands at the same relative
-  path under _repo, based on the directory where you run the command. To place a
-  file at _repo/workflows/foo.py, run from the workspace root and push
-  workflows/foo.py. `bifrost files write` writes exactly one path through the
-  Files API. Use it for one-off writes, scripts, arbitrary local-to-remote path
-  copies with --from-file, or Solution runtime file data with --solution.
+Direct files vs bulk local sync:
+  Use `bifrost files` as the default _repo authoring surface. It reads and
+  writes explicit remote paths and supports version-guarded changes. The
+  push/pull/sync/watch commands are optional bulk local-directory workflows;
+  inspect their help only when the user intentionally chooses that model.
 
 Examples:
   bifrost run workflow.py -w greet
+  bifrost promote draft workflow.py -w greet
+  bifrost promote preview workflow.py -w greet
   bifrost run workflow.py -w greet -p '{"name": "World"}'
   bifrost run workflow.py -w greet | jq .
   bifrost run workflow.py --interactive
@@ -1018,17 +1024,16 @@ Examples:
   bifrost git commit -m "sync clients"
   bifrost git push
   bifrost git resolve workflows/billing.py=keep_remote
-  bifrost sync
-  bifrost sync apps/my-app --mirror
-  bifrost push apps/my-app
-  bifrost push apps/my-app --mirror
-  bifrost pull
-  bifrost pull apps/my-app
-  bifrost watch
-  bifrost watch apps/my-app
+  bifrost files stat workflows/greet.py --json
+  bifrost files read workflows/greet.py
+  bifrost files write workflows/greet.py --from-file /tmp/greet.py --expected-version <version>
   bifrost solution create --slug my-solution
   bifrost solution bind --solution <id-or-slug>
   bifrost solution scaffold-app dashboard
+  bifrost solution add-workflow functions/tasks.py::create_task
+  bifrost solution plan
+  bifrost solution deploy --preview       # build exact candidate; upload nothing
+  bifrost solution deploy --candidate-id <sha256:candidate>
   bifrost solution start                 # local dev: app + local workflows, one origin
   bifrost api GET /api/workflows
   bifrost api POST /api/applications/my-app/validate
@@ -1120,7 +1125,7 @@ Examples:
         return 1
 
     resolved_url = resolved_url.rstrip("/")
-    download_url = f"{resolved_url}/api/cli/download"
+    download_url = f"{resolved_url}/api/cli/download/bifrost-cli.tar.gz"
     try:
         command = _update_install_command(download_url)
     except RuntimeError as exc:
@@ -1264,8 +1269,19 @@ Examples:
         assert password is not None
         rc, data = asyncio.run(password_login_flow(api_url, email, password))
         if rc == 0 and data is not None:
-            # Persist URL + tokens to CWD's .env so subsequent commands from
-            # this isolated scratch directory reuse the unattended session.
+            expires_at = datetime.now(timezone.utc) + timedelta(
+                seconds=data.get("expires_in") or 1800
+            )
+            credentials.save_credentials(
+                api_url=api_url,
+                access_token=data["access_token"],
+                refresh_token=data["refresh_token"],
+                expires_at=expires_at.isoformat(),
+            )
+
+            # Persist URL + tokens to CWD's .env as well so isolated scratch
+            # directories can carry unattended sessions without changing a
+            # user's active global CLI target.
             try:
                 _write_env_url(api_url)
                 _upsert_env_vars(
@@ -1556,6 +1572,8 @@ def _run_direct(
     verbose: bool = False,
     organization_id: str | None = None,
     solution_root: "pathlib.Path | None" = None,
+    promotion_evidence: "pathlib.Path | None" = None,
+    workflow_file: str | None = None,
 ) -> int:
     """
     Run a workflow directly in standalone mode.
@@ -1660,12 +1678,66 @@ def _run_direct(
 
     workflow_fn = workflows[selected_workflow]
 
+    started_at = time.monotonic()
     try:
         result = asyncio.run(workflow_fn(**params))
         if verbose:
             print(f"Result: {json.dumps(result, indent=2, default=str)}")
         else:
             print(json.dumps(result, default=str))
+        if promotion_evidence is not None and workflow_file is not None:
+            from bifrost.promotion import (
+                build_promotion_bundle,
+                sha256_bytes,
+            )
+            from bifrost.workspace_release import workspace_closure_id
+
+            root = pathlib.Path.cwd().resolve()
+            selected_path = pathlib.Path(workflow_file)
+            if selected_path.is_absolute():
+                selected_path = selected_path.resolve().relative_to(root)
+            bundle = build_promotion_bundle(root, selected_path.as_posix())
+            canonical_params = json.dumps(
+                params, sort_keys=True, separators=(",", ":"), default=str
+            ).encode("utf-8")
+            canonical_result = json.dumps(
+                result, sort_keys=True, separators=(",", ":"), default=str
+            ).encode("utf-8")
+            evidence = {
+                "schema_version": "bifrost.workspace-local-run-evidence/v1",
+                "authority": "local_only",
+                "activatable": False,
+                "succeeded": True,
+                "snapshot_id": bundle.snapshot_id,
+                "closure_id": workspace_closure_id(
+                    {
+                        "path": selected_path.as_posix(),
+                        "function": selected_workflow,
+                    },
+                    {
+                        str(item["path"]): str(item["sha256"])
+                        for item in bundle.files
+                    },
+                ),
+                "entry": {
+                    "path": selected_path.as_posix(),
+                    "function": selected_workflow,
+                },
+                "evidence_id": f"local:{uuid.uuid4()}",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "duration_ms": int((time.monotonic() - started_at) * 1000),
+                "input_sha256": sha256_bytes(canonical_params),
+                "result_sha256": sha256_bytes(canonical_result),
+                "observed_effects": [],
+            }
+            temporary = promotion_evidence.with_suffix(
+                promotion_evidence.suffix + ".tmp"
+            )
+            temporary.write_text(
+                json.dumps(evidence, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            temporary.replace(promotion_evidence)
         return 0
     except Exception as e:
         print(f"Error executing workflow: {e}", file=sys.stderr)
@@ -1698,6 +1770,7 @@ def handle_run(args: list[str]) -> int:
     verbose = False
     inline_params: dict[str, Any] | None = None
     organization_id: str | None = None
+    promotion_evidence: pathlib.Path | None = None
 
     # Parse arguments
     i = 1
@@ -1733,6 +1806,12 @@ def handle_run(args: list[str]) -> int:
         elif args[i] in ("--no-browser", "-n"):
             no_browser = True
             i += 1
+        elif args[i] == "--promotion-evidence":
+            if i + 1 >= len(args):
+                print("Error: --promotion-evidence requires a file path", file=sys.stderr)
+                return 1
+            promotion_evidence = pathlib.Path(args[i + 1])
+            i += 2
         elif args[i] in ("--help", "-h"):
             print_run_help()
             return 0
@@ -1820,6 +1899,8 @@ def handle_run(args: list[str]) -> int:
             selected_workflow, workflows, params,
             verbose=verbose, organization_id=organization_id,
             solution_root=solution_root,
+            promotion_evidence=promotion_evidence,
+            workflow_file=workflow_file,
         )
 
     # Interactive mode (--interactive) — browser-based session
@@ -3101,7 +3182,7 @@ async def _ws_listener(state: _WatchState, client: "BifrostClient") -> None:
                         if paths:
                             state.queue_incoming_deletes(paths, user_name)
         except asyncio.CancelledError:
-            return
+            raise
         except Exception as e:
             # Handle token expiry (server sends close code 4001)
             close_code = getattr(getattr(e, "rcvd", None), "code", None)
@@ -4529,6 +4610,7 @@ Options:
   --verbose, -v                Show status messages (e.g., "Running...", "Result:")
   --interactive, -i            Open browser-based session instead of direct execution
   --no-browser, -n             Don't auto-open browser (only with --interactive)
+  --promotion-evidence FILE    Write snapshot-bound local-run evidence after success
   --help, -h                   Show this help message
 
 Examples:
@@ -4536,6 +4618,7 @@ Examples:
   bifrost run workflow.py -w greet -p '{"name": "World"}'                  # With parameters
   bifrost run workflow.py -w greet -v                                      # Verbose output
   bifrost run workflow.py -w greet | jq .                                  # Pipe to jq
+  bifrost run workflow.py -w greet --promotion-evidence .promotion-run.json
   bifrost run workflow.py --interactive                                    # Browser-based session
 """.strip())
 

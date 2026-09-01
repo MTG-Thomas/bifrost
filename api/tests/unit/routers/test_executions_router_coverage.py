@@ -33,6 +33,7 @@ def _execution_row(**overrides):
         result_type="json",
         error_message=None,
         duration_ms=42,
+        created_at=datetime.now(UTC),
         started_at=datetime.now(UTC),
         completed_at=None,
         scheduled_at=None,
@@ -184,6 +185,25 @@ async def test_list_executions_resolves_org_scope_and_parses_filters():
         "offset": 50,
         "cursor": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_history_orders_never_started_rows_after_started_executions():
+    db = SimpleNamespace(execute=AsyncMock(return_value=_DbResult(rows=[])))
+    repo = executions.ExecutionRepository(db)
+    user = SimpleNamespace(is_superuser=True, user_id=uuid4())
+
+    rows, token = await repo.list_executions(
+        user=user,
+        org_id=None,
+        limit=25,
+    )
+
+    assert rows == []
+    assert token is None
+    query = str(db.execute.await_args.args[0])
+    assert "executions.started_at DESC NULLS LAST" in query
+    assert "executions.id DESC" in query
 
 
 @pytest.mark.asyncio

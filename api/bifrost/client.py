@@ -583,7 +583,12 @@ class BifrostClient:
         return self._http
 
     @classmethod
-    def get_instance(cls, require_auth: bool = False) -> "BifrostClient":
+    def get_instance(
+        cls,
+        require_auth: bool = False,
+        *,
+        api_url: str | None = None,
+    ) -> "BifrostClient":
         """
         Get thread-local singleton client instance.
 
@@ -597,6 +602,8 @@ class BifrostClient:
         Args:
             require_auth: If True, trigger interactive login when no credentials found
                          (default: False for backward compatibility)
+            api_url: Explicit instance whose URL-keyed credentials must be used.
+                     This bypasses ambient directory/default-profile selection.
 
         Returns:
             BifrostClient instance
@@ -606,14 +613,22 @@ class BifrostClient:
         """
         # Use thread-local storage instead of class-level singleton
         # This ensures each thread gets its own client with httpx bound to its event loop
+        selected_api_url = api_url.rstrip("/") if api_url else None
         instance = getattr(_thread_local, "bifrost_client", None)
+        if instance is not None and (
+            selected_api_url is None or instance.api_url == selected_api_url
+        ):
+            return instance
 
-        if instance is None:
+        if instance is None or selected_api_url is not None:
             # Try credentials file from CLI login
-            creds = get_credentials(prompt_for_default=require_auth)
+            creds = get_credentials(
+                selected_api_url,
+                prompt_for_default=require_auth and selected_api_url is None,
+            )
 
             # Check if token needs refresh
-            if creds and is_token_expired():
+            if creds and is_token_expired(api_url=creds["api_url"]):
                 # Try to refresh
                 access_token = _refresh_connection_access_token_sync(
                     creds["api_url"], creds["access_token"]
@@ -634,7 +649,8 @@ class BifrostClient:
             # No credentials - trigger login flow if required
             if require_auth:
                 selected_url, _selected_source = resolve_current_connection(
-                    prompt_for_default=True
+                    selected_api_url,
+                    prompt_for_default=selected_api_url is None,
                 )
                 if selected_url is None:
                     stored_urls = []
@@ -657,7 +673,7 @@ class BifrostClient:
                     # No running loop, safe to use asyncio.run()
                     if asyncio.run(login_flow(selected_url)):
                         # Login successful, load credentials
-                        creds = get_credentials()
+                        creds = get_credentials(selected_url)
                         if creds:
                             instance = cls(creds["api_url"], creds["access_token"])
                             _thread_local.bifrost_client = instance
@@ -763,7 +779,7 @@ class BifrostClient:
         return _send_sync_with_5xx_retry(method, _send)
 
     async def _request_with_refresh(
-        self, method: str, path: str, **kwargs
+        self, method: str, path: str, *, retry_safe: bool = False, **kwargs
     ) -> httpx.Response:
         """Make an HTTP request, refreshing token on 401 and retrying once.
 
@@ -783,7 +799,8 @@ class BifrostClient:
                     response = await getattr(http, method)(path, **kwargs)
             return response
 
-        return await _send_with_5xx_retry(method, _send)
+        retry_method = "GET" if retry_safe else method
+        return await _send_with_5xx_retry(retry_method, _send)
 
     async def get(self, path: str, **kwargs) -> httpx.Response:
         """Make GET request."""
@@ -797,9 +814,13 @@ class BifrostClient:
         """
         return await self._get_async_client().get(path, **kwargs)
 
-    async def post(self, path: str, **kwargs) -> httpx.Response:
-        """Make POST request."""
-        return await self._request_with_refresh("post", path, **kwargs)
+    async def post(
+        self, path: str, *, retry_safe: bool = False, **kwargs
+    ) -> httpx.Response:
+        """Make POST request, optionally retrying a read-only POST on transient 5xx."""
+        return await self._request_with_refresh(
+            "post", path, retry_safe=retry_safe, **kwargs
+        )
 
     async def put(self, path: str, **kwargs) -> httpx.Response:
         """Make PUT request."""
@@ -817,7 +838,9 @@ class BifrostClient:
         """
         return await self._request_with_refresh("delete", path, **kwargs)
 
-    async def request(self, method: str, path: str, **kwargs) -> httpx.Response:
+    async def request(
+        self, method: str, path: str, *, retry_safe: bool = False, **kwargs
+    ) -> httpx.Response:
         """Make an arbitrary-method HTTP request with token refresh.
 
         Needed for verbs whose shortcut method on ``httpx.AsyncClient`` does
@@ -837,7 +860,8 @@ class BifrostClient:
                     response = await http.request(method.upper(), path, **kwargs)
             return response
 
-        return await _send_with_5xx_retry(method, _send)
+        retry_method = "GET" if retry_safe else method
+        return await _send_with_5xx_retry(retry_method, _send)
 
     def stream(self, method: str, path: str, **kwargs):
         """

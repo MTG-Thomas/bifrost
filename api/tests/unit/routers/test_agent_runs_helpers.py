@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -174,6 +175,29 @@ async def test_get_agent_run_raises_404_when_run_not_visible(
 
 
 @pytest.mark.asyncio
+async def test_cancel_agent_run_takes_publication_lock_before_loading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = _run(status="completed")
+    db = SimpleNamespace(execute=AsyncMock())
+
+    async def fake_load_agent_run_for_user(*args, **kwargs):
+        return run
+
+    monkeypatch.setattr(
+        agent_runs,
+        "load_agent_run_for_user",
+        fake_load_agent_run_for_user,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await agent_runs.cancel_agent_run(run.id, db, _user())
+
+    assert exc.value.status_code == 400
+    assert "bifrost:agent-run:" in str(db.execute.await_args.args[0])
+
+
+@pytest.mark.asyncio
 async def test_get_agent_run_returns_completed_run_with_db_steps_and_child_runs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -220,6 +244,9 @@ async def test_get_agent_run_includes_ai_usage_totals(
         model="gpt-test",
         input_tokens=10,
         output_tokens=20,
+        cache_read_tokens=4,
+        cache_write_tokens=1,
+        provider_cost=Decimal("0.025"),
         cost=Decimal("0.030"),
         duration_ms=400,
         timestamp=datetime.now(timezone.utc),
@@ -228,6 +255,9 @@ async def test_get_agent_run_includes_ai_usage_totals(
     totals = SimpleNamespace(
         total_input=10,
         total_output=20,
+        total_cache_read=4,
+        total_cache_write=1,
+        total_provider_cost=Decimal("0.025"),
         total_cost=Decimal("0.030"),
         total_duration=400,
         call_count=1,

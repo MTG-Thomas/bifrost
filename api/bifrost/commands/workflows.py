@@ -43,6 +43,7 @@ import json
 from pathlib import Path
 import sys
 from typing import Any
+from uuid import uuid4
 
 import click
 
@@ -171,9 +172,10 @@ async def register_workflow(
 ) -> None:
     """Register a decorated function from an existing workspace ``.py`` file.
 
-    The file must already exist in the workspace (written via ``bifrost push``
-    or the file editor). This command indexes a ``@workflow`` / ``@tool`` /
-    ``@data_provider`` function so it becomes executable via the API.
+    The file must already exist in the workspace. Write it directly with
+    ``bifrost files write`` or the file editor first. This command indexes a
+    ``@workflow`` / ``@tool`` / ``@data_provider`` function so it becomes
+    executable via the API.
 
     Org targeting follows the unified ``--org`` standard: HOME (omit) scopes the
     workflow to the caller's org, ``--global`` makes it global, ``--org
@@ -285,7 +287,13 @@ async def execute_workflow(
     if org_ref:
         body["org_id"] = await resolver.resolve("org", org_ref)
 
-    post_response = await client.post("/api/workflows/execute", json=body)
+    execution_id = str(uuid4())
+    post_response = await client.post(
+        "/api/workflows/execute",
+        json=body,
+        headers={"X-Bifrost-Execution-ID": execution_id},
+        retry_safe=True,
+    )
     post_response.raise_for_status()
     initial = post_response.json()
     execution_id = initial.get("execution_id")

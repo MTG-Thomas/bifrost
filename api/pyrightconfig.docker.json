@@ -1,0 +1,40 @@
+{
+    "include": [
+        "src/**/*.py",
+        "shared/**/*.py",
+        "bifrost/**/*.py",
+        "tests/**/*.py",
+        "doc_renderer_service/**/*.py"
+    ],
+    "exclude": [
+        "**/__pycache__",
+        "**/.pytest_cache",
+        "**/node_modules",
+        "**/.venv",
+        "**/stubs"
+    ],
+    "extraPaths": [
+        "scripts/skill-truth",
+        ".."
+    ],
+    "pythonVersion": "3.12",
+    "pythonPlatform": "Linux",
+    "typeCheckingMode": "basic",
+    "useLibraryCodeForTypes": true,
+    "reportMissingImports": true,
+    "reportMissingTypeStubs": false,
+    "reportUnknownMemberType": false,
+    "reportUnknownArgumentType": false,
+    "reportUnknownVariableType": false,
+    "reportUnknownLambdaType": false,
+    "strictListInference": false,
+    "strictDictionaryInference": false,
+    "strictSetInference": false,
+    "reportAttributeAccessIssue": "none",
+    "reportArgumentType": "none",
+    "reportCallIssue": "none",
+    "reportOperatorIssue": "none",
+    "reportOptionalMemberAccess": "none",
+    "reportOptionalSubscript": "none",
+    "reportUnsupportedDunderAll": "none"
+}

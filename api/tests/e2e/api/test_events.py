@@ -217,7 +217,7 @@ class TestEventSourceCRUD:
         source = response.json()
         callback_url = source["webhook"]["callback_url"]
 
-        assert callback_url == f"http://localhost:8000/api/hooks/{source['id']}"
+        assert callback_url == f"http://api:8000/api/hooks/{source['id']}"
 
         # Cleanup
         e2e_client.delete(

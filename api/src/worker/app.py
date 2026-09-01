@@ -17,6 +17,7 @@ import asyncio
 import logging
 import os
 import signal
+from pathlib import Path
 
 from src.config import get_settings
 from src.core.database import init_db, close_db
@@ -51,6 +52,72 @@ logging.getLogger("src.jobs.consumers.workflow_execution").setLevel(logging.DEBU
 
 logger = logging.getLogger(__name__)
 
+_CONSUMER_NAMES = (
+    "workflow",
+    "package-install",
+    "agent-run",
+    "summarize",
+    "summarize-backfill",
+    "tune-chat",
+)
+
+
+def validate_worker_runtime() -> None:
+    """Fail before queue consumption when required TLS runtime files are unusable."""
+    import certifi
+
+    ca_bundle = Path(certifi.where())
+    if not ca_bundle.is_file():
+        raise RuntimeError(f"Worker CA bundle is missing: {ca_bundle}")
+    try:
+        with ca_bundle.open("rb") as stream:
+            if not stream.read(1):
+                raise RuntimeError(f"Worker CA bundle is empty: {ca_bundle}")
+    except OSError as exc:
+        raise RuntimeError(f"Worker CA bundle is unreadable: {ca_bundle}") from exc
+
+
+def consumer_factories():
+    """Build factories lazily so configuration and test patches take effect."""
+    def workflow_consumer():
+        queue_name = os.environ.get("BIFROST_WORKFLOW_QUEUE_NAME", "")
+        if configured_consumer_names() == ["workflow"] and not queue_name.endswith(
+            "-canary"
+        ):
+            raise ValueError(
+                "workflow-only workers require an explicit isolated -canary queue"
+            )
+        queue_name = queue_name or "workflow-executions"
+        if queue_name == "workflow-executions":
+            return WorkflowExecutionConsumer()
+        return WorkflowExecutionConsumer(queue_name=queue_name)
+
+    return {
+        "workflow": workflow_consumer,
+        "package-install": PackageInstallConsumer,
+        "agent-run": AgentRunConsumer,
+        "summarize": SummarizeConsumer,
+        "summarize-backfill": SummarizeBackfillConsumer,
+        "tune-chat": TuneChatConsumer,
+    }
+
+
+def configured_consumer_names() -> list[str]:
+    """Return the explicit worker consumer set, failing closed on typos."""
+    configured = os.environ.get("BIFROST_WORKER_CONSUMERS")
+    if configured is None:
+        return list(_CONSUMER_NAMES)
+    raw = configured.strip()
+    if not raw:
+        raise ValueError("BIFROST_WORKER_CONSUMERS must select at least one consumer")
+    names = [name.strip() for name in raw.split(",") if name.strip()]
+    if not names:
+        raise ValueError("BIFROST_WORKER_CONSUMERS must select at least one consumer")
+    unknown = sorted(set(names) - set(_CONSUMER_NAMES))
+    if unknown:
+        raise ValueError(f"Unknown BIFROST_WORKER_CONSUMERS values: {unknown}")
+    return names
+
 
 class Worker:
     """
@@ -68,6 +135,7 @@ class Worker:
         self._consumers: list = []
         self._stopping = False
         self._stop_task: asyncio.Task[None] | None = None
+        self._stop_error: Exception | None = None
 
     async def start(self) -> None:
         """Start the worker.
@@ -84,9 +152,22 @@ class Worker:
         logger.info(f"Environment: {self.settings.environment}")
 
         try:
+            validate_worker_runtime()
+
             # Initialize database connection
             logger.info("Initializing database connection...")
             await init_db()
+            # Configure the ORM before accepting queue messages. Lazy mapper
+            # setup otherwise lands on the first execution-row insert and can
+            # add hundreds of milliseconds to the first workflow after start.
+            from sqlalchemy.orm import configure_mappers
+
+            configure_mappers()
+            from src.services.execution_attempts import (
+                require_execution_operations_schema,
+            )
+
+            await require_execution_operations_schema()
             logger.info("Database connection established")
 
             # Initialize and start RabbitMQ consumers
@@ -102,6 +183,9 @@ class Worker:
 
         # Keep running until shutdown
         await self._shutdown_event.wait()
+        stop_error = self._stop_error
+        if stop_error is not None:
+            raise stop_error
 
     async def _cleanup_after_failed_start(self) -> None:
         """Best-effort teardown of any resources started before a failure.
@@ -131,14 +215,8 @@ class Worker:
     async def _start_consumers(self) -> None:
         """Start all RabbitMQ consumers."""
         # Create consumer instances
-        self._consumers = [
-            WorkflowExecutionConsumer(),
-            PackageInstallConsumer(),
-            AgentRunConsumer(),
-            SummarizeConsumer(),
-            SummarizeBackfillConsumer(),
-            TuneChatConsumer(),
-        ]
+        factories = consumer_factories()
+        self._consumers = [factories[name]() for name in configured_consumer_names()]
 
         # Start each consumer
         for consumer in self._consumers:
@@ -182,15 +260,65 @@ class Worker:
             *(self._drain_consumer(consumer, drain_deadline) for consumer in self._consumers),
             return_exceptions=True,
         )
+        failed_consumers: list[tuple[object, Exception]] = []
         for consumer, result in zip(self._consumers, results):
             if isinstance(result, Exception):
                 logger.error(f"Error draining consumer {consumer.queue_name}: {result}")
+                failed_consumers.append((consumer, result))
             else:
                 logger.info(f"Drained consumer: {consumer.queue_name}")
+
+        # A workflow consumer can fail its drain after killing a child when
+        # PostgreSQL is temporarily unavailable and the attempt cannot be
+        # durably surrendered. Retry consumer teardown while the database is
+        # still open; closing shared resources and exiting here would discard
+        # the exact attempt token retained by the process pool.
+        for retry_number in range(1, 3):
+            if not failed_consumers:
+                break
+            retrying = failed_consumers
+            failed_consumers = []
+            for consumer, _previous_error in retrying:
+                try:
+                    await consumer.stop()
+                    logger.info(
+                        "Stopped consumer %s after drain retry %d",
+                        consumer.queue_name,
+                        retry_number,
+                    )
+                except Exception as error:
+                    logger.exception(
+                        "Error retrying consumer %s shutdown (%d/2): %s",
+                        consumer.queue_name,
+                        retry_number,
+                        error,
+                    )
+                    failed_consumers.append((consumer, error))
+            if failed_consumers and retry_number < 2:
+                # Give transient database/transport failures a bounded window
+                # to recover while the exact attempt tokens and shared
+                # resources are still retained by this process.
+                await asyncio.sleep(min(1.0, 0.25 * (2 ** (retry_number - 1))))
+
+        if failed_consumers:
+            names = ", ".join(str(consumer.queue_name) for consumer, _ in failed_consumers)
+            error = RuntimeError(
+                "Worker shutdown could not durably stop consumers: " + names
+            )
+            self._stop_error = error
+            self._stopping = False
+            self._shutdown_event.set()
+            raise error
 
         # Close RabbitMQ pools (idempotent if already closed).
         await rabbitmq.close()
         logger.info("RabbitMQ connections closed")
+
+        from src.services.agent_runtime.retry_transport import (
+            close_ai_retry_http_client,
+        )
+
+        await close_ai_retry_http_client()
 
         # Close database connections.
         await close_db()
@@ -206,7 +334,15 @@ class Worker:
     def handle_signal(self, signum: int, frame) -> None:
         """Handle shutdown signals."""
         logger.info(f"Received signal {signum}, initiating shutdown...")
-        self._stop_task = asyncio.create_task(self.stop())
+        self._stop_task = asyncio.create_task(self._stop_from_signal())
+
+    async def _stop_from_signal(self) -> None:
+        """Wake ``start`` with a shutdown failure without leaking task errors."""
+        try:
+            await self.stop()
+        except Exception as error:
+            self._stop_error = error
+            self._shutdown_event.set()
 
 
 async def main() -> None:

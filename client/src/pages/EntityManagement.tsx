@@ -59,7 +59,8 @@ export function EntityManagement() {
 	const [updatingMessage, setUpdatingMessage] = useState("Updating...");
 
 	// Relationship filter state
-	const [relationshipFilter, setRelationshipFilter] = useState<RelationshipFilter | null>(null);
+	const [relationshipFilter, setRelationshipFilter] =
+		useState<RelationshipFilter | null>(null);
 	const [isGraphDialogOpen, setIsGraphDialogOpen] = useState(false);
 
 	// Confirm delete state (for non-workflow entities: forms, agents, apps)
@@ -71,7 +72,9 @@ export function EntityManagement() {
 
 	// Workflow delete state
 	const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-	const [deletingWorkflowId, setDeletingWorkflowId] = useState<string | null>(null);
+	const [deletingWorkflowId, setDeletingWorkflowId] = useState<string | null>(
+		null,
+	);
 	const [pendingDeactivations, setPendingDeactivations] = useState<
 		components["schemas"]["PendingDeactivation"][]
 	>([]);
@@ -79,7 +82,9 @@ export function EntityManagement() {
 		components["schemas"]["AvailableReplacement"][]
 	>([]);
 	// Track workflow IDs that returned 409 during bulk delete (for Phase 2)
-	const [conflictWorkflowIds, setConflictWorkflowIds] = useState<string[]>([]);
+	const [conflictWorkflowIds, setConflictWorkflowIds] = useState<string[]>(
+		[],
+	);
 
 	// Fetch all entity types
 	const {
@@ -106,11 +111,10 @@ export function EntityManagement() {
 	const { data: roles } = useRoles();
 
 	// Fetch dependency graph when relationship filter is active
-	const {
-		data: graphData,
-		isLoading: loadingGraph,
-	} = useDependencyGraph(
-		relationshipFilter ? relationshipFilter.entityType as DependencyEntityType : undefined,
+	const { data: graphData, isLoading: loadingGraph } = useDependencyGraph(
+		relationshipFilter
+			? (relationshipFilter.entityType as DependencyEntityType)
+			: undefined,
 		relationshipFilter?.entityId,
 		3, // Fixed depth of 3 for relationship filtering
 	);
@@ -121,11 +125,18 @@ export function EntityManagement() {
 	const updateAgent = useUpdateAgent();
 	const updateApplication = useUpdateApplication();
 
-	const isLoading = loadingWorkflows || loadingForms || loadingAgents || loadingApps;
+	const isLoading =
+		loadingWorkflows || loadingForms || loadingAgents || loadingApps;
 
 	// Normalize and combine all entities
 	const allEntities = useMemo(
-		() => normalizeEntities(workflows ?? [], forms ?? [], agents ?? [], appsResponse?.applications ?? []),
+		() =>
+			normalizeEntities(
+				workflows ?? [],
+				forms ?? [],
+				agents ?? [],
+				appsResponse?.applications ?? [],
+			),
 		[workflows, forms, agents, appsResponse],
 	);
 
@@ -162,7 +173,9 @@ export function EntityManagement() {
 				if (orgFilter === "global") {
 					result = result.filter((e) => !e.organizationId);
 				} else {
-					result = result.filter((e) => e.organizationId === orgFilter);
+					result = result.filter(
+						(e) => e.organizationId === orgFilter,
+					);
 				}
 			}
 
@@ -256,13 +269,16 @@ export function EntityManagement() {
 		}
 	};
 
-	const handleShowRelationships = useCallback((entityId: string, entityType: EntityType, entityName: string) => {
-		setRelationshipFilter({
-			entityId,
-			entityType,
-			entityName,
-		});
-	}, []);
+	const handleShowRelationships = useCallback(
+		(entityId: string, entityType: EntityType, entityName: string) => {
+			setRelationshipFilter({
+				entityId,
+				entityType,
+				entityName,
+			});
+		},
+		[],
+	);
 
 	const handleClearRelationshipFilter = useCallback(() => {
 		setRelationshipFilter(null);
@@ -274,16 +290,23 @@ export function EntityManagement() {
 			setDeletingWorkflowId(workflowId);
 
 			try {
-				const response = await authFetch(`/api/workflows/${workflowId}`, {
-					method: "DELETE",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({}),
-				});
+				const response = await authFetch(
+					`/api/workflows/${workflowId}`,
+					{
+						method: "DELETE",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({}),
+					},
+				);
 
 				if (response.status === 409) {
 					const conflict = await response.json();
-					setPendingDeactivations(conflict.pending_deactivations ?? []);
-					setAvailableReplacements(conflict.available_replacements ?? []);
+					setPendingDeactivations(
+						conflict.pending_deactivations ?? [],
+					);
+					setAvailableReplacements(
+						conflict.available_replacements ?? [],
+					);
 					setDeleteDialogOpen(true);
 				} else if (response.ok) {
 					toast.success("Workflow deleted");
@@ -303,14 +326,19 @@ export function EntityManagement() {
 	);
 
 	const handleForceDeactivate = useCallback(async () => {
-		const idsToProcess = conflictWorkflowIds.length > 0
-			? conflictWorkflowIds
-			: deletingWorkflowId ? [deletingWorkflowId] : [];
+		const idsToProcess =
+			conflictWorkflowIds.length > 0
+				? conflictWorkflowIds
+				: deletingWorkflowId
+					? [deletingWorkflowId]
+					: [];
 
 		if (idsToProcess.length === 0) return;
 
 		setDeleteDialogOpen(false);
-		setUpdatingMessage(`Deleting ${idsToProcess.length} workflow${idsToProcess.length > 1 ? "s" : ""}...`);
+		setUpdatingMessage(
+			`Deleting ${idsToProcess.length} workflow${idsToProcess.length > 1 ? "s" : ""}...`,
+		);
 		setIsUpdating(true);
 
 		let successCount = 0;
@@ -329,7 +357,9 @@ export function EntityManagement() {
 						deletedIds.push(id);
 					} else {
 						const error = await response.json();
-						toast.error(error.detail || "Failed to delete workflow");
+						toast.error(
+							error.detail || "Failed to delete workflow",
+						);
 					}
 				} catch {
 					toast.error("Failed to delete workflow");
@@ -337,7 +367,9 @@ export function EntityManagement() {
 			}
 
 			if (successCount > 0) {
-				toast.success(`Deleted ${successCount} workflow${successCount > 1 ? "s" : ""}`);
+				toast.success(
+					`Deleted ${successCount} workflow${successCount > 1 ? "s" : ""}`,
+				);
 				refetchWorkflows();
 				setSelectedIds((prev) => {
 					const s = new Set(prev);
@@ -356,14 +388,19 @@ export function EntityManagement() {
 
 	const handleApplyReplacements = useCallback(
 		async (replacements: Record<string, string>) => {
-			const idsToProcess = conflictWorkflowIds.length > 0
-				? conflictWorkflowIds
-				: deletingWorkflowId ? [deletingWorkflowId] : [];
+			const idsToProcess =
+				conflictWorkflowIds.length > 0
+					? conflictWorkflowIds
+					: deletingWorkflowId
+						? [deletingWorkflowId]
+						: [];
 
 			if (idsToProcess.length === 0) return;
 
 			setDeleteDialogOpen(false);
-			setUpdatingMessage(`Deleting ${idsToProcess.length} workflow${idsToProcess.length > 1 ? "s" : ""}...`);
+			setUpdatingMessage(
+				`Deleting ${idsToProcess.length} workflow${idsToProcess.length > 1 ? "s" : ""}...`,
+			);
 			setIsUpdating(true);
 
 			let successCount = 0;
@@ -372,17 +409,22 @@ export function EntityManagement() {
 			try {
 				for (const id of idsToProcess) {
 					try {
-						const response = await authFetch(`/api/workflows/${id}`, {
-							method: "DELETE",
-							headers: { "Content-Type": "application/json" },
-							body: JSON.stringify({ replacements }),
-						});
+						const response = await authFetch(
+							`/api/workflows/${id}`,
+							{
+								method: "DELETE",
+								headers: { "Content-Type": "application/json" },
+								body: JSON.stringify({ replacements }),
+							},
+						);
 						if (response.ok) {
 							successCount++;
 							deletedIds.push(id);
 						} else {
 							const error = await response.json();
-							toast.error(error.detail || "Failed to delete workflow");
+							toast.error(
+								error.detail || "Failed to delete workflow",
+							);
 						}
 					} catch {
 						toast.error("Failed to delete workflow");
@@ -431,7 +473,9 @@ export function EntityManagement() {
 				entityType === "app" && entity
 					? (entity.original as ApplicationPublic).slug
 					: undefined;
-			setConfirmDeleteEntities([{ id: entityId, name: entityName, entityType, slug }]);
+			setConfirmDeleteEntities([
+				{ id: entityId, name: entityName, entityType, slug },
+			]);
 			setConfirmDeleteOpen(true);
 		},
 		[handleDeleteWorkflow, allEntities],
@@ -439,13 +483,18 @@ export function EntityManagement() {
 
 	// Bulk delete handler
 	const handleBulkDelete = useCallback(() => {
-		const selectedEntities = allEntities.filter((e) => selectedIds.has(e.id));
+		const selectedEntities = allEntities.filter((e) =>
+			selectedIds.has(e.id),
+		);
 
 		const entitiesToDelete = selectedEntities.map((e) => ({
 			id: e.id,
 			name: e.name,
 			entityType: e.entityType,
-			slug: e.entityType === "app" ? (e.original as ApplicationPublic).slug : undefined,
+			slug:
+				e.entityType === "app"
+					? (e.original as ApplicationPublic).slug
+					: undefined,
 		}));
 
 		setConfirmDeleteEntities(entitiesToDelete);
@@ -456,13 +505,19 @@ export function EntityManagement() {
 	const handleConfirmDelete = useCallback(async () => {
 		setIsDeleting(true);
 		const totalCount = confirmDeleteEntities.length;
-		const nonWorkflows = confirmDeleteEntities.filter((e) => e.entityType !== "workflow");
-		const workflowsToDelete = confirmDeleteEntities.filter((e) => e.entityType === "workflow");
+		const nonWorkflows = confirmDeleteEntities.filter(
+			(e) => e.entityType !== "workflow",
+		);
+		const workflowsToDelete = confirmDeleteEntities.filter(
+			(e) => e.entityType === "workflow",
+		);
 
 		setConfirmDeleteOpen(false);
 		setConfirmDeleteEntities([]);
 		setIsDeleting(false);
-		setUpdatingMessage(`Deleting ${totalCount} ${totalCount === 1 ? "entity" : "entities"}...`);
+		setUpdatingMessage(
+			`Deleting ${totalCount} ${totalCount === 1 ? "entity" : "entities"}...`,
+		);
 		setIsUpdating(true);
 
 		let successCount = 0;
@@ -483,7 +538,9 @@ export function EntityManagement() {
 						} else {
 							return;
 						}
-						const response = await authFetch(url, { method: "DELETE" });
+						const response = await authFetch(url, {
+							method: "DELETE",
+						});
 						if (!response.ok) {
 							throw new Error(`Failed to delete ${entity.name}`);
 						}
@@ -498,17 +555,22 @@ export function EntityManagement() {
 			}
 
 			if (workflowsToDelete.length > 0) {
-				const allConflictDeactivations: components["schemas"]["PendingDeactivation"][] = [];
-				const allConflictReplacements: components["schemas"]["AvailableReplacement"][] = [];
+				const allConflictDeactivations: components["schemas"]["PendingDeactivation"][] =
+					[];
+				const allConflictReplacements: components["schemas"]["AvailableReplacement"][] =
+					[];
 				const conflictIds: string[] = [];
 
 				for (const wf of workflowsToDelete) {
 					try {
-						const response = await authFetch(`/api/workflows/${wf.id}`, {
-							method: "DELETE",
-							headers: { "Content-Type": "application/json" },
-							body: JSON.stringify({}),
-						});
+						const response = await authFetch(
+							`/api/workflows/${wf.id}`,
+							{
+								method: "DELETE",
+								headers: { "Content-Type": "application/json" },
+								body: JSON.stringify({}),
+							},
+						);
 
 						if (response.status === 409) {
 							const conflict = await response.json();
@@ -555,12 +617,20 @@ export function EntityManagement() {
 				});
 			}
 			if (failCount > 0) {
-				toast.error(`Failed to delete ${failCount} ${failCount === 1 ? "entity" : "entities"}`);
+				toast.error(
+					`Failed to delete ${failCount} ${failCount === 1 ? "entity" : "entities"}`,
+				);
 			}
 		} finally {
 			setIsUpdating(false);
 		}
-	}, [confirmDeleteEntities, refetchForms, refetchAgents, refetchApps, refetchWorkflows]);
+	}, [
+		confirmDeleteEntities,
+		refetchForms,
+		refetchAgents,
+		refetchApps,
+		refetchWorkflows,
+	]);
 
 	const allSelected =
 		filteredEntities.length > 0 &&
@@ -591,12 +661,18 @@ export function EntityManagement() {
 						} else if (entity.entityType === "form") {
 							await updateForm.mutateAsync({
 								params: { path: { form_id: entityId } },
-								body: { organization_id: orgId, clear_roles: false },
+								body: {
+									organization_id: orgId,
+									clear_roles: false,
+								},
 							});
 						} else if (entity.entityType === "agent") {
 							await updateAgent.mutateAsync({
 								params: { path: { agent_id: entityId } },
-								body: { organization_id: orgId, clear_roles: false },
+								body: {
+									organization_id: orgId,
+									clear_roles: false,
+								},
 							});
 						} else if (entity.entityType === "app") {
 							const app = entity.original as ApplicationPublic;
@@ -608,7 +684,9 @@ export function EntityManagement() {
 					} catch (error) {
 						toast.error(`Failed to update ${entity.entityType}`, {
 							description:
-								error instanceof Error ? error.message : "Unknown error",
+								error instanceof Error
+									? error.message
+									: "Unknown error",
 						});
 					}
 				}
@@ -616,7 +694,13 @@ export function EntityManagement() {
 				setIsUpdating(false);
 			}
 		},
-		[allEntities, updateWorkflow, updateForm, updateAgent, updateApplication],
+		[
+			allEntities,
+			updateWorkflow,
+			updateForm,
+			updateAgent,
+			updateApplication,
+		],
 	);
 
 	const handleRoleDrop = useCallback(
@@ -640,7 +724,9 @@ export function EntityManagement() {
 								});
 							} else {
 								await updateWorkflow.mutateAsync(entityId, {
-									access_level: isAccessLevel ? "authenticated" : "role_based",
+									access_level: isAccessLevel
+										? "authenticated"
+										: "role_based",
 								});
 							}
 						} else if (entity.entityType === "form") {
@@ -656,7 +742,9 @@ export function EntityManagement() {
 								await updateForm.mutateAsync({
 									params: { path: { form_id: entityId } },
 									body: {
-										access_level: isAccessLevel ? "authenticated" : "role_based",
+										access_level: isAccessLevel
+											? "authenticated"
+											: "role_based",
 										clear_roles: false,
 									},
 								});
@@ -674,7 +762,9 @@ export function EntityManagement() {
 								await updateAgent.mutateAsync({
 									params: { path: { agent_id: entityId } },
 									body: {
-										access_level: isAccessLevel ? "authenticated" : "role_based",
+										access_level: isAccessLevel
+											? "authenticated"
+											: "role_based",
 										clear_roles: false,
 									},
 								});
@@ -693,8 +783,12 @@ export function EntityManagement() {
 								await updateApplication.mutateAsync({
 									params: { path: { app_id: app.id } },
 									body: {
-										access_level: isAccessLevel ? "authenticated" : "role_based",
-										role_ids: isAccessLevel ? [] : undefined,
+										access_level: isAccessLevel
+											? "authenticated"
+											: "role_based",
+										role_ids: isAccessLevel
+											? []
+											: undefined,
 									},
 								});
 							}
@@ -702,7 +796,9 @@ export function EntityManagement() {
 					} catch (error) {
 						toast.error(`Failed to update ${entity.entityType}`, {
 							description:
-								error instanceof Error ? error.message : "Unknown error",
+								error instanceof Error
+									? error.message
+									: "Unknown error",
 						});
 					}
 				}
@@ -710,7 +806,13 @@ export function EntityManagement() {
 				setIsUpdating(false);
 			}
 		},
-		[allEntities, updateWorkflow, updateForm, updateAgent, updateApplication],
+		[
+			allEntities,
+			updateWorkflow,
+			updateForm,
+			updateAgent,
+			updateApplication,
+		],
 	);
 
 	return (
@@ -722,8 +824,8 @@ export function EntityManagement() {
 						Entity Management
 					</h1>
 					<p className="mt-2 text-muted-foreground">
-						Manage organization and access settings for workflows, forms,
-						agents, and apps
+						Manage organization and access settings for workflows,
+						forms, agents, and apps
 					</p>
 				</div>
 				<Button
@@ -745,7 +847,8 @@ export function EntityManagement() {
 						<div className="flex items-center gap-2 mb-4 p-3 rounded-lg bg-accent/50 ring-1 ring-foreground/5">
 							<Network className="h-4 w-4 text-primary" />
 							<span className="text-sm">
-								Related to: <strong>{relationshipFilter.entityName}</strong>
+								Related to:{" "}
+								<strong>{relationshipFilter.entityName}</strong>
 							</span>
 							<div className="flex items-center gap-1 ml-auto">
 								<Button
@@ -774,24 +877,19 @@ export function EntityManagement() {
 							checked={allSelected}
 							onCheckedChange={handleSelectAll}
 							aria-label="Select all"
-							title={
-								allSelected
-									? "Deselect all"
-									: someSelected
-										? "Select all"
-										: "Select all"
-							}
+							title={allSelected ? "Deselect all" : "Select all"}
 							className={cn(
 								"h-5 w-5",
 								someSelected && "data-[state=checked]:bg-muted",
 							)}
 							ref={(el) => {
 								if (el) {
-									(el as HTMLButtonElement).dataset.state = someSelected
-										? "indeterminate"
-										: allSelected
-											? "checked"
-											: "unchecked";
+									(el as HTMLButtonElement).dataset.state =
+										someSelected
+											? "indeterminate"
+											: allSelected
+												? "checked"
+												: "unchecked";
 								}
 							}}
 						/>
@@ -880,7 +978,9 @@ export function EntityManagement() {
 										variant="ghost"
 										size="sm"
 										className="h-6 px-2 text-xs"
-										onClick={() => setSelectedIds(new Set())}
+										onClick={() =>
+											setSelectedIds(new Set())
+										}
 									>
 										Clear
 									</Button>
@@ -914,9 +1014,14 @@ export function EntityManagement() {
 										entity={entity}
 										selected={selectedIds.has(entity.id)}
 										onSelect={(selected) =>
-											handleSelectEntity(entity.id, selected)
+											handleSelectEntity(
+												entity.id,
+												selected,
+											)
 										}
-										onShowRelationships={handleShowRelationships}
+										onShowRelationships={
+											handleShowRelationships
+										}
 										onDelete={handleDeleteEntity}
 										organizations={organizations ?? []}
 										selectedIds={selectedIds}
@@ -931,14 +1036,16 @@ export function EntityManagement() {
 									<h3 className="mt-4 text-lg font-semibold">
 										{relationshipFilter
 											? "No related entities found"
-											: searchTerm || activeFilterCount > 0
+											: searchTerm ||
+												  activeFilterCount > 0
 												? "No entities match your filters"
 												: "No entities found"}
 									</h3>
 									<p className="mt-2 text-sm text-muted-foreground">
 										{relationshipFilter
 											? "This entity has no dependencies"
-											: searchTerm || activeFilterCount > 0
+											: searchTerm ||
+												  activeFilterCount > 0
 												? "Try adjusting your filters"
 												: "Create workflows, forms, or agents to manage them here"}
 									</p>
@@ -954,10 +1061,15 @@ export function EntityManagement() {
 					<div className="flex-1 min-h-0 flex flex-col">
 						<div className="flex items-center gap-2 mb-3">
 							<Building2 className="h-5 w-5 text-muted-foreground" />
-							<h3 className="text-lg font-semibold">Organizations</h3>
+							<h3 className="text-lg font-semibold">
+								Organizations
+							</h3>
 						</div>
 						<div className="space-y-1.5 overflow-y-auto">
-							<OrgDropTarget organization={null} onDrop={handleOrgDrop} />
+							<OrgDropTarget
+								organization={null}
+								onDrop={handleOrgDrop}
+							/>
 							{organizations?.map((org) => (
 								<OrgDropTarget
 									key={org.id}
@@ -972,11 +1084,19 @@ export function EntityManagement() {
 					<div className="flex-1 min-h-0 flex flex-col">
 						<div className="flex items-center gap-2 mb-3">
 							<Shield className="h-5 w-5 text-muted-foreground" />
-							<h3 className="text-lg font-semibold">Access Levels</h3>
+							<h3 className="text-lg font-semibold">
+								Access Levels
+							</h3>
 						</div>
 						<div className="space-y-1.5 overflow-y-auto">
-							<RoleDropTarget role="authenticated" onDrop={handleRoleDrop} />
-							<RoleDropTarget role="clear-roles" onDrop={handleRoleDrop} />
+							<RoleDropTarget
+								role="authenticated"
+								onDrop={handleRoleDrop}
+							/>
+							<RoleDropTarget
+								role="clear-roles"
+								onDrop={handleRoleDrop}
+							/>
 							{roles?.map((role) => (
 								<RoleDropTarget
 									key={role.id}
@@ -1005,7 +1125,8 @@ export function EntityManagement() {
 				availableReplacements={availableReplacements}
 				open={deleteDialogOpen}
 				onResolve={(replacements, workflowsToDeactivate) => {
-					const hasReplacements = Object.keys(replacements).length > 0;
+					const hasReplacements =
+						Object.keys(replacements).length > 0;
 					const hasDeactivations = workflowsToDeactivate.length > 0;
 					if (hasReplacements) {
 						handleApplyReplacements(replacements);

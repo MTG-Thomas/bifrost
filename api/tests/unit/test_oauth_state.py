@@ -58,6 +58,9 @@ def test_audience_isolation_mcp_token_rejected_here():
         connection_id=uuid4(),
         flow_type="service",
         pkce_verifier="x" * 64,
+        redirect_uri="https://example.com/cb",
+        issuer="https://issuer.example.com",
+        resource="https://resource.example.com/mcp",
     )
     with pytest.raises(OAuthStateError):
         decode_state(mcp_token)

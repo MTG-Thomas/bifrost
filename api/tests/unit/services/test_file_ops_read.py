@@ -1,10 +1,28 @@
 """Unit tests for pure FileOperationsService branches."""
 
+from contextlib import asynccontextmanager
+
 import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.services.file_storage.file_ops import compute_git_blob_sha
+
+
+@pytest.fixture(autouse=True)
+def _isolate_workspace_source_barrier(monkeypatch):
+    """Keep pure file-operation unit tests independent of the shared Redis lock."""
+    # file_ops imports workspace_source_update inside each method body, so
+    # patching the source module works. If that import moves to module scope,
+    # this fixture must patch src.services.file_storage.file_ops instead.
+
+    @asynccontextmanager
+    async def source_update(**_kwargs):
+        yield
+
+    monkeypatch.setattr(
+        "src.core.module_cache.workspace_source_update", source_update
+    )
 
 
 class _AsyncClientContext:
@@ -169,6 +187,7 @@ class TestWriteFilePathValidation:
             _s3_client=MagicMock(),
         )
         service.write_file = FileOperationsService.write_file.__get__(service)
+        service._write_file_impl = FileOperationsService._write_file_impl.__get__(service)
 
         with patch("src.services.editor.file_filter.is_excluded_path", return_value=True):
             with pytest.raises(ValueError, match="Path is excluded from workspace: __pycache__/x.pyc"):
@@ -205,6 +224,7 @@ class TestWriteFileBehavior:
         )
         service._find_app_by_path = AsyncMock(return_value=None)
         service.write_file = FileOperationsService.write_file.__get__(service)
+        service._write_file_impl = FileOperationsService._write_file_impl.__get__(service)
 
         with patch("src.services.editor.file_filter.is_excluded_path", return_value=False):
             with patch("src.core.pubsub.publish_file_activity", new_callable=AsyncMock) as publish:
@@ -272,6 +292,7 @@ class TestWriteFileBehavior:
             _extract_metadata=extract_metadata,
         )
         service.write_file = FileOperationsService.write_file.__get__(service)
+        service._write_file_impl = FileOperationsService._write_file_impl.__get__(service)
 
         detection = SimpleNamespace(ast_tree=object(), content_str="def run(): pass\n")
         with patch("src.services.editor.file_filter.is_excluded_path", return_value=False):
@@ -330,6 +351,7 @@ class TestDeleteFilePureBranches:
         service._remove_metadata = AsyncMock()
         service._invalidate_module_cache_if_python = AsyncMock()
         service.delete_file = FileOperationsService.delete_file.__get__(service)
+        service._delete_file_impl = FileOperationsService._delete_file_impl.__get__(service)
 
         with patch("src.core.pubsub.publish_file_activity", new_callable=AsyncMock) as publish:
             with patch("src.core.request_context.get_request_user", return_value=None):
@@ -592,6 +614,7 @@ class TestMoveFilePreconditions:
         db.execute = AsyncMock(return_value=missing_result)
         service = _service(db=db, _s3_client=MagicMock())
         service.move_file = FileOperationsService.move_file.__get__(service)
+        service._move_file_impl = FileOperationsService._move_file_impl.__get__(service)
 
         with pytest.raises(FileNotFoundError, match="File not found: old.py"):
             await service.move_file("old.py", "new.py")
@@ -612,6 +635,7 @@ class TestMoveFilePreconditions:
         db.execute = AsyncMock(side_effect=[old_result, existing_result])
         service = _service(db=db, _s3_client=MagicMock())
         service.move_file = FileOperationsService.move_file.__get__(service)
+        service._move_file_impl = FileOperationsService._move_file_impl.__get__(service)
 
         with pytest.raises(FileExistsError, match="File already exists: new.py"):
             await service.move_file("old.py", "new.py")
@@ -643,6 +667,7 @@ class TestMoveFilePreconditions:
             _s3_client=_S3ClientFactory(s3),
         )
         service.move_file = FileOperationsService.move_file.__get__(service)
+        service._move_file_impl = FileOperationsService._move_file_impl.__get__(service)
 
         with patch("src.services.file_storage.file_ops.invalidate_module", new_callable=AsyncMock) as invalidate:
             with patch("src.services.file_storage.file_ops.set_module", new_callable=AsyncMock) as set_mod:

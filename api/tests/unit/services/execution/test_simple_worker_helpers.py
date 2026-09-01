@@ -3,7 +3,9 @@ from __future__ import annotations
 import subprocess
 import sys
 import types
+from contextlib import contextmanager
 from types import SimpleNamespace
+from typing import Iterator
 
 import pytest
 
@@ -20,6 +22,64 @@ sys.modules.setdefault(
 )
 
 from src.services.execution import simple_worker  # noqa: E402
+
+
+@contextmanager
+def _preserve_virtual_import_state() -> Iterator[None]:
+    from src.services.execution import virtual_import
+
+    original_meta_path = list(sys.meta_path)
+    original_finder = virtual_import.get_virtual_finder()
+    try:
+        yield
+    finally:
+        virtual_import.remove_virtual_import_hook()
+        sys.meta_path[:] = original_meta_path
+        virtual_import._finder = original_finder  # noqa: SLF001
+
+
+@pytest.fixture(autouse=True)
+def preserve_virtual_import_state():
+    """Worker imports must not leak their process-global finder into other tests."""
+    with _preserve_virtual_import_state():
+        yield
+
+
+def test_virtual_import_state_guard_restores_global_finder() -> None:
+    from src.services.execution import virtual_import
+
+    original_meta_path = list(sys.meta_path)
+    original_finder = virtual_import.get_virtual_finder()
+
+    with _preserve_virtual_import_state():
+        installed = virtual_import.install_virtual_import_hook()
+        assert virtual_import.get_virtual_finder() is installed
+        assert installed in sys.meta_path
+
+    assert sys.meta_path == original_meta_path
+    assert virtual_import.get_virtual_finder() is original_finder
+
+
+def test_workspace_module_maps_strip_immutable_release_prefix(monkeypatch):
+    prefix = "_workspace_releases/org/release/files/"
+    monkeypatch.setattr(
+        "src.core.module_cache_sync.get_workspace_release_context",
+        lambda: SimpleNamespace(runtime_storage_prefix=prefix),
+    )
+
+    names, paths = simple_worker._workspace_module_maps(
+        {
+            f"{prefix}modules/helper.py",
+            f"{prefix}features/demo/__init__.py",
+        }
+    )
+
+    assert "modules.helper" in names
+    assert "features.demo" in names
+    assert paths == {
+        "modules.helper": "modules/helper.py",
+        "features.demo": "features/demo/__init__.py",
+    }
 
 
 def test_parse_requirements_splits_packages_and_options():
@@ -103,41 +163,27 @@ def test_install_requirements_falls_back_and_records_per_package_failures(monkey
 
 
 @pytest.mark.asyncio
-async def test_execute_async_missing_context_shapes_context_not_found(monkeypatch):
-    async def missing_context(_execution_id):
-        return None
-
-    monkeypatch.setattr(simple_worker, "_read_context_from_redis", missing_context)
-
-    result = await simple_worker._execute_async("exec-missing", "worker-1")
-
-    assert result == {
-        "execution_id": "exec-missing",
-        "success": False,
-        "error": "Execution context not found in Redis",
-        "error_type": "ContextNotFound",
-        "duration_ms": 0,
-        "worker_id": "worker-1",
-    }
-
-
-@pytest.mark.asyncio
 async def test_execute_async_success_shapes_engine_result_and_pss_delta(monkeypatch):
     context = {"solution_id": "solution-1", "solution_global_repo_access": True}
     calls: list[tuple[str, object]] = []
     pss_values = iter([1000, 2500])
 
-    async def read_context(_execution_id):
-        return context
-
-    monkeypatch.setattr(simple_worker, "_read_context_from_redis", read_context)
     monkeypatch.setattr(
         "src.core.module_cache_sync.set_solution_context",
         lambda solution_id, *, global_repo_access: calls.append(
             ("solution", (solution_id, global_repo_access))
         ),
     )
-    monkeypatch.setattr(simple_worker, "_clear_workspace_modules", lambda: calls.append(("clear", None)))
+    def clear_modules():
+        calls.append(("clear", None))
+        return simple_worker.WorkspaceModuleRefresh(
+            generation="generation-1",
+            cleared=2,
+            kept=3,
+            generation_mismatch=True,
+        )
+
+    monkeypatch.setattr(simple_worker, "_clear_workspace_modules", clear_modules)
     monkeypatch.setattr(simple_worker, "_get_pss_bytes", lambda: next(pss_values))
 
     async def fake_run_execution(_execution_id, _context):
@@ -160,12 +206,15 @@ async def test_execute_async_success_shapes_engine_result_and_pss_delta(monkeypa
         fake_run_execution,
     )
 
-    result = await simple_worker._execute_async("exec-1", "worker-1")
+    result = await simple_worker._execute_async("exec-1", "worker-1", context)
 
     assert result["success"] is True
     assert result["status"] == "Success"
     assert result["result"] == {"ok": True}
     assert result["metrics"]["peak_memory_bytes"] == 1500
+    assert result["metrics"]["workspace_modules_cleared"] == 2
+    assert result["metrics"]["workspace_generation_mismatch"] is True
+    assert result["execution_context"]["workspace_generation"] == "generation-1"
     assert result["cached"] is True
     assert result["worker_id"] == "worker-1"
     assert calls == [("solution", ("solution-1", True)), ("clear", None)]
@@ -173,11 +222,16 @@ async def test_execute_async_success_shapes_engine_result_and_pss_delta(monkeypa
 
 @pytest.mark.asyncio
 async def test_execute_async_engine_exception_shapes_failure(monkeypatch):
-    async def read_context(_execution_id):
-        return {}
-
-    monkeypatch.setattr(simple_worker, "_read_context_from_redis", read_context)
-    monkeypatch.setattr(simple_worker, "_clear_workspace_modules", lambda: None)
+    monkeypatch.setattr(
+        simple_worker,
+        "_clear_workspace_modules",
+        lambda: simple_worker.WorkspaceModuleRefresh(
+            generation="generation-1",
+            cleared=0,
+            kept=0,
+            generation_mismatch=False,
+        ),
+    )
     monkeypatch.setattr(simple_worker, "_get_pss_bytes", lambda: 0)
 
     async def fake_run_execution(_execution_id, _context):
@@ -188,7 +242,7 @@ async def test_execute_async_engine_exception_shapes_failure(monkeypatch):
         fake_run_execution,
     )
 
-    result = await simple_worker._execute_async("exec-1", "worker-1")
+    result = await simple_worker._execute_async("exec-1", "worker-1", {})
 
     assert result["execution_id"] == "exec-1"
     assert result["success"] is False
@@ -212,3 +266,44 @@ def test_capture_resource_metrics_converts_linux_ru_maxrss(monkeypatch):
         "cpu_system_seconds": 0.5,
         "cpu_total_seconds": 1.7346,
     }
+
+
+def test_clear_workspace_modules_purges_entire_closure_on_generation_change(
+    monkeypatch,
+):
+    from src.core import module_cache_sync
+    from src.services.execution.virtual_import import VirtualModuleLoader
+
+    module_name = "workspace_generation_probe"
+    module = types.ModuleType(module_name)
+    module.__file__ = f"{module_name}.py"
+    module.__content_hash__ = "same-hash"
+    module.__workspace_generation__ = "generation-1"
+    module.__loader__ = VirtualModuleLoader.__new__(VirtualModuleLoader)
+    sys.modules[module_name] = module
+    monkeypatch.setattr(
+        module_cache_sync,
+        "wait_for_workspace_generation_sync",
+        lambda: "generation-2",
+    )
+    monkeypatch.setattr(
+        module_cache_sync, "get_module_index_sync", lambda: [f"{module_name}.py"]
+    )
+    monkeypatch.setattr(
+        module_cache_sync,
+        "get_modules_sync",
+        lambda paths: {path: {"hash": "same-hash"} for path in paths},
+    )
+
+    try:
+        refresh = simple_worker._clear_workspace_modules()
+    finally:
+        sys.modules.pop(module_name, None)
+
+    assert refresh == simple_worker.WorkspaceModuleRefresh(
+        generation="generation-2",
+        cleared=1,
+        kept=0,
+        generation_mismatch=True,
+    )
+    assert module_name not in sys.modules

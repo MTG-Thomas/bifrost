@@ -19,8 +19,10 @@ import asyncio
 import logging
 import os
 import sys
+import tempfile
 from typing import Any
 
+from src.jobs.execution_policy import broker_execution_policies
 from src.jobs.rabbitmq import BroadcastConsumer
 from src.services.execution.install_progress import report_phase
 
@@ -28,6 +30,61 @@ logger = logging.getLogger(__name__)
 
 # Exchange name for broadcast
 EXCHANGE_NAME = "package-installations"
+
+
+def _write_temp_requirements(content: str) -> str:
+    """Write requirements content off the event loop and return its path."""
+    path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as file:
+            path = file.name
+            file.write(content)
+        return path
+    except Exception:
+        if path is not None:
+            _remove_temp_file(path)
+        raise
+
+
+def _remove_temp_file(path: str) -> None:
+    """Remove a temporary file without masking the install result."""
+    try:
+        os.unlink(path)
+    except OSError as exc:
+        logger.warning("Could not remove temporary requirements file %s: %s", path, exc)
+
+
+async def _write_temp_requirements_cancellation_safe(content: str) -> str:
+    """Create a temp file without leaking it if the caller is cancelled."""
+    write_task = asyncio.create_task(asyncio.to_thread(_write_temp_requirements, content))
+    try:
+        return await asyncio.shield(write_task)
+    except asyncio.CancelledError:
+        try:
+            path = await write_task
+        except Exception as exc:
+            logger.warning("Cancelled requirements write failed before cleanup: %s", exc)
+        else:
+            await asyncio.to_thread(_remove_temp_file, path)
+        raise
+
+
+async def _communicate_with_timeout(
+    proc: asyncio.subprocess.Process,
+    timeout: float,
+) -> tuple[bytes, bytes]:
+    """Communicate with a subprocess and reap it on timeout or cancellation."""
+    try:
+        return await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        if proc.returncode is None:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+        raise
 
 
 class PackageInstallConsumer(BroadcastConsumer):
@@ -49,7 +106,10 @@ class PackageInstallConsumer(BroadcastConsumer):
     """
 
     def __init__(self):
-        super().__init__(exchange_name=EXCHANGE_NAME)
+        super().__init__(
+            exchange_name=EXCHANGE_NAME,
+            operations_policy=broker_execution_policies()[EXCHANGE_NAME],
+        )
 
     @property
     def _worker_id(self) -> str:
@@ -66,7 +126,7 @@ class PackageInstallConsumer(BroadcastConsumer):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            _, stderr = await _communicate_with_timeout(proc, timeout=120)
             if proc.returncode == 0:
                 logger.info(f"Uninstalled {package}")
                 return None
@@ -102,7 +162,7 @@ class PackageInstallConsumer(BroadcastConsumer):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+            _, stderr = await _communicate_with_timeout(proc, timeout=300)
 
             if proc.returncode == 0:
                 logger.info(f"Installed {package_spec}")
@@ -127,8 +187,6 @@ class PackageInstallConsumer(BroadcastConsumer):
 
         Returns None on success, or the error message on failure.
         """
-        import tempfile
-
         from src.core.requirements_cache import get_requirements
 
         cached = await get_requirements()
@@ -136,21 +194,14 @@ class PackageInstallConsumer(BroadcastConsumer):
             logger.info("No cached requirements.txt to install from")
             return None
 
+        temp_path = await _write_temp_requirements_cancellation_safe(cached["content"])
         try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".txt", delete=False
-            ) as f:
-                f.write(cached["content"])
-                temp_path = f.name
-
             proc = await asyncio.create_subprocess_exec(
                 sys.executable, "-m", "pip", "install", "-r", temp_path, "--quiet",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
-
-            os.unlink(temp_path)
+            _, stderr = await _communicate_with_timeout(proc, timeout=300)
 
             if proc.returncode == 0:
                 pkg_count = len([
@@ -168,6 +219,8 @@ class PackageInstallConsumer(BroadcastConsumer):
         except Exception as e:
             logger.error(f"pip install -r requirements.txt error: {e}")
             return f"pip install -r requirements.txt error: {e}"
+        finally:
+            await asyncio.to_thread(_remove_temp_file, temp_path)
 
     async def _update_pool_packages(self) -> None:
         """Update the pool's packages in Redis after installation."""

@@ -174,6 +174,7 @@ class OAuthProviderClient:
         redirect_uri: str,
         scopes: str | None = None,
         audience: str | None = None,
+        resource: str | None = None,
     ) -> tuple[bool, dict]:
         """
         Exchange authorization code for access token (authorization code flow)
@@ -207,6 +208,9 @@ class OAuthProviderClient:
         if audience:
             payload["audience"] = audience
 
+        if resource:
+            payload["resource"] = resource
+
         if scopes:
             payload["scope"] = scopes
 
@@ -220,6 +224,7 @@ class OAuthProviderClient:
         client_secret: str | None,
         scopes: str | None = None,
         audience: str | None = None,
+        resource: str | None = None,
     ) -> tuple[bool, dict]:
         """
         Refresh access token using refresh token
@@ -249,6 +254,9 @@ class OAuthProviderClient:
         if audience:
             payload["audience"] = audience
 
+        if resource:
+            payload["resource"] = resource
+
         if scopes:
             payload["scope"] = scopes
 
@@ -261,6 +269,7 @@ class OAuthProviderClient:
         client_secret: str,
         scopes: str = "",
         audience: str | None = None,
+        resource: str | None = None,
     ) -> tuple[bool, dict]:
         """
         Get token using client credentials flow (service-to-service)
@@ -286,6 +295,9 @@ class OAuthProviderClient:
 
         if audience:
             payload["audience"] = audience
+
+        if resource:
+            payload["resource"] = resource
 
         logger.info("Requesting client credentials token")
 
@@ -591,6 +603,7 @@ async def build_token_refresh_context(
         "token_url_defaults": token_url_defaults,
         "scopes": provider.scopes,
         "audience": provider.audience,
+        "resource": token.oauth_resource if token else None,
         "encrypted_refresh_token": token.encrypted_refresh_token if token else None,
     }
 
@@ -664,6 +677,7 @@ async def refresh_oauth_token_http(td: dict[str, Any]) -> dict[str, Any]:
                 client_secret=client_secret,
                 scopes=scopes,
                 audience=td["audience"],
+                resource=td.get("resource"),
             )
         else:
             if not td["encrypted_refresh_token"]:
@@ -680,6 +694,7 @@ async def refresh_oauth_token_http(td: dict[str, Any]) -> dict[str, Any]:
                 client_id=td["client_id"],
                 client_secret=client_secret,
                 audience=td["audience"],
+                resource=td.get("resource"),
             )
 
         if not success:

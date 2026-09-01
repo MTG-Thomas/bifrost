@@ -115,13 +115,13 @@ async def test_refresh_tokens_delegates_successful_refresh(monkeypatch):
 @pytest.mark.asyncio
 async def test_get_instance_require_auth_does_not_login_inside_running_loop(monkeypatch):
     login = AsyncMock(return_value=True)
-    monkeypatch.setattr(client_mod, "get_credentials", lambda **_kwargs: None)
-    monkeypatch.setattr(client_mod, "is_token_expired", lambda: False)
+    monkeypatch.setattr(client_mod, "get_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(client_mod, "is_token_expired", lambda **_kwargs: False)
     monkeypatch.setattr(client_mod, "login_flow", login)
     monkeypatch.setattr(
         client_mod,
         "resolve_current_connection",
-        lambda **_kwargs: (None, None),
+        lambda *_args, **_kwargs: (None, None),
     )
     monkeypatch.setattr("bifrost.credentials.list_credentials", lambda: [])
 
@@ -135,14 +135,14 @@ def test_get_instance_refresh_failure_clears_expired_credentials(monkeypatch):
     monkeypatch.setattr(
         client_mod,
         "get_credentials",
-        lambda **_kwargs: {
+        lambda *_args, **_kwargs: {
             "api_url": "https://api.example.test",
             "access_token": "expired-access",
             "refresh_token": "refresh",
             "expires_at": "already-expired",
         },
     )
-    monkeypatch.setattr(client_mod, "is_token_expired", lambda: True)
+    monkeypatch.setattr(client_mod, "is_token_expired", lambda **_kwargs: True)
     refresh = MagicMock(return_value=None)
     monkeypatch.setattr(client_mod, "_refresh_connection_access_token_sync", refresh)
 

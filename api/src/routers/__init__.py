@@ -16,6 +16,7 @@ from src.routers.websocket import router as websocket_router
 from src.routers.branding import router as branding_router
 from src.routers.files import router as files_router
 from src.routers.workspace_repo_changesets import router as workspace_repo_changesets_router
+from src.routers.workspace_promotions import router as workspace_promotions_router
 from src.routers.schedules import router as schedules_router
 from src.routers.workflow_keys import router as workflow_keys_router
 from src.routers.audit import router as audit_router
@@ -27,11 +28,17 @@ from src.routers.endpoints import router as endpoints_router
 from src.routers.cli import router as cli_router, install_router as cli_install_router
 from src.routers.notifications import router as notifications_router
 from src.routers.profile import router as profile_router
+from src.routers.memory import admin_router as memory_admin_router, router as memory_router
+from src.routers.required_instructions import (
+    admin_router as required_instructions_admin_router,
+    router as required_instructions_router,
+)
 from src.routers.agents import router as agents_router
 from src.routers.agent_runs import router as agent_runs_router
 from src.routers.agent_tuning import router as agent_tuning_router
 from src.routers.chat import router as chat_router
 from src.routers.llm_config import router as llm_config_router
+from src.routers.ai_models import router as ai_models_router
 from src.routers.integrations import router as integrations_router
 from src.routers.decorator_properties import router as decorator_properties_router
 from src.routers.maintenance import router as maintenance_router
@@ -60,6 +67,7 @@ from src.routers.export_import import router as export_import_router
 from src.routers.docs import router as docs_router
 from src.routers.jobs import router as jobs_router
 from src.routers.platform_jobs import router as platform_jobs_router
+from src.routers.scheduler_diagnostics import router as scheduler_diagnostics_router
 from src.routers.platform import (
     workers_router as platform_workers_router,
     queue_router as platform_queue_router,
@@ -93,6 +101,7 @@ __all__ = [
     "branding_router",
     "files_router",
     "workspace_repo_changesets_router",
+    "workspace_promotions_router",
     "schedules_router",
     "workflow_keys_router",
     "audit_router",
@@ -105,11 +114,16 @@ __all__ = [
     "cli_install_router",
     "notifications_router",
     "profile_router",
+    "memory_router",
+    "memory_admin_router",
+    "required_instructions_router",
+    "required_instructions_admin_router",
     "agents_router",
     "agent_runs_router",
     "agent_tuning_router",
     "chat_router",
     "llm_config_router",
+    "ai_models_router",
     "integrations_router",
     "decorator_properties_router",
     "maintenance_router",
@@ -138,6 +152,7 @@ __all__ = [
     "docs_router",
     "jobs_router",
     "platform_jobs_router",
+    "scheduler_diagnostics_router",
     "platform_workers_router",
     "platform_queue_router",
     "platform_stuck_router",

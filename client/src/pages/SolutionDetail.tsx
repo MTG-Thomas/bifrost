@@ -68,6 +68,7 @@ import {
 	type FormListItem,
 	type FormValidationState,
 } from "@/components/forms/FormListSurface";
+import { FormShareDialog } from "@/components/forms/FormShareDialog";
 import {
 	WorkflowListSurface,
 	type WorkflowListItem,
@@ -529,6 +530,7 @@ function SolutionEntityGrid({
 										<EntityLogo
 											entityType="app"
 											entityId={entity.id}
+											logo={entity.logo_url ?? null}
 											fallback={
 												<AppWindow className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
 											}
@@ -588,6 +590,7 @@ function SolutionEntityGrid({
 										<EntityLogo
 											entityType="agent"
 											entityId={entity.id}
+											logo={entity.logo_url ?? null}
 											fallback={
 												<Bot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
 											}
@@ -787,6 +790,7 @@ function SolutionEntityTable({
 										<EntityLogo
 											entityType="app"
 											entityId={entity.id}
+											logo={entity.logo_url ?? null}
 											fallback={
 												<AppWindow className="h-4 w-4 shrink-0 text-muted-foreground" />
 											}
@@ -798,6 +802,7 @@ function SolutionEntityTable({
 										<EntityLogo
 											entityType="agent"
 											entityId={entity.id}
+											logo={entity.logo_url ?? null}
 											fallback={
 												<Bot className="h-4 w-4 shrink-0 text-muted-foreground" />
 											}
@@ -900,6 +905,10 @@ function EntityTabContent({
 }) {
 	const navigate = useNavigate();
 	const [search, setSearch] = useState("");
+	const [shareForm, setShareForm] = useState<{
+		id: string;
+		name: string;
+	} | null>(null);
 	const canToggleView = GRID_TABLE_ENTITY_TABS.has(kind);
 	const [viewMode, setViewMode] = useState<"grid" | "table">(
 		canToggleView ? "grid" : "table",
@@ -1025,18 +1034,35 @@ function EntityTabContent({
 						emptySearchActive={Boolean(search.trim())}
 					/>
 				) : kind === "forms" ? (
-					<FormListSurface
-						forms={managedVisible as FormListItem[]}
-						viewMode={viewMode}
-						isPlatformAdmin={false}
-						canManageForms={true}
-						getOrgName={() => "Solution"}
-						formValidation={formValidation}
-						onLaunch={(form) =>
-							navigate(`/execute/${form.id}?from=solution:${solutionId}`)
-						}
-						emptySearchActive={Boolean(search.trim())}
-					/>
+					<>
+						<FormListSurface
+							forms={managedVisible as FormListItem[]}
+							viewMode={viewMode}
+							isPlatformAdmin={false}
+							canManageForms={true}
+							getOrgName={() => "Solution"}
+							formValidation={formValidation}
+							onLaunch={(form) =>
+								navigate(
+									`/execute/${form.id}?from=solution:${solutionId}`,
+								)
+							}
+							onShare={(form) =>
+								setShareForm({ id: form.id, name: form.name })
+							}
+							emptySearchActive={Boolean(search.trim())}
+						/>
+						{shareForm ? (
+							<FormShareDialog
+								formId={shareForm.id}
+								formName={shareForm.name}
+								open
+								onOpenChange={(open) =>
+									!open && setShareForm(null)
+								}
+							/>
+						) : null}
+					</>
 				) : viewMode === "grid" ? (
 					<SolutionEntityGrid
 						kind={kind}

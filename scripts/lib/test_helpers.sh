@@ -49,21 +49,27 @@ wait_for_service() {
 # running tests). Closes the race where `docker ps` says "running" but uvicorn
 # is still booting / migrations are still applying.
 #
-# Args: <compose-file> [max-seconds]
+# Args: <compose-file> <service> [max-seconds]
 # Returns 0 if ready, 1 on timeout.
-wait_for_api_ready() {
+wait_for_api_service_ready() {
     local compose_file="$1"
-    local max_seconds="${2:-${API_READY_TIMEOUT:-90}}"
+    local service="$2"
+    local max_seconds="${3:-${API_READY_TIMEOUT:-90}}"
     local i
     for ((i=1; i<=max_seconds; i++)); do
-        if docker compose -f "$compose_file" exec -T api \
+        if docker compose -f "$compose_file" exec -T "$service" \
             curl -sf -o /dev/null http://localhost:8000/health/ready 2>/dev/null; then
             return 0
         fi
         sleep 1
     done
-    echo "ERROR: api did not become ready on /health/ready within ${max_seconds}s" >&2
+    echo "ERROR: $service did not become ready on /health/ready within ${max_seconds}s" >&2
     return 1
+}
+
+# Primary API readiness helper used by existing stack checks.
+wait_for_api_ready() {
+    wait_for_api_service_ready "$1" api "${2:-${API_READY_TIMEOUT:-90}}"
 }
 
 # Is the stack for this worktree currently running?

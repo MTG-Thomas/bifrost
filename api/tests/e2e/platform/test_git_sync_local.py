@@ -708,9 +708,9 @@ class TestPull:
         assert wf.function_name == "git_sync_test_wf"
 
         # Verify parameters_schema enriched by WorkflowIndexer
-        assert len(wf.parameters_schema) == 1
-        assert wf.parameters_schema[0]["name"] == "message"
-        assert wf.parameters_schema[0]["required"] is True
+        assert len(wf.parameters_schema["properties"]) == 1
+        assert wf.parameters_schema["properties"]["message"]["type"] == "string"
+        assert wf.parameters_schema["required"] == ["message"]
 
         # Verify file_index populated
         fi_result = await db_session.execute(

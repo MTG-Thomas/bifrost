@@ -1,0 +1,668 @@
+"""Accountability contracts for reviewed Workspace source commits."""
+
+import ast
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from uuid import uuid4
+
+import pytest
+from pydantic import ValidationError
+from sqlalchemy import CheckConstraint, ForeignKeyConstraint
+from sqlalchemy.exc import IntegrityError
+
+from src.models.contracts.workspace_promotions import (
+    WorkspaceSourceReleaseDeclareRequest,
+)
+from src.models.orm.workspace_promotions import (
+    WorkspacePromotionRelease,
+    WorkspaceSourceRelease,
+)
+from src.services.github_actions_oidc import WorkspaceSourceReleaseProducer
+from src.services.workspace_source_releases import (
+    WorkspaceSourceReleaseConflict,
+    WorkspaceSourceReleaseService,
+    reconcile_source_releases_after_lock,
+    source_release_declaration_digest,
+    source_release_response,
+    sweep_overdue_workspace_releases,
+)
+
+
+class _Scalars:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
+
+
+class _Database:
+    def __init__(self, scalar_batches):
+        self._scalar_batches = list(scalar_batches)
+        self.flushes = 0
+        self.locked_entities = []
+
+    async def scalars(self, statement):
+        self.locked_entities.append(statement.column_descriptions[0].get("entity"))
+        return _Scalars(self._scalar_batches.pop(0))
+
+    async def flush(self):
+        self.flushes += 1
+
+
+class _CountRows:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
+
+
+class _ListDatabase:
+    def __init__(self, records, counts, *, overdue_pending, overdue):
+        self._records = records
+        self._counts = counts
+        self._overdue_pending = overdue_pending
+        self._overdue = overdue
+
+    async def scalars(self, _statement):
+        return _Scalars(self._records)
+
+    async def execute(self, _statement):
+        return _CountRows(self._counts)
+
+    async def scalar(self, statement):
+        disposition = statement.compile().params["disposition_1"]
+        if disposition == "pending":
+            return self._overdue_pending
+        if disposition == ["pending", "attention_required"]:
+            return self._overdue
+        raise AssertionError(f"unexpected count query: {disposition!r}")
+
+
+class _RacingDeclareDatabase:
+    def __init__(self, concurrent_record):
+        self._scalar_rows = [None, concurrent_record]
+        self.rollback_called = False
+
+    async def scalar(self, _statement):
+        return self._scalar_rows.pop(0)
+
+    def add(self, _record):
+        pass
+
+    async def commit(self):
+        raise IntegrityError("insert", {}, Exception("unique violation"))
+
+    async def rollback(self):
+        self.rollback_called = True
+
+
+class _ExistingDeclareDatabase:
+    def __init__(self, record):
+        self.record = record
+
+    async def scalar(self, _statement):
+        return self.record
+
+
+class _InsertDeclareDatabase:
+    def __init__(self):
+        self.record = None
+
+    async def scalar(self, _statement):
+        return None
+
+    def add(self, record):
+        self.record = record
+        record.id = uuid4()
+        record.created_at = datetime.now(timezone.utc)
+        record.updated_at = record.created_at
+
+    async def commit(self):
+        pass
+
+    async def refresh(self, _record, attribute_names=None):
+        pass
+
+
+def _source_record(
+    *, disposition="pending", declared_disposition="pending", due_at=None
+):
+    now = datetime.now(timezone.utc)
+    return WorkspaceSourceRelease(
+        id=uuid4(),
+        organization_id=uuid4(),
+        source_commit_sha="a" * 40,
+        source_tree_sha="b" * 40,
+        paths={"features/example.py": "c" * 64},
+        declaration_actor="platform_admin",
+        producer_oidc_commit_sha=None,
+        producer_event_name=None,
+        producer_run_id=None,
+        producer_triggering_workflow_run_id=None,
+        producer_triggering_workflow_run_attempt=None,
+        producer_declaration_digest=None,
+        producer_actor=None,
+        producer_actor_id=None,
+        disposition=disposition,
+        declared_disposition=declared_disposition,
+        due_at=due_at,
+        created_by=uuid4(),
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def test_pending_declaration_requires_exact_paths() -> None:
+    with pytest.raises(ValidationError, match="exact path hashes"):
+        WorkspaceSourceReleaseDeclareRequest(
+            source_commit_sha="a" * 40,
+            source_tree_sha="b" * 40,
+            paths={},
+            disposition="pending",
+        )
+
+
+def test_declaration_digest_matches_cross_repository_canonical_vector() -> None:
+    request = WorkspaceSourceReleaseDeclareRequest(
+        source_commit_sha="a" * 40,
+        source_tree_sha="b" * 40,
+        paths={"features/example.py": "c" * 64},
+        disposition="pending",
+    )
+
+    assert source_release_declaration_digest(request) == (
+        "847184822972fce93fe6dad984a72d5889c54980f539435db7b3b1c54cbf3292"
+    )
+
+
+def test_non_production_declaration_requires_reason() -> None:
+    with pytest.raises(ValidationError, match="requires a reason"):
+        WorkspaceSourceReleaseDeclareRequest(
+            source_commit_sha="a" * 40,
+            source_tree_sha="b" * 40,
+            disposition="non_production",
+        )
+
+
+def test_attention_required_declaration_requires_reason() -> None:
+    with pytest.raises(ValidationError, match="requires a reason"):
+        WorkspaceSourceReleaseDeclareRequest(
+            source_commit_sha="a" * 40,
+            source_tree_sha="b" * 40,
+            paths={"features/example.py": "c" * 64},
+            disposition="attention_required",
+        )
+
+
+@pytest.mark.parametrize(
+    ("paths", "message"),
+    [
+        ({"": "c" * 64}, "path keys"),
+        ({"features/example.py": "NOT-A-DIGEST"}, "path digests"),
+    ],
+)
+def test_declaration_reports_path_and_digest_errors_separately(
+    paths: dict[str, str], message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        WorkspaceSourceReleaseDeclareRequest(
+            source_commit_sha="a" * 40,
+            source_tree_sha="b" * 40,
+            paths=paths,
+            disposition="pending",
+        )
+
+
+def test_response_exposes_overdue_pending_as_attention() -> None:
+    now = datetime.now(timezone.utc)
+    response = source_release_response(
+        _source_record(due_at=now - timedelta(seconds=1)), now=now
+    )
+
+    assert response.disposition == "pending"
+    assert response.overdue is True
+    assert response.requires_attention is True
+    assert response.declaration_actor == "platform_admin"
+
+
+@pytest.mark.asyncio
+async def test_github_declaration_persists_authenticated_producer_provenance() -> None:
+    organization_id = uuid4()
+    database = _InsertDeclareDatabase()
+    request = WorkspaceSourceReleaseDeclareRequest(
+        source_commit_sha="a" * 40,
+        source_tree_sha="b" * 40,
+        paths={"features/example.py": "c" * 64},
+        disposition="pending",
+    )
+    producer = WorkspaceSourceReleaseProducer(
+        organization_id=organization_id,
+        source_commit_sha=request.source_commit_sha,
+        oidc_commit_sha="d" * 40,
+        repository="MTG-Thomas/bifrost-workspace",
+        workflow_ref="trusted",
+        run_id="123",
+        event_name="workflow_dispatch",
+        triggering_workflow_run_id="456",
+        triggering_workflow_run_attempt=2,
+        declaration_digest=source_release_declaration_digest(request),
+        actor="github-actions[bot]",
+        actor_id="41898282",
+    )
+
+    response = await WorkspaceSourceReleaseService(database, organization_id).declare(
+        request, created_by=uuid4(), producer=producer
+    )
+
+    assert response.declaration_actor == "github_actions_oidc"
+    assert response.producer_oidc_commit_sha == "d" * 40
+    assert response.producer_event_name == "workflow_dispatch"
+    assert response.producer_run_id == "123"
+    assert response.producer_triggering_workflow_run_id == "456"
+    assert response.producer_triggering_workflow_run_attempt == 2
+    assert response.producer_declaration_digest == source_release_declaration_digest(
+        request
+    )
+    assert response.producer_actor == "github-actions[bot]"
+    assert response.producer_actor_id == "41898282"
+
+
+@pytest.mark.asyncio
+async def test_admin_declaration_has_explicit_actor_without_oidc_provenance() -> None:
+    organization_id = uuid4()
+    database = _InsertDeclareDatabase()
+    request = WorkspaceSourceReleaseDeclareRequest(
+        source_commit_sha="a" * 40,
+        source_tree_sha="b" * 40,
+        paths={"features/example.py": "c" * 64},
+        disposition="pending",
+    )
+
+    response = await WorkspaceSourceReleaseService(database, organization_id).declare(
+        request, created_by=uuid4()
+    )
+
+    assert response.declaration_actor == "platform_admin"
+    assert response.producer_oidc_commit_sha is None
+    assert response.producer_event_name is None
+    assert response.producer_run_id is None
+    assert response.producer_triggering_workflow_run_id is None
+    assert response.producer_triggering_workflow_run_attempt is None
+    assert response.producer_declaration_digest is None
+    assert response.producer_actor is None
+    assert response.producer_actor_id is None
+
+
+@pytest.mark.asyncio
+async def test_declaration_rejects_producer_source_mismatch() -> None:
+    organization_id = uuid4()
+    request = WorkspaceSourceReleaseDeclareRequest(
+        source_commit_sha="a" * 40,
+        source_tree_sha="b" * 40,
+        paths={"features/example.py": "c" * 64},
+        disposition="pending",
+    )
+    producer = WorkspaceSourceReleaseProducer(
+        organization_id=organization_id,
+        source_commit_sha="d" * 40,
+        oidc_commit_sha="e" * 40,
+        repository="MTG-Thomas/bifrost-workspace",
+        workflow_ref="trusted",
+        run_id="123",
+        event_name="push",
+        triggering_workflow_run_id=None,
+    )
+
+    with pytest.raises(ValueError, match="source commit"):
+        await WorkspaceSourceReleaseService(
+            _InsertDeclareDatabase(), organization_id
+        ).declare(request, created_by=uuid4(), producer=producer)
+
+
+@pytest.mark.asyncio
+async def test_declaration_rejects_producer_body_digest_mismatch() -> None:
+    organization_id = uuid4()
+    request = WorkspaceSourceReleaseDeclareRequest(
+        source_commit_sha="a" * 40,
+        source_tree_sha="b" * 40,
+        paths={"features/example.py": "c" * 64},
+        disposition="pending",
+    )
+    producer = WorkspaceSourceReleaseProducer(
+        organization_id=organization_id,
+        source_commit_sha=request.source_commit_sha,
+        oidc_commit_sha="e" * 40,
+        repository="MTG-Thomas/bifrost-workspace",
+        workflow_ref="trusted",
+        run_id="123",
+        event_name="workflow_dispatch",
+        triggering_workflow_run_id="456",
+        triggering_workflow_run_attempt=2,
+        declaration_digest="f" * 64,
+    )
+
+    with pytest.raises(ValueError, match="declaration digest"):
+        await WorkspaceSourceReleaseService(
+            _InsertDeclareDatabase(), organization_id
+        ).declare(request, created_by=uuid4(), producer=producer)
+
+
+@pytest.mark.asyncio
+async def test_list_counts_full_backlog_not_only_bounded_records() -> None:
+    record = _source_record()
+    database = _ListDatabase(
+        [record],
+        [("pending", 120), ("attention_required", 3), ("released", 400)],
+        overdue_pending=2,
+        overdue=5,
+    )
+    service = WorkspaceSourceReleaseService(database, record.organization_id)
+
+    response = await service.list(limit=1)
+
+    assert len(response.records) == 1
+    assert response.total == 523
+    assert response.pending == 120
+    assert response.attention_required == 5
+    assert response.overdue == 5
+    assert response.tracking_state == "active"
+
+
+@pytest.mark.asyncio
+async def test_configured_tracking_is_active_before_first_declaration() -> None:
+    organization_id = uuid4()
+    service = WorkspaceSourceReleaseService(
+        _ListDatabase([], [], overdue_pending=0, overdue=0), organization_id
+    )
+
+    response = await service.list(tracking_expected=True)
+
+    assert response.total == 0
+    assert response.tracking_state == "active"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_exact_declaration_is_idempotent() -> None:
+    record = _source_record()
+    database = _RacingDeclareDatabase(record)
+    service = WorkspaceSourceReleaseService(database, record.organization_id)
+    request = WorkspaceSourceReleaseDeclareRequest(
+        source_commit_sha=record.source_commit_sha,
+        source_tree_sha=record.source_tree_sha,
+        paths=record.paths,
+        disposition="pending",
+    )
+
+    response = await service.declare(request, created_by=uuid4())
+
+    assert response.id == record.id
+    assert database.rollback_called is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("declared_disposition", "request_disposition"),
+    [
+        ("pending", "non_production"),
+        ("non_production", "pending"),
+    ],
+)
+async def test_replay_rejects_disposition_changes_symmetrically(
+    declared_disposition: str,
+    request_disposition: str,
+) -> None:
+    record = _source_record(
+        disposition=declared_disposition,
+        declared_disposition=declared_disposition,
+    )
+    request = WorkspaceSourceReleaseDeclareRequest(
+        source_commit_sha=record.source_commit_sha,
+        source_tree_sha=record.source_tree_sha,
+        paths=record.paths,
+        disposition=request_disposition,
+        reason="classification changed"
+        if request_disposition == "non_production"
+        else None,
+    )
+
+    with pytest.raises(WorkspaceSourceReleaseConflict, match="different"):
+        await WorkspaceSourceReleaseService(
+            _ExistingDeclareDatabase(record), record.organization_id
+        ).declare(request, created_by=uuid4())
+
+
+@pytest.mark.asyncio
+async def test_pending_replay_remains_idempotent_after_attention_transition() -> None:
+    record = _source_record(
+        disposition="attention_required",
+        declared_disposition="pending",
+    )
+    request = WorkspaceSourceReleaseDeclareRequest(
+        source_commit_sha=record.source_commit_sha,
+        source_tree_sha=record.source_tree_sha,
+        paths=record.paths,
+        disposition="pending",
+    )
+
+    response = await WorkspaceSourceReleaseService(
+        _ExistingDeclareDatabase(record), record.organization_id
+    ).declare(request, created_by=uuid4())
+
+    assert response.id == record.id
+    assert response.disposition == "attention_required"
+
+
+@pytest.mark.asyncio
+async def test_release_closes_only_after_runtime_and_history_match() -> None:
+    record = _source_record()
+    release_row_id = uuid4()
+    runtime = {"features/example.py": "c" * 64}
+    database = _Database([[record]])
+
+    completed = await reconcile_source_releases_after_lock(
+        database,
+        organization_id=record.organization_id,
+        release_row_id=release_row_id,
+        release_id="sha256:" + "d" * 64,
+        runtime_hashes=runtime,
+        history_commit_sha="e" * 40,
+        history_hashes={"features/example.py": "f" * 64},
+    )
+
+    assert completed == []
+    assert record.disposition == "pending"
+
+    database = _Database([[record]])
+    completed = await reconcile_source_releases_after_lock(
+        database,
+        organization_id=record.organization_id,
+        release_row_id=release_row_id,
+        release_id="sha256:" + "d" * 64,
+        runtime_hashes=runtime,
+        history_commit_sha="e" * 40,
+        history_hashes=runtime,
+    )
+
+    assert completed == [record.id]
+    assert record.disposition == "released"
+    assert record.release_row_id == release_row_id
+    assert record.completion_evidence["runtime_sha256"] == runtime
+    assert record.completion_evidence["history"]["file_sha256"] == runtime
+    assert record.completion_evidence["evidence_id"].startswith("sha256:")
+
+
+@pytest.mark.asyncio
+async def test_sweep_marks_source_and_unmirrored_live_release_attention() -> None:
+    now = datetime.now(timezone.utc)
+    source = _source_record(due_at=now - timedelta(seconds=1))
+    release = WorkspacePromotionRelease(
+        id=uuid4(),
+        organization_id=source.organization_id,
+        artifact_id=uuid4(),
+        activation_state="live",
+        lock_state="queued",
+        attention_deadline=now - timedelta(seconds=1),
+        lock_in_job_id=uuid4(),
+        created_by=uuid4(),
+    )
+    database = _Database([[release], [source]])
+
+    result = await sweep_overdue_workspace_releases(database, now=now)
+
+    assert result == {
+        "source_release_ids": [str(source.id)],
+        "workspace_release_ids": [str(release.id)],
+    }
+    assert source.disposition == "attention_required"
+    assert "not reached verified production" in source.reason
+    assert release.lock_state == "attention_required"
+    assert release.error_code == "workspace_release_history_overdue"
+    assert database.locked_entities == [
+        WorkspacePromotionRelease,
+        WorkspaceSourceRelease,
+    ]
+    assert database.flushes == 1
+
+
+def test_released_source_evidence_has_same_org_deferred_release_fk() -> None:
+    foreign_key = next(
+        constraint
+        for constraint in WorkspaceSourceRelease.__table__.foreign_key_constraints
+        if constraint.name == "fk_workspace_source_release_release_org"
+    )
+    released_check = next(
+        constraint
+        for constraint in WorkspaceSourceRelease.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+        and constraint.name == "ck_workspace_source_release_released_evidence"
+    )
+
+    assert isinstance(foreign_key, ForeignKeyConstraint)
+    assert foreign_key.column_keys == ["organization_id", "release_row_id"]
+    assert [element.target_fullname for element in foreign_key.elements] == [
+        "workspace_promotion_releases.organization_id",
+        "workspace_promotion_releases.id",
+    ]
+    assert foreign_key.ondelete is None
+    assert foreign_key.deferrable is True
+    assert foreign_key.initially == "DEFERRED"
+    assert "release_row_id IS NOT NULL" in str(released_check.sqltext)
+
+
+def test_source_release_migration_matches_release_evidence_fk_contract() -> None:
+    migration = (
+        Path(__file__).resolve().parents[3]
+        / "alembic"
+        / "versions"
+        / "20260824_workspace_source_releases.py"
+    ).read_text()
+
+    assert '"fk_workspace_source_release_release_org"' in migration
+    assert '["organization_id", "release_row_id"]' in migration
+    assert '"workspace_promotion_releases.organization_id"' in migration
+    assert '"workspace_promotion_releases.id"' in migration
+    assert 'ondelete="SET NULL"' not in migration
+    assert "deferrable=True" in migration
+    assert 'initially="DEFERRED"' in migration
+    assert 'sa.Column("declared_disposition"' in migration
+    assert '"ck_workspace_source_release_declared_disposition"' in migration
+
+
+def test_source_release_provenance_has_database_enforced_actor_contract() -> None:
+    constraints = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in WorkspaceSourceRelease.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    migration = (
+        Path(__file__).resolve().parents[3]
+        / "alembic"
+        / "versions"
+        / "20260824_workspace_source_release_provenance.py"
+    ).read_text()
+
+    assert (
+        "github_actions_oidc"
+        in constraints["ck_workspace_source_release_producer_provenance"]
+    )
+    assert (
+        "producer_triggering_workflow_run_id IS NOT NULL"
+        in constraints["ck_workspace_source_release_triggering_run"]
+    )
+    assert (
+        "producer_triggering_workflow_run_attempt > 0"
+        in constraints["ck_workspace_source_release_triggering_run"]
+    )
+    assert (
+        "producer_declaration_digest ~ '^[0-9a-f]{64}$'"
+        in constraints["ck_workspace_source_release_triggering_run"]
+    )
+    assert (
+        "producer_actor = 'github-actions[bot]'"
+        in constraints["ck_workspace_source_release_triggering_run"]
+    )
+    assert (
+        "producer_actor_id = '41898282'"
+        in constraints["ck_workspace_source_release_triggering_run"]
+    )
+    assert (
+        "workflow_dispatch"
+        in constraints["ck_workspace_source_release_producer_provenance"]
+    )
+    assert "legacy_unattributed" in migration
+    assert "producer_oidc_commit_sha" in migration
+    assert 'down_revision: str | None = "20260824_ws_source_releases"' in migration
+
+
+def test_workflow_dispatch_provenance_migration_replaces_checks() -> None:
+    migration = (
+        Path(__file__).resolve().parents[3]
+        / "alembic"
+        / "versions"
+        / "20260824_workspace_source_release_workflow_dispatch.py"
+    ).read_text()
+
+    assert 'down_revision: str | None = "20260824_ws_source_provenance"' in migration
+    assert "workflow_dispatch" in migration
+    assert "producer_triggering_workflow_run_attempt" in migration
+    assert "producer_declaration_digest" in migration
+    assert "producer_actor" in migration
+    assert "producer_actor_id" in migration
+    migration_constraints: dict[str, str] = {}
+    tree = ast.parse(migration)
+    upgrade = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "upgrade"
+    )
+    for statement in upgrade.body:
+        if not isinstance(statement, ast.Expr) or not isinstance(
+            statement.value, ast.Call
+        ):
+            continue
+        function = statement.value.func
+        if not (
+            isinstance(function, ast.Attribute)
+            and function.attr == "create_check_constraint"
+        ):
+            continue
+        name, _, sqltext = statement.value.args
+        migration_constraints[ast.literal_eval(name)] = ast.literal_eval(sqltext)
+
+    model_constraints = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in WorkspaceSourceRelease.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    for name in (
+        "ck_workspace_source_release_producer_provenance",
+        "ck_workspace_source_release_triggering_run",
+    ):
+        assert " ".join(migration_constraints[name].split()) == " ".join(
+            model_constraints[name].split()
+        )
+
+    assert "declaration_actor = 'legacy_unattributed'" in migration
+    assert "WHERE producer_event_name = 'workflow_dispatch'" in migration

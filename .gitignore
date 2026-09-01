@@ -231,3 +231,5 @@ system//home/
 client/preview/
 .desloppify/
 scorecard.png
+.repowise/*
+!.repowise/config.yaml

@@ -14,11 +14,13 @@ from src.core.database import close_db, get_db_context, init_db
 from src.jobs.platform.base import (
     PlatformJobCancelled,
     PlatformJobContext,
+    PlatformJobDeferred,
     PlatformJobFailure,
 )
 from src.jobs.platform.registry import get_platform_job_definition
 from src.models.orm.platform_jobs import PlatformJob
-from src.services.platform_jobs import finish_platform_job
+from src.services.audit_context import ActorContext, clear_actor, set_actor
+from src.services.platform_jobs import defer_platform_job, finish_platform_job
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,12 @@ async def run_claimed_platform_job(job_id: UUID, lease_token: UUID) -> bool:
             )
             return False
         payload_data = job.payload
+        if job.encrypted_payload is not None:
+            from src.core.security import decrypt_secret
+
+            payload_data = definition.payload_model.model_validate_json(
+                decrypt_secret(job.encrypted_payload)
+            ).model_dump(mode="json")
         context = PlatformJobContext(
             job_id=job.id,
             lease_token=lease_token,
@@ -67,6 +75,20 @@ async def run_claimed_platform_job(job_id: UUID, lease_token: UUID) -> bool:
             requested_by_email=job.requested_by_email,
             requested_by_name=job.requested_by_name,
         )
+
+    try:
+        requested_by_user_id = UUID(context.requested_by_user_id)
+    except ValueError:
+        requested_by_user_id = None
+    actor_token = set_actor(
+        ActorContext(
+            user_id=requested_by_user_id,
+            organization_id=context.organization_id,
+            email=context.requested_by_email,
+            name=context.requested_by_name,
+            source="platform_job",
+        )
+    )
 
     try:
         payload = definition.payload_model.model_validate(payload_data)
@@ -82,6 +104,13 @@ async def run_claimed_platform_job(job_id: UUID, lease_token: UUID) -> bool:
             job_id,
             lease_token,
             status="cancelled",
+        )
+    except PlatformJobDeferred as exc:
+        return await defer_platform_job(
+            job_id,
+            lease_token,
+            phase=exc.phase,
+            result=exc.result,
         )
     except PlatformJobFailure as exc:
         return await finish_platform_job(
@@ -101,7 +130,9 @@ async def run_claimed_platform_job(job_id: UUID, lease_token: UUID) -> bool:
             error_message=str(exc),
         )
     except Exception:
-        logger.exception("Unhandled platform-job handler failure", extra={"job_id": str(job_id)})
+        logger.exception(
+            "Unhandled platform-job handler failure", extra={"job_id": str(job_id)}
+        )
         return await finish_platform_job(
             job_id,
             lease_token,
@@ -110,6 +141,8 @@ async def run_claimed_platform_job(job_id: UUID, lease_token: UUID) -> bool:
             error_message="Platform job failed unexpectedly; see server logs.",
             error_retryable=False,
         )
+    finally:
+        clear_actor(actor_token)
 
 
 async def _main(job_id: str, lease_token: str) -> int:

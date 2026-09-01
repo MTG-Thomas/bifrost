@@ -15,6 +15,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
@@ -29,6 +30,8 @@ from src.core.log_safety import log_safe
 from src.core.redis_reconnect import ResilientPubSubListener
 
 logger = logging.getLogger(__name__)
+
+InternalSubscriber = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 @dataclass
@@ -46,6 +49,12 @@ class ConnectionManager:
     connections: dict[str, set[WebSocket]] = field(default_factory=dict)
     # Resilient pub/sub listener for receiving messages
     _pubsub_listener: ResilientPubSubListener | None = None
+    # Process-local consumers for cross-replica infrastructure events. These
+    # use the same Redis listener as WebSockets rather than creating parallel
+    # feature-specific pub/sub loops.
+    internal_subscribers: dict[str, set[InternalSubscriber]] = field(
+        default_factory=dict
+    )
 
     async def connect(self, websocket: WebSocket, channels: list[str]) -> None:
         """
@@ -102,6 +111,15 @@ class ConnectionManager:
         The dispatcher receives the raw message and decides what, if anything,
         to deliver to the client.
         """
+        for subscriber in tuple(self.internal_subscribers.get(channel, ())):
+            try:
+                await subscriber(message)
+            except Exception:
+                logger.exception(
+                    "Internal Redis subscriber failed for channel %s",
+                    log_safe(channel),
+                )
+
         if channel not in self.connections:
             return
 
@@ -123,8 +141,8 @@ class ConnectionManager:
                         continue
                     await dispatcher(channel, message)
                 else:
-                    assert message_json is not None
-                    await websocket.send_text(message_json)
+                    if message_json is not None:
+                        await websocket.send_text(message_json)
             except Exception:
                 dead_connections.add(websocket)
 
@@ -174,10 +192,38 @@ class ConnectionManager:
             logger.warning(f"Failed to connect to Redis: {e}")
             self._pubsub_listener = None
 
+    async def subscribe_internal(
+        self,
+        channel: str,
+        subscriber: InternalSubscriber,
+    ) -> None:
+        """Subscribe a process-local infrastructure consumer to one channel."""
+        self.internal_subscribers.setdefault(channel, set()).add(subscriber)
+        if not self._pubsub_listener or not self._pubsub_listener.is_healthy():
+            await self._init_redis()
+        if not self._pubsub_listener or not self._pubsub_listener.is_healthy():
+            self.unsubscribe_internal(channel, subscriber)
+            raise RuntimeError("Redis pub/sub listener is unavailable")
+
+    def unsubscribe_internal(
+        self,
+        channel: str,
+        subscriber: InternalSubscriber,
+    ) -> None:
+        """Remove a process-local infrastructure consumer."""
+        subscribers = self.internal_subscribers.get(channel)
+        if subscribers is None:
+            return
+        subscribers.discard(subscriber)
+        if not subscribers:
+            del self.internal_subscribers[channel]
+
     async def close(self) -> None:
         """Clean up connections."""
         if self._pubsub_listener:
             await self._pubsub_listener.stop()
+            self._pubsub_listener = None
+        self.internal_subscribers.clear()
 
 
 # Global connection manager instance
@@ -588,7 +634,7 @@ async def publish_app_published(
 
 
 # =============================================================================
-# Git Desktop Operations Pub/Sub (API -> Scheduler Communication)
+# Git Desktop Operations
 # =============================================================================
 
 
@@ -599,12 +645,9 @@ async def publish_git_operation(
     user_email: str,
     op_type: str,
     **kwargs: Any,
-) -> None:
+) -> str:
     """
-    Request a git desktop operation from the scheduler.
-
-    The scheduler listens on `bifrost:scheduler:git-op` and dispatches
-    to the appropriate service method based on op_type.
+    Queue a durable git desktop operation for any scheduler replica.
 
     Args:
         job_id: Unique job ID for tracking
@@ -614,15 +657,45 @@ async def publish_git_operation(
         op_type: Operation type (git_fetch, git_commit, git_pull, git_push, git_status, git_resolve, git_diff)
         **kwargs: Additional operation-specific data
     """
-    message: dict[str, Any] = {
-        "type": op_type,
-        "jobId": job_id,
-        "orgId": org_id,
-        "userId": user_id,
-        "userEmail": user_email,
-        **kwargs,
-    }
-    await manager._publish_to_redis("scheduler:git-op", message)
+    from uuid import UUID, uuid4
+
+    from src.core.database import get_db_context
+    from src.jobs.platform.git_operation import (
+        GIT_OPERATION_DEFINITION,
+        GitOperationPayload,
+    )
+    from src.services.platform_jobs import enqueue_platform_job, publish_platform_job_update
+
+    try:
+        resolved_job_id = UUID(job_id)
+    except ValueError:
+        resolved_job_id = uuid4()
+    organization_id = UUID(org_id) if org_id else None
+    async with get_db_context() as db:
+        job, _ = await enqueue_platform_job(
+            db,
+            GIT_OPERATION_DEFINITION,
+            GitOperationPayload(
+                operation=op_type,
+                organization_id=organization_id,
+                options=kwargs,
+            ),
+            dedupe_key=str(resolved_job_id),
+            resource_lock_key="workspace",
+            priority=500,
+            organization_id=organization_id,
+            requested_by_user_id=user_id,
+            requested_by_email=user_email,
+            requested_by_name=user_email,
+            resource_type="workspace",
+            resource_id="git",
+            title=op_type.replace("_", " ").title(),
+            action_url="/git",
+            job_id=resolved_job_id,
+        )
+        await db.commit()
+    await publish_platform_job_update(job)
+    return str(job.id)
 
 
 async def publish_git_progress(
@@ -830,24 +903,6 @@ async def publish_pool_scaling(
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     await manager.broadcast("platform_workers", message)
-
-
-async def publish_reimport_request(job_id: str) -> None:
-    """Publish a reimport request to the scheduler."""
-    await manager._publish_to_redis("scheduler:reimport", {"action": "reimport", "job_id": job_id})
-
-
-async def publish_embedding_reindex_request(notification_id: str) -> None:
-    """Publish an embedding-reindex request to the scheduler.
-
-    The scheduler reads the saved embedding config and re-embeds every
-    knowledge_store row, pushing progress through the notification at
-    `notification_id`.
-    """
-    await manager._publish_to_redis(
-        "scheduler:embedding-reindex",
-        {"action": "embedding_reindex", "notification_id": notification_id},
-    )
 
 
 async def publish_pool_progress(

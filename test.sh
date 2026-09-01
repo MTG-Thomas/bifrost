@@ -12,7 +12,8 @@
 #   ./test.sh unit                      Same as above.
 #   ./test.sh e2e-smoke                 PR-gating backend e2e smoke tests.
 #   ./test.sh e2e                       Backend e2e tests.
-#   ./test.sh all                       Unit + e2e (mirrors CI).
+#   ./test.sh all                       All backend tests, including slow tests.
+#   ./test.sh reliability               Real-service execution reliability gauntlet.
 #   ./test.sh tests/path/... [args]     Pass through to pytest.
 #
 # Quality checks:
@@ -21,10 +22,16 @@
 # Client tests:
 #   ./test.sh client unit               Vitest on the host (no stack).
 #   ./test.sh client e2e                Playwright in the stack's client container.
+#   ./test.sh client smoke              Critical zero-retry Playwright merge gate.
+#   ./test.sh client nightly            Full product Playwright (docs capture excluded).
 #   ./test.sh client e2e --screenshots  Capture a screenshot for every test (UX review).
 #   ./test.sh client e2e e2e/auth.unauth.spec.ts   Pass through to playwright.
 #
+# MCP protocol conformance:
+#   ./test.sh mcp conformance             Run the blocking official subset.
+#
 # CI escape hatch:
+#   ./test.sh pre-pr                    Required local PR/merge gate for a clean commit.
 #   ./test.sh ci                        Full isolated run: up, all tests, down.
 #
 # Global flags (apply to most subcommands):
@@ -50,13 +57,27 @@ mkdir -p "$LOG_DIR"
 # e2e tests stage file:// git repos here). Creating it host-side first means Docker
 # binds an existing host-owned dir instead of auto-creating a root-owned mountpoint.
 mkdir -p "$LOG_DIR/solution-repo-fixtures"
+mkdir -p "$SCRIPT_DIR/client/playwright-results"
+chmod 777 "$SCRIPT_DIR/client/playwright-results" 2>/dev/null || true
 export LOG_DIR
 
-# Load .env.test for optional secrets (GitHub PAT, LLM keys, etc.)
-if [ -f ".env.test" ]; then
+# Load .env.test for optional secrets (GitHub PAT, LLM keys, etc.). Since the
+# file is intentionally ignored, linked worktrees do not receive it from Git;
+# fall back to the primary checkout's copy when the worktree has none.
+BIFROST_TEST_ENV_FILE="$SCRIPT_DIR/.env.test"
+if [ ! -f "$BIFROST_TEST_ENV_FILE" ]; then
+    BIFROST_COMMON_GIT_DIR="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    if [ -n "$BIFROST_COMMON_GIT_DIR" ]; then
+        BIFROST_PRIMARY_TEST_ENV_FILE="$(dirname "$BIFROST_COMMON_GIT_DIR")/.env.test"
+        if [ -f "$BIFROST_PRIMARY_TEST_ENV_FILE" ]; then
+            BIFROST_TEST_ENV_FILE="$BIFROST_PRIMARY_TEST_ENV_FILE"
+        fi
+    fi
+fi
+if [ -f "$BIFROST_TEST_ENV_FILE" ]; then
     set -a
     # shellcheck disable=SC1091
-    source .env.test
+    source "$BIFROST_TEST_ENV_FILE"
     set +a
 fi
 
@@ -98,14 +119,14 @@ dump_stack_startup_logs() {
     docker compose -f "$COMPOSE_FILE" ps -a >&2 || true
     echo "" >&2
     echo "Startup logs:" >&2
-    docker compose -f "$COMPOSE_FILE" logs --no-color --timestamps init api worker scheduler pgbouncer postgres rabbitmq redis seaweedfs >&2 || true
+    docker compose -f "$COMPOSE_FILE" logs --no-color --timestamps init api api-replica worker scheduler pgbouncer postgres rabbitmq redis seaweedfs >&2 || true
     export_logs "$COMPOSE_PROJECT_NAME" "$COMPOSE_FILE" || true
 }
 
 reset_state() {
     echo "Resetting state..."
 
-    docker compose -f "$COMPOSE_FILE" stop api worker scheduler pgbouncer 2>/dev/null || true
+    docker compose -f "$COMPOSE_FILE" stop api api-replica worker scheduler pgbouncer 2>/dev/null || true
 
     docker compose -f "$COMPOSE_FILE" exec -T postgres psql -U bifrost -d postgres -c \
         "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'bifrost_test' AND pid <> pg_backend_pid();" \
@@ -126,10 +147,30 @@ reset_state() {
 
     docker compose -f "$COMPOSE_FILE" start pgbouncer > /dev/null
     wait_for_service "$COMPOSE_FILE" pgbouncer pg_isready -h localhost -p 5432 -U bifrost
-    docker compose -f "$COMPOSE_FILE" --profile e2e start api worker scheduler > /dev/null
+    docker compose -f "$COMPOSE_FILE" --profile e2e start \
+        api api-replica worker scheduler scheduler-fixtures > /dev/null
     wait_for_api_ready "$COMPOSE_FILE"
+    wait_for_api_service_ready "$COMPOSE_FILE" api-replica
 
     echo "State reset complete."
+}
+
+prepare_test_state() {
+    local boot_marker="$LOG_DIR/.clean-boot-consumed"
+
+    # GitHub-hosted jobs boot one new, empty Compose project and run exactly one
+    # suite. Re-cloning the template DB and restarting every service immediately
+    # afterward is equivalent state with roughly a minute of avoidable churn.
+    # The marker makes this a one-shot optimization: a second suite in the same
+    # project still receives the normal full reset.
+    if [ "${BIFROST_TEST_USE_CLEAN_BOOT:-0}" = "1" ] && [ ! -e "$boot_marker" ]; then
+        mkdir -p "$LOG_DIR"
+        touch "$boot_marker"
+        echo "Using clean state from the newly booted test stack."
+        return
+    fi
+
+    reset_state
 }
 
 # =============================================================================
@@ -154,17 +195,31 @@ cmd_stack() {
 }
 
 stack_up() {
+    local api_container_id api_fixture_source expected_fixture_source
     print_project
 
     if stack_is_up "$COMPOSE_PROJECT_NAME" "$COMPOSE_FILE"; then
+        # Reconcile long-lived containers with the current Compose definition
+        # before declaring the stack ready. Without this, an already-running
+        # API can retain stale bind mounts or environment after the harness
+        # changes, while one-off test runners use the new configuration.
+        docker compose -f "$COMPOSE_FILE" --profile e2e up -d --no-build
+        api_container_id="$(docker compose -f "$COMPOSE_FILE" ps -q api)"
+        expected_fixture_source="$LOG_DIR/solution-repo-fixtures"
+        api_fixture_source="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/tmp/bifrost/solution-repo-fixtures"}}{{.Source}}{{end}}{{end}}' "$api_container_id")"
+        if [ "$api_fixture_source" != "$expected_fixture_source" ]; then
+            echo "API fixture mount is stale — recreating API with the worktree-specific mount."
+            docker compose -f "$COMPOSE_FILE" up -d --no-build --force-recreate api
+        fi
         # Idempotent: still confirm API is serving traffic before returning
         # success. A previous `stack up` may have exited before the API
         # finished booting; without this, the next test command would race.
-        if wait_for_api_ready "$COMPOSE_FILE"; then
+        if wait_for_api_ready "$COMPOSE_FILE" && \
+            wait_for_api_service_ready "$COMPOSE_FILE" api-replica; then
             echo "Stack already up."
             return 0
         fi
-        dump_stack_startup_logs "existing stack api readiness"
+        dump_stack_startup_logs "existing stack API readiness"
         exit 1
     fi
 
@@ -178,9 +233,9 @@ stack_up() {
     docker compose -f "$COMPOSE_FILE" up -d pgbouncer
     wait_for_service "$COMPOSE_FILE" pgbouncer pg_isready -h localhost -p 5432 -U bifrost
 
-    # CI pre-builds the dev images via docker/build-push-action with GHA cache
-    # and tags them as bifrost-test-api-dev:latest / bifrost-test-client-dev:latest
-    # before calling stack up. Setting BIFROST_SKIP_BUILD=1 tells compose to
+    # CI pre-builds the API dev image via docker/build-push-action with GHA cache
+    # and tags it as bifrost-test-api-dev:latest before calling stack up.
+    # Setting BIFROST_SKIP_BUILD=1 tells compose to
     # use those local images directly instead of building. Local dev leaves
     # this unset so `--build` continues to apply (image layer cache makes the
     # rebuilds fast after the first one).
@@ -203,25 +258,10 @@ stack_up() {
         dump_stack_startup_logs "api readiness"
         exit 1
     fi
-
-    echo "Starting client..."
-    docker compose -f "$COMPOSE_FILE" --profile client up -d "$build_flag" client
-    echo "Waiting for client to be healthy..."
-    for i in {1..120}; do
-        cid=$(docker compose -f "$COMPOSE_FILE" ps -q client 2>/dev/null)
-        if [ -n "$cid" ]; then
-            status=$(docker inspect -f '{{.State.Health.Status}}' "$cid" 2>/dev/null || echo unknown)
-            if [ "$status" = "healthy" ]; then
-                echo "Client ready."
-                break
-            fi
-        fi
-        if [ $i -eq 120 ]; then
-            echo "ERROR: client not healthy after 120s" >&2
-            exit 1
-        fi
-        sleep 1
-    done
+    if ! wait_for_api_service_ready "$COMPOSE_FILE" api-replica; then
+        dump_stack_startup_logs "api replica readiness"
+        exit 1
+    fi
 
     echo ""
     echo "Stack is up. Project: $COMPOSE_PROJECT_NAME"
@@ -244,7 +284,7 @@ stack_reset() {
     # won't re-attach its network endpoint cleanly, and its pool only proxies
     # bifrost_test anyway (nothing here connects to bifrost_test through it
     # while it's stopped).
-    docker compose -f "$COMPOSE_FILE" stop api worker scheduler 2>/dev/null || true
+    docker compose -f "$COMPOSE_FILE" stop api api-replica worker scheduler 2>/dev/null || true
     "$SCRIPT_DIR/scripts/stack_template_init.sh"
     reset_state
 }
@@ -264,12 +304,40 @@ stack_status() {
 # =============================================================================
 
 run_pytest() {
+    local runner_lock_fd runner_name runner_status
+
+    # One worktree owns one mutable Docker test stack.  A second pytest process
+    # against that stack can reset the database underneath the first process and
+    # produce order-impossible failures.  The flock covers the normal case; the
+    # stable container name is a second guard when the parent shell is killed and
+    # Docker leaves the already-running one-off container behind.
+    exec {runner_lock_fd}>"$LOG_DIR/test-runner.lock"
+    if ! flock -n "$runner_lock_fd"; then
+        echo "ERROR: another pytest run is already using this worktree's test stack." >&2
+        echo "Wait for it to finish before starting another test command." >&2
+        exec {runner_lock_fd}>&-
+        return 1
+    fi
+
+    runner_name="${COMPOSE_PROJECT_NAME}-pytest-runner"
+    if docker container inspect "$runner_name" > /dev/null 2>&1; then
+        echo "ERROR: pytest runner container '$runner_name' still exists." >&2
+        echo "Wait for it to finish; if its parent was interrupted, stop that container explicitly." >&2
+        exec {runner_lock_fd}>&-
+        return 1
+    fi
+
+    cleanup_pytest_runner() {
+        docker rm -f "$runner_name" > /dev/null 2>&1 || true
+    }
+    trap cleanup_pytest_runner INT TERM
+
     # Note: we deliberately do NOT re-run stack_template_init.sh here.
     # `stack reset` / `stack up` is where migration changes flow into the
     # template. `run_pytest` clones the current template, so if the user
     # changed migrations they should run `./test.sh stack reset` once.
     require_stack_up
-    reset_state
+    prepare_test_state
     # LOG_DIR is mkdir'd on the host as the runner/host user, then bind-mounted
     # into the test-runner container at /tmp/bifrost. The container runs as
     # uid 1000 (non-root, hardened), so it cannot write pytest's --junitxml file
@@ -285,7 +353,11 @@ run_pytest() {
 
     docker compose -f "$COMPOSE_FILE" --profile test run "${build_args[@]}" --rm test-runner \
         pytest "$@" --durations=25 --junitxml="$LOG_DIR/test-results.xml" 2>&1 | tee "$LOG_DIR/test-runner.log"
-    return "${PIPESTATUS[0]}"
+    runner_status="${PIPESTATUS[0]}"
+    trap - INT TERM
+    cleanup_pytest_runner
+    exec {runner_lock_fd}>&-
+    return "$runner_status"
 }
 
 # `unit` is the fast every-PR lane: it deselects `@pytest.mark.slow` tests
@@ -294,28 +366,44 @@ run_pytest() {
 # no coverage is dropped — just moved off the per-PR critical path. A caller can
 # re-include them ad hoc with `./test.sh unit -m slow` or `-m ""`.
 cmd_unit() { run_pytest tests/ --ignore=tests/e2e/ -m "not slow" -v "$@"; }
+cmd_unit_all() { run_pytest tests/ --ignore=tests/e2e/ -v "$@"; }
 cmd_e2e()  { run_pytest tests/e2e/ -v "$@"; }
 cmd_all()  { run_pytest tests/ -v "$@"; }
+cmd_reliability() {
+    require_stack_up
+    local report="$LOG_DIR/execution-reliability-gauntlet.json"
+    chmod 1777 "$LOG_DIR" 2>/dev/null || true
+    docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner \
+        python -m scripts.execution_reliability_gauntlet
+    if [ ! -s "$report" ]; then
+        echo "Reliability report missing or empty: $report" >&2
+        return 1
+    fi
+    echo "Reliability report: $report"
+}
 cmd_coverage() {
     local target="${1:-coverage.xml}"
     local basename_target
     basename_target="$(basename "$target")"
-    local source="/coverage/$(basename "$target")"
+    local source="/results/$basename_target"
 
     # E2E exercises API/worker/scheduler in sibling containers. Stop those
     # processes before materializing the report so coverage.py flushes their
     # parallel data files into the shared coverage volume.
-    docker compose -f "$COMPOSE_FILE" stop api worker scheduler >/dev/null 2>&1 || true
+    docker compose -f "$COMPOSE_FILE" stop api api-replica worker scheduler >/dev/null 2>&1 || true
 
-    docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner \
-        sh -lc "backup=/tmp/$(basename '$source').pre-combine
+    chmod 777 "$LOG_DIR" 2>/dev/null || true
+    docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
+        -v "$LOG_DIR:/results" api \
+        sh -lc "backup=/tmp/$basename_target.pre-combine
 if [ -f '$source' ]; then cp '$source' \"\$backup\"; fi
 coverage combine --append --keep /coverage >/dev/null 2>&1 || true
 case '$basename_target' in
   *.json) coverage json -i -o '$source' >/dev/null || { [ -f \"\$backup\" ] && cp \"\$backup\" '$source'; } ;;
   *.xml) coverage xml -i -o '$source' >/dev/null || { [ -f \"\$backup\" ] && cp \"\$backup\" '$source'; } ;;
 esac
-cat '$source'" > "$target"
+test -s '$source'"
+    cp "$LOG_DIR/$basename_target" "$target"
 }
 
 cmd_quality() {
@@ -352,17 +440,219 @@ cmd_client() {
     case "$sub" in
         unit) client_unit "$@" ;;
         e2e) client_e2e "$@" ;;
+        smoke) client_smoke "$@" ;;
+        nightly) client_nightly "$@" ;;
         docs) client_docs "$@" ;;
         *)
-            echo "Usage: ./test.sh client {unit|e2e|docs} [args]" >&2
+            echo "Usage: ./test.sh client {unit|e2e|smoke|nightly|docs} [args]" >&2
             exit 2
             ;;
     esac
 }
 
+cmd_mcp() {
+    local sub="${1:-}"
+    shift || true
+    case "$sub" in
+        conformance) mcp_conformance "$@" ;;
+        *)
+            echo "Usage: ./test.sh mcp conformance" >&2
+            exit 2
+            ;;
+    esac
+}
+
+mcp_conformance() {
+    require_stack_up
+
+    local results_dir="$LOG_DIR/mcp-conformance"
+    local blocking_results="$results_dir/blocking"
+    local advisory_results="$results_dir/advisory"
+    local auth_probe_file="$results_dir/auth-probe-headers.txt"
+    local resource_metadata_file="$results_dir/protected-resource-metadata.json"
+    rm -rf "$blocking_results" "$advisory_results"
+    rm -f "$results_dir/conformance-junit.xml"
+    mkdir -p "$blocking_results" "$advisory_results"
+
+    # Preserve direct evidence that the real endpoint remains protected. The
+    # official runner reaches the same endpoint through the isolated adapter;
+    # the adapter only supplies credentials because the pinned CLI has no
+    # bearer/header option.
+    docker compose -f "$COMPOSE_FILE" exec -T api curl \
+        --silent \
+        --show-error \
+        --output /dev/null \
+        --dump-header - \
+        --request POST \
+        --header "Accept: application/json, text/event-stream" \
+        --header "Content-Type: application/json" \
+        --header "MCP-Protocol-Version: 2025-11-25" \
+        --data-binary '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"bifrost-conformance-auth-probe","version":"1.0"}}}' \
+        http://localhost:8000/mcp \
+        | tr -d '\r' > "$auth_probe_file"
+    if ! grep -q '^HTTP/1.1 401 Unauthorized$' "$auth_probe_file" \
+        || ! grep -Eqi '^www-authenticate: Bearer .*resource_metadata=' "$auth_probe_file"; then
+        echo "ERROR: /mcp did not return the expected unauthenticated Bearer challenge:" >&2
+        sed 's/^/  /' "$auth_probe_file" >&2
+        exit 1
+    fi
+
+    docker compose -f "$COMPOSE_FILE" exec -T api curl \
+        --silent \
+        --show-error \
+        --fail \
+        http://localhost:8000/.well-known/oauth-protected-resource/mcp \
+        > "$resource_metadata_file"
+    if ! grep -q '"mcp:access"' "$resource_metadata_file"; then
+        echo "ERROR: MCP protected-resource metadata does not advertise mcp:access:" >&2
+        sed 's/^/  /' "$resource_metadata_file" >&2
+        exit 1
+    fi
+
+    # This image is deliberately separate from the API image: the official
+    # JavaScript runner must not alter Bifrost's Python MCP dependency graph.
+    docker compose -f "$COMPOSE_FILE" --profile test build mcp-conformance
+
+    # Force a new adapter process for every command so its two-hour test JWT is
+    # freshly minted. The service has no host port and forwards to the real API.
+    docker compose -f "$COMPOSE_FILE" --profile test rm -sf \
+        mcp-conformance-adapter
+    docker compose -f "$COMPOSE_FILE" --profile test up -d --no-deps \
+        mcp-conformance-adapter
+    wait_for_service "$COMPOSE_FILE" mcp-conformance-adapter \
+        curl -f http://localhost:8080/health
+
+    local runner_status=0
+    local scenario
+    local -a blocking_scenarios=(
+        tools-list
+        caching
+        http-header-validation
+    )
+    for scenario in "${blocking_scenarios[@]}"; do
+        echo "Running blocking MCP conformance scenario: $scenario"
+        if ! docker compose -f "$COMPOSE_FILE" --profile test run --rm --no-deps \
+            --user "$(id -u):$(id -g)" mcp-conformance \
+            server \
+            --url http://mcp-conformance-adapter:8080/mcp \
+            --scenario "$scenario" \
+            --spec-version 2026-07-28 \
+            --output-dir /results/blocking \
+            --verbose \
+            "$@" \
+            2>&1 | tee "$results_dir/blocking-$scenario.log"; then
+            runner_status=1
+        fi
+    done
+
+    local verification_status=0
+    if ! python3 api/tests/conformance/summarize_results.py \
+        --results-dir "$blocking_results" \
+        --scenario tools-list \
+        --scenario caching \
+        --scenario http-header-validation \
+        --junit "$results_dir/conformance-junit.xml"; then
+        verification_status=1
+    fi
+
+    # The broad stateless scenario contains two reference-fixture probes that
+    # require a diagnostic tool outside Bifrost's intentional four-tool
+    # gateway. Keep all other checks visible without weakening the blocking
+    # scenarios with expected-failure entries.
+    local advisory_status=0
+    echo "Running advisory MCP conformance scenario: server-stateless"
+    if ! docker compose -f "$COMPOSE_FILE" --profile test run --rm --no-deps \
+        --user "$(id -u):$(id -g)" mcp-conformance \
+        server \
+        --url http://mcp-conformance-adapter:8080/mcp \
+        --scenario server-stateless \
+        --spec-version 2026-07-28 \
+        --output-dir /results/advisory \
+        --verbose \
+        "$@" \
+        2>&1 | tee "$results_dir/advisory-server-stateless.log"; then
+        advisory_status=1
+    fi
+    printf '%s\n' "$advisory_status" > "$advisory_results/runner-exit-code.txt"
+
+    if [ "$runner_status" -ne 0 ] || [ "$verification_status" -ne 0 ]; then
+        echo "ERROR: blocking MCP conformance scenarios failed." >&2
+        return 1
+    fi
+}
+
 client_unit() {
     echo "Running vitest on host..."
     (cd client && npm test "$@")
+}
+
+client_ci_checks() {
+    echo "Building the production client and running Node 26 CI checks..."
+    docker compose -f "$COMPOSE_FILE" --profile client-check build client-check-runner
+    docker compose -f "$COMPOSE_FILE" --profile client-check run --rm --no-deps \
+        client-check-runner
+}
+
+repository_ci_checks() {
+    echo "Checking GitHub Action pins..."
+    python3 api/scripts/check_github_action_pins.py --verify-versions
+
+    echo "Checking generated Codex skill mirrors..."
+    scripts/sync-codex-skills.sh
+    if ! git diff --quiet -- plugins/bifrost/skills .codex/skills; then
+        echo "ERROR: Codex skill mirrors were stale and have been regenerated." >&2
+        echo "Commit the generated changes, then rerun ./test.sh pre-pr." >&2
+        return 1
+    fi
+}
+
+build_local_api_candidate() {
+    local head_sha version image_tag
+    head_sha="$(git rev-parse --short=12 HEAD)"
+    version="$(scripts/compute-dev-version.sh)"
+    image_tag="bifrost-local-api-candidate:${head_sha}"
+
+    echo "Building and exercising the production API candidate..."
+    docker build \
+        --file api/Dockerfile \
+        --build-arg "BIFROST_VERSION=$version" \
+        --tag "$image_tag" \
+        .
+    docker run --rm \
+        --env "EXPECTED_VERSION=$version" \
+        --env "BIFROST_SECRET_KEY=local-production-candidate-smoke-key" \
+        --entrypoint python \
+        "$image_tag" \
+        -c "import os; from shared.version import get_version; from src.main import app; assert app is not None; assert get_version() == os.environ['EXPECTED_VERSION']"
+}
+
+start_test_client() {
+    # Playwright runs against the production client image. Keep frontend
+    # startup out of stack_up so backend-only lanes never build or boot a
+    # client they do not use. Both product and documentation browser projects
+    # call this helper before starting the Playwright runner.
+    if [ "${BIFROST_SKIP_BUILD:-0}" != "1" ]; then
+        docker compose -f "$COMPOSE_FILE" build client
+    fi
+    docker compose -f "$COMPOSE_FILE" --profile client up -d --no-build --no-deps client
+    echo "Waiting for production client to be healthy..."
+    for i in {1..120}; do
+        local client_cid
+        client_cid=$(docker compose -f "$COMPOSE_FILE" ps -q client 2>/dev/null)
+        if [ -n "$client_cid" ]; then
+            local client_status
+            client_status=$(docker inspect -f '{{.State.Health.Status}}' "$client_cid" 2>/dev/null || echo unknown)
+            if [ "$client_status" = "healthy" ]; then
+                echo "Production client ready."
+                return
+            fi
+        fi
+        if [ "$i" -eq 120 ]; then
+            echo "ERROR: production client not healthy after 120s" >&2
+            exit 1
+        fi
+        sleep 1
+    done
 }
 
 client_e2e() {
@@ -375,7 +665,9 @@ client_e2e() {
         fi
     done
 
-    reset_state
+    prepare_test_state
+
+    start_test_client
 
     local env_args=()
     if [ "$screenshots_all" = true ]; then
@@ -383,16 +675,29 @@ client_e2e() {
     fi
 
     if [ ${#passthrough[@]} -gt 0 ]; then
-        docker compose -f "$COMPOSE_FILE" --profile client run --rm "${env_args[@]}" \
-            playwright-runner npx playwright test "${passthrough[@]}"
+        docker compose -f "$COMPOSE_FILE" --profile client run --rm --no-deps "${env_args[@]}" \
+            playwright-runner node e2e/support/run-playwright.mjs "${passthrough[@]}"
     else
         docker compose -f "$COMPOSE_FILE" --profile client run --rm "${env_args[@]}" \
-            playwright-runner npx playwright test --reporter=list,html \
+            playwright-runner node e2e/support/run-playwright.mjs \
                 --project=platform-admin \
                 --project=org-user \
                 --project=unauthenticated \
                 --project=chromium
     fi
+}
+
+client_smoke() {
+    client_e2e --grep @smoke "$@"
+}
+
+client_nightly() {
+    client_e2e \
+        --project=platform-admin \
+        --project=org-user \
+        --project=unauthenticated \
+        --project=chromium \
+        "$@"
 }
 
 client_docs() {
@@ -413,6 +718,7 @@ client_docs() {
     done
 
     reset_state
+    start_test_client
 
     export DOCS_REPO_PATH
     docker compose \
@@ -431,9 +737,65 @@ cmd_ci() {
     # down the partially-booted stack instead of leaking containers/volumes.
     trap 'export_logs "$COMPOSE_PROJECT_NAME" "$COMPOSE_FILE"; stack_down' EXIT
     stack_up
-    cmd_all
+    # Keep backend unit and e2e suites in separate pytest processes. E2E tests
+    # intentionally replace modules and create long-lived async resources;
+    # sharing one interpreter can leak those fixtures into later unit tests.
+    # This still includes the slow unit tests while matching CI's isolation.
+    cmd_unit_all
+    cmd_e2e
     client_unit
     client_e2e
+}
+
+cmd_pre_pr() {
+    local head_sha stack_was_up
+
+    if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+        echo "ERROR: ./test.sh pre-pr requires a clean worktree." >&2
+        echo "Commit the exact candidate first so the result maps to one SHA." >&2
+        git status --short >&2
+        return 1
+    fi
+
+    echo "Refreshing origin/main before the local PR gate..."
+    git fetch --quiet origin main
+    if ! git merge-base --is-ancestor origin/main HEAD; then
+        echo "ERROR: HEAD does not contain the latest origin/main." >&2
+        echo "Rebase or merge origin/main, then rerun ./test.sh pre-pr." >&2
+        return 1
+    fi
+
+    head_sha="$(git rev-parse HEAD)"
+    stack_was_up=0
+    if stack_is_up "$COMPOSE_PROJECT_NAME" "$COMPOSE_FILE"; then
+        stack_was_up=1
+    else
+        # Install the trap before boot so a partial startup is cleaned up too.
+        trap 'export_logs "$COMPOSE_PROJECT_NAME" "$COMPOSE_FILE"; stack_down' EXIT
+    fi
+
+    print_project
+    echo "Pre-PR candidate: $head_sha"
+    repository_ci_checks
+    client_ci_checks
+    stack_up
+    quality_api
+    cmd_unit
+    cmd_e2e
+    client_smoke
+    build_local_api_candidate
+
+    if [ "$(git rev-parse HEAD)" != "$head_sha" ] || \
+       [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+        echo "ERROR: the candidate changed while ./test.sh pre-pr was running." >&2
+        echo "Commit the final state and rerun the gate." >&2
+        return 1
+    fi
+
+    echo "Local PR gate passed for $head_sha"
+    if [ "$stack_was_up" = "1" ]; then
+        echo "The pre-existing test stack remains running."
+    fi
 }
 
 # =============================================================================
@@ -452,8 +814,11 @@ case "$1" in
     e2e-smoke) shift; cmd_e2e_smoke "$@" ;;
     e2e) shift; cmd_e2e "$@" ;;
     all) shift; cmd_all "$@" ;;
+    reliability) shift; cmd_reliability "$@" ;;
     quality) shift; cmd_quality "$@" ;;
     client) shift; cmd_client "$@" ;;
+    mcp) shift; cmd_mcp "$@" ;;
+    pre-pr) cmd_pre_pr ;;
     ci) cmd_ci ;;
     -h|--help|help)
         sed -n '2,35p' "$0"

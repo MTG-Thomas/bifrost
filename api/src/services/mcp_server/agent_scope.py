@@ -17,6 +17,12 @@ _AGENT_PATH_RE = re.compile(
     re.IGNORECASE,
 )
 
+_OWS_PARSED_MCP_HEADERS = {
+    b"mcp-method",
+    b"mcp-name",
+    b"mcp-protocol-version",
+}
+
 
 def get_scoped_agent_id() -> UUID | None:
     """Read the agent UUID written to the current FastMCP request scope."""
@@ -42,4 +48,29 @@ class AgentScopeMCPMiddleware:
                 scope["mcp_agent_id"] = match.group(2)
                 # Rewrite path to /mcp (preserving any trailing path like /mcp/sse)
                 scope["path"] = match.group(1) + (match.group(3) or "")
+        await self.app(scope, receive, send)
+
+
+class MCPHeaderOWSMiddleware:
+    """Parse transport OWS around MCP routing header field values.
+
+    ASGI exposes header bytes after HTTP framing but Uvicorn/h11 can retain the
+    optional SP/HTAB surrounding field values. RFC 9110 section 5.5 requires an
+    intermediary or recipient to exclude that whitespace before evaluating the
+    value. Normalize only MCP's standard routing headers before FastMCP applies
+    its case-sensitive body/header validation.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            scope = dict(scope)
+            scope["headers"] = [
+                (name, value.strip(b" \t"))
+                if name.lower() in _OWS_PARSED_MCP_HEADERS
+                else (name, value)
+                for name, value in scope.get("headers", [])
+            ]
         await self.app(scope, receive, send)

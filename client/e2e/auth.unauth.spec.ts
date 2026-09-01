@@ -51,7 +51,7 @@ test.describe("Login Flow", () => {
 		await expect(page.getByLabel("Email")).toBeVisible();
 		await expect(page.getByLabel("Password")).toBeVisible();
 		await expect(
-			page.getByRole("button", { name: "Sign In" }),
+			page.getByRole("button", { name: "Sign In", exact: true }),
 		).toBeVisible();
 	});
 
@@ -61,7 +61,9 @@ test.describe("Login Flow", () => {
 		// Enter invalid credentials
 		await page.getByLabel("Email").fill("invalid@example.com");
 		await page.getByLabel("Password").fill("wrongpassword");
-		await page.getByRole("button", { name: "Sign In" }).click();
+		await page
+			.getByRole("button", { name: "Sign In", exact: true })
+			.click();
 
 		// Should show error message (alert or toast)
 		await expect(
@@ -74,47 +76,49 @@ test.describe("Login Flow", () => {
 		await page.goto("/workflows");
 
 		// Should redirect to login
-		await page.waitForURL(/\/login/, { timeout: 5000 });
+		await expect(page).toHaveURL(/\/login/, { timeout: 5000 });
 		await expect(page.getByLabel("Email")).toBeVisible();
 	});
 
-	test("should complete full login flow with MFA", async ({ page }) => {
-		const credentials = loadCredentials();
-		const user = credentials.platform_admin;
+	test(
+		"should complete full login flow with MFA",
+		{ tag: "@smoke" },
+		async ({ page }) => {
+			const credentials = loadCredentials();
+			const user = credentials.platform_admin;
 
-		await page.goto("/login");
+			await page.goto("/login");
 
-		// Fill login form
-		await page.getByLabel("Email").fill(user.email);
-		await page.getByLabel("Password").fill(user.password);
-		await page.getByRole("button", { name: "Sign In" }).click();
+			// Fill login form
+			await page.getByLabel("Email").fill(user.email);
+			await page.getByLabel("Password").fill(user.password);
+			await page
+				.getByRole("button", { name: "Sign In", exact: true })
+				.click();
 
-		// Wait for MFA prompt
-		const mfaInput = page.getByLabel(/code|totp|verification/i);
+			// Wait for MFA prompt
+			const mfaInput = page.getByLabel(/code|totp|verification/i);
 
-		try {
-			await mfaInput.waitFor({ state: "visible", timeout: 5000 });
-
-			// Enter TOTP code
+			await expect(mfaInput).toBeVisible();
 			const totpCode = generateTOTP(user.totpSecret);
 			await mfaInput.fill(totpCode);
 			await page
 				.getByRole("button", { name: /verify|submit|continue/i })
 				.click();
-		} catch {
-			// MFA might not be required in test environment
-		}
 
-		// Should redirect to dashboard (wait for not being on login page)
-		await page.waitForURL((url) => !url.pathname.includes("/login"), {
-			timeout: 15000,
-		});
+			// Should redirect to dashboard (wait for not being on login page)
+			await page.waitForURL((url) => !url.pathname.includes("/login"), {
+				timeout: 15000,
+			});
 
-		// Verify we're logged in by checking for user menu (not Sign In button)
-		await expect(
-			page.getByRole("button", { name: /Platform Admin|user|account/i }),
-		).toBeVisible({ timeout: 5000 });
-	});
+			// Verify we're logged in by checking for user menu (not Sign In button)
+			await expect(
+				page.getByRole("button", {
+					name: /Platform Admin|user|account/i,
+				}),
+			).toBeVisible({ timeout: 5000 });
+		},
+	);
 
 	test("should preserve redirect path after login", async ({ page }) => {
 		const credentials = loadCredentials();
@@ -124,25 +128,23 @@ test.describe("Login Flow", () => {
 		await page.goto("/workflows");
 
 		// Should redirect to login
-		await page.waitForURL(/\/login/, { timeout: 5000 });
+		await expect(page).toHaveURL(/\/login/, { timeout: 5000 });
 
 		// Login
 		await page.getByLabel("Email").fill(user.email);
 		await page.getByLabel("Password").fill(user.password);
-		await page.getByRole("button", { name: "Sign In" }).click();
+		await page
+			.getByRole("button", { name: "Sign In", exact: true })
+			.click();
 
 		// Handle MFA if required
 		const mfaInput = page.getByLabel(/code|totp|verification/i);
-		try {
-			await mfaInput.waitFor({ state: "visible", timeout: 5000 });
-			const totpCode = generateTOTP(user.totpSecret);
-			await mfaInput.fill(totpCode);
-			await page
-				.getByRole("button", { name: /verify|submit|continue/i })
-				.click();
-		} catch {
-			// MFA might not be required
-		}
+		await expect(mfaInput).toBeVisible();
+		const totpCode = generateTOTP(user.totpSecret);
+		await mfaInput.fill(totpCode);
+		await page
+			.getByRole("button", { name: /verify|submit|continue/i })
+			.click();
 
 		// Should redirect back to workflows (the original destination)
 		// Note: This depends on the app preserving the redirect state
@@ -171,6 +173,6 @@ test.describe("Access Control", () => {
 		// app-wide, so testing every page just multiplies flakiness without
 		// adding signal.
 		await page.goto("/workflows");
-		await page.waitForURL(/\/login/, { timeout: 10000 });
+		await expect(page).toHaveURL(/\/login/, { timeout: 10000 });
 	});
 });

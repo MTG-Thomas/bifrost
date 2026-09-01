@@ -75,6 +75,46 @@ async def test_call_rest_parses_json_text_and_no_content_responses():
     )
 
 
+@pytest.mark.asyncio
+async def test_call_rest_forwards_operation_identity_to_mutating_rest_calls():
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"ok": True}
+
+    class Client:
+        def __init__(self):
+            self.calls = []
+
+        async def request(self, method, path, **kwargs):
+            self.calls.append((method, path, kwargs))
+            return Response()
+
+    client = Client()
+
+    @asynccontextmanager
+    async def fake_rest_client(_context):
+        yield client
+
+    with patch.object(_http_bridge, "rest_client", fake_rest_client):
+        await _http_bridge.call_rest(
+            _context(operation_id="stable-op-42"),
+            "POST",
+            "/api/things",
+            json_body={"name": "thing"},
+        )
+        await _http_bridge.call_rest(
+            _context(operation_id="stable-op-42"),
+            "GET",
+            "/api/things/1",
+        )
+
+    assert client.calls[0][2]["headers"] == {"Idempotency-Key": "stable-op-42"}
+    assert "headers" not in client.calls[1][2]
+
+
 def test_token_from_context_reuses_non_mcp_fastmcp_token():
     token = SimpleNamespace(token="live-token")
 

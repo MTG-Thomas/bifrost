@@ -3,12 +3,12 @@
  *
  * Visual spec mirrors `/tmp/agent-mockup/src/pages/FleetPage.tsx`: stat row with
  * deltas, paired grid/table toggle, per-agent cards with mini-stat trio +
- * sparkline + footer row. Per-agent stats are fetched via `useAgentStats(id)`
- * (N+1; acceptable v1, TODO for a denormalized list endpoint).
+ * sparkline + footer row. Per-agent stats are included by the list endpoint so
+ * the page renders the fleet in one bounded request instead of one call/card.
  */
 
 import { type MouseEvent, useMemo, useState } from "react";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 import {
 	AlertTriangle,
 	Bot,
@@ -29,6 +29,7 @@ import {
 import { toast } from "sonner";
 
 import { EntityLogo } from "@/components/EntityLogo";
+import { PageLoader } from "@/components/PageLoader";
 import { SolutionManagedBadge } from "@/components/solutions/SolutionManagedBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -41,7 +42,9 @@ import {
 	DataTableRow,
 } from "@/components/ui/data-table";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 
 import { QueueBanner } from "@/components/agents/QueueBanner";
 import { Sparkline } from "@/components/agents/Sparkline";
@@ -69,7 +72,7 @@ import {
 } from "@/components/agents/design-tokens";
 
 import { useAgents, type AgentSummary } from "@/hooks/useAgents";
-import { useAgentStats, useFleetStats } from "@/services/agents";
+import { useFleetStats } from "@/services/agents";
 import {
 	cn,
 	formatCost,
@@ -77,6 +80,7 @@ import {
 	formatNumber,
 	formatRelativeTime,
 } from "@/lib/utils";
+import { prefetchAgentDetail } from "@/lib/detail-route-loaders";
 
 type ViewMode = "grid" | "table";
 type Organization = components["schemas"]["OrganizationPublic"];
@@ -84,16 +88,16 @@ type Organization = components["schemas"]["OrganizationPublic"];
 export function FleetPage() {
 	const [view, setView] = useState<ViewMode>("grid");
 	const [query, setQuery] = useState("");
+	const [showInactive, setShowInactive] = useState(false);
 	const [filterOrgId, setFilterOrgId] = useState<string | null | undefined>(
 		undefined,
 	);
 	const { isPlatformAdmin } = useAuth();
 	const terminology = useTerminology();
 
-	// Fleet view shows paused agents too (they need to be visible to un-pause).
 	const { data: agents, isLoading: agentsLoading } = useAgents(
 		isPlatformAdmin ? filterOrgId : undefined,
-		{ includeInactive: true },
+		{ includeInactive: showInactive, includeStats: true },
 	);
 	const { data: fleetStats, isLoading: fleetLoading } = useFleetStats();
 
@@ -240,7 +244,8 @@ export function FleetPage() {
 							delta={
 								fleetStats.total_runs > 0
 									? `${formatCost(
-											Number(fleetStats.total_cost_7d) / 7,
+											Number(fleetStats.total_cost_7d) /
+												7,
 										)}/day avg`
 									: "—"
 							}
@@ -264,7 +269,9 @@ export function FleetPage() {
 									? "runs marked — click to open"
 									: "All runs reviewed"
 							}
-							deltaTone={fleetStats.needs_review > 0 ? "down" : "up"}
+							deltaTone={
+								fleetStats.needs_review > 0 ? "down" : "up"
+							}
 						/>
 					</div>
 				</>
@@ -294,6 +301,19 @@ export function FleetPage() {
 							/>
 						</div>
 					)}
+					<div className="flex items-center gap-2 sm:ml-auto">
+						<Switch
+							id="show-inactive"
+							checked={showInactive}
+							onCheckedChange={setShowInactive}
+						/>
+						<Label
+							htmlFor="show-inactive"
+							className="cursor-pointer whitespace-nowrap text-sm text-muted-foreground"
+						>
+							Show Inactive
+						</Label>
+					</div>
 				</div>
 				<div className="inline-flex items-center rounded-2xl bg-muted p-[3px]">
 					<button
@@ -330,23 +350,19 @@ export function FleetPage() {
 			{/* Content */}
 			<div className="flex-1 min-h-0 overflow-auto">
 				{agentsLoading ? (
-					view === "grid" ? (
-						<div className={cn("grid md:grid-cols-2 xl:grid-cols-3", GAP_CARD)}>
-							{[...Array(6)].map((_, i) => (
-								<Skeleton key={i} className="h-52 w-full" />
-							))}
-						</div>
-					) : (
-						<div className="space-y-2">
-							{[...Array(3)].map((_, i) => (
-								<Skeleton key={i} className="h-12 w-full" />
-							))}
-						</div>
-					)
+					<PageLoader
+						message={`Loading ${term(terminology, "agent", "pluralLower")}…`}
+						size="sm"
+					/>
 				) : filtered.length === 0 ? (
 					<EmptyState hasQuery={query.trim().length > 0} />
 				) : view === "grid" ? (
-					<div className={cn("grid md:grid-cols-2 xl:grid-cols-3", GAP_CARD)}>
+					<div
+						className={cn(
+							"grid md:grid-cols-2 xl:grid-cols-3",
+							GAP_CARD,
+						)}
+					>
 						{filtered.map((agent) => (
 							<AgentGridCard
 								key={agent.id}
@@ -445,18 +461,15 @@ function AgentGridCard({
 	showOrg: boolean;
 	orgName: string;
 }) {
-	// TODO(plan-2): replace per-card useAgentStats N+1 with a denormalized
-	// list endpoint that returns fleet member stats in one round-trip.
-	const { data: stats, isLoading } = useAgentStats(agent.id ?? undefined);
+	const stats = agent.stats;
 	const successRate = stats?.success_rate ?? 0;
 	const colorClass = successRateTone(successRate);
 	const hasRuns = (stats?.runs_7d ?? 0) > 0;
 
 	return (
-		<Link
-			to={`/agents/${agent.id}`}
-			className={cn(
-				"group flex flex-col overflow-hidden",
+			<article
+				className={cn(
+				"group relative flex cursor-pointer flex-col overflow-hidden",
 				CARD_SURFACE,
 				CARD_HOVER,
 			)}
@@ -467,21 +480,35 @@ function AgentGridCard({
 						<EntityLogo
 							entityType="agent"
 							entityId={agent.id}
-							logo={agent.logo ?? null}
-							fallback={<Bot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+							logo={agent.logo_url ?? null}
+							fallback={
+								<Bot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+							}
 							size={20}
 							className="h-5 w-5 rounded shrink-0 object-cover"
 						/>
-						<span className={cn("truncate", TYPE_CARD_TITLE)}>
+							<Link
+								to={`/agents/${agent.id}`}
+								onPointerEnter={() => prefetchAgentDetail(agent.id)}
+								onFocus={() => prefetchAgentDetail(agent.id)}
+							className={cn(
+								"truncate before:absolute before:inset-0 before:content-['']",
+								TYPE_CARD_TITLE,
+							)}
+						>
 							{agent.name}
-						</span>
+						</Link>
 						{!agent.is_active ? (
 							<Badge variant="secondary" className="text-[11px]">
 								Paused
 							</Badge>
 						) : null}
 						{agent.is_solution_managed ? (
-							<SolutionManagedBadge solutionId={agent.solution_id} />
+							<span className="relative z-10">
+								<SolutionManagedBadge
+									solutionId={agent.solution_id}
+								/>
+							</span>
 						) : null}
 					</div>
 					<div className="flex shrink-0 flex-wrap gap-1">
@@ -497,9 +524,7 @@ function AgentGridCard({
 				) : null}
 			</div>
 			<div className="flex-1 space-y-3 p-4">
-				{isLoading ? (
-					<Skeleton className="h-24 w-full" />
-				) : hasRuns ? (
+				{hasRuns ? (
 					<>
 						<div className="grid grid-cols-3 gap-3">
 							<MiniStat
@@ -536,7 +561,9 @@ function AgentGridCard({
 									? `Last run ${formatRelativeTime(stats!.last_run_at)}`
 									: "—"}
 							</span>
-							<span>avg {formatDuration(stats!.avg_duration_ms)}</span>
+							<span>
+								avg {formatDuration(stats!.avg_duration_ms)}
+							</span>
 						</div>
 					</>
 				) : (
@@ -554,7 +581,7 @@ function AgentGridCard({
 				)}
 				{agent.id ? <McpUrlBadge agentId={agent.id} /> : null}
 			</div>
-		</Link>
+		</article>
 	);
 }
 
@@ -573,7 +600,7 @@ function McpUrlBadge({ agentId }: { agentId: string }) {
 			title={url}
 			aria-label="Copy agent MCP URL"
 			data-testid="agent-mcp-copy"
-			className="inline-flex items-center gap-1 rounded-2xl border border-border bg-background px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+			className="relative z-10 inline-flex items-center gap-1 rounded-2xl border border-border bg-background px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
 		>
 			MCP
 			<Copy className="h-3 w-3" />
@@ -618,9 +645,7 @@ function MiniStat({
 			<div className="mb-0.5 text-[11px] text-muted-foreground">
 				{label}
 			</div>
-			<div className={cn(TYPE_MINI_STAT_VALUE, valueClass)}>
-				{value}
-			</div>
+			<div className={cn(TYPE_MINI_STAT_VALUE, valueClass)}>{value}</div>
 		</div>
 	);
 }
@@ -687,14 +712,22 @@ function AgentTableRow({
 	showOrg: boolean;
 	orgName: string;
 }) {
-	const { data: stats } = useAgentStats(agent.id ?? undefined);
+	const navigate = useNavigate();
+	const stats = agent.stats;
 	const hasRuns = (stats?.runs_7d ?? 0) > 0;
 
 	return (
 		<DataTableRow
-			className="cursor-pointer hover:bg-accent/40"
-			onClick={() => {
-				window.location.href = `/agents/${agent.id}`;
+			className="cursor-pointer hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+			tabIndex={0}
+			onPointerEnter={() => prefetchAgentDetail(agent.id)}
+			onFocus={() => prefetchAgentDetail(agent.id)}
+			onClick={() => navigate(`/agents/${agent.id}`)}
+			onKeyDown={(event) => {
+				if (event.key === "Enter" || event.key === " ") {
+					event.preventDefault();
+					navigate(`/agents/${agent.id}`);
+				}
 			}}
 		>
 			{showOrg && (
@@ -704,7 +737,16 @@ function AgentTableRow({
 			)}
 			<DataTableCell>
 				<div className="flex items-center gap-2">
-					<Bot className="h-3.5 w-3.5 text-muted-foreground" />
+					<EntityLogo
+						entityType="agent"
+						entityId={agent.id}
+						logo={agent.logo_url ?? null}
+						fallback={
+							<Bot className="h-3.5 w-3.5 text-muted-foreground" />
+						}
+						size={20}
+						className="h-5 w-5 shrink-0 rounded object-cover"
+					/>
 					<span className="font-medium">{agent.name}</span>
 					{agent.is_solution_managed ? (
 						<SolutionManagedBadge solutionId={agent.solution_id} />

@@ -8,12 +8,12 @@ Tests cover:
 - JSON serialization of tool results
 """
 
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 from pydantic import BaseModel
+from sqlalchemy.exc import MissingGreenlet
 
 from src.models.contracts.agents import ToolResult
 from src.repositories.knowledge import KnowledgeDocument
@@ -416,16 +416,33 @@ class TestWorkflowToolIdResolution:
 
     @pytest.mark.asyncio
     async def test_execute_tool_uses_id_lookup_for_normalized_names(self, executor, mock_session):
-        """_execute_tool looks up workflows by ID when name is in _tool_workflow_id_map."""
+        """Workflow identity is captured before session exit and executed as an agent."""
         from src.services.llm.base import ToolCallRequest
 
         workflow_id = uuid4()
         executor._tool_workflow_id_map["wf_execute_halopsa_sql"] = workflow_id
 
-        # Mock the DB query to return a workflow
-        mock_workflow = MagicMock()
-        mock_workflow.id = workflow_id
-        mock_workflow.name = "Execute HaloPSA SQL"
+        class ExpiringWorkflow:
+            expired = False
+
+            @property
+            def id(self):
+                if self.expired:
+                    raise MissingGreenlet("workflow.id accessed after session exit")
+                return workflow_id
+
+            @property
+            def name(self):
+                if self.expired:
+                    raise MissingGreenlet("workflow.name accessed after session exit")
+                return "Execute HaloPSA SQL"
+
+        mock_workflow = ExpiringWorkflow()
+
+        async def expire_workflow_on_commit():
+            mock_workflow.expired = True
+
+        mock_session.commit.side_effect = expire_workflow_on_commit
 
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = mock_workflow
@@ -455,6 +472,12 @@ class TestWorkflowToolIdResolution:
             await executor._execute_tool(
                 tool_call, agent=mock_agent, conversation=mock_conversation
             )
+
+        execution_kwargs = mock_exec.await_args.kwargs
+        assert mock_workflow.expired is True
+        assert execution_kwargs["workflow_id"] == str(workflow_id)
+        assert execution_kwargs["workflow_name"] == "Execute HaloPSA SQL"
+        assert execution_kwargs["is_agent"] is True
 
         # Verify the DB query used Workflow.id, not Workflow.name
         call_args = mock_session.execute.call_args
@@ -806,6 +829,8 @@ class TestChatDelegation:
             tool_call=tool_call,
             conversation_id=conversation.id,
             caller=caller,
+            _shared_usage=None,
+            _shared_budget=None,
         )
 
     def test_parent_history_prefers_error_over_partial_result(self):
@@ -820,6 +845,18 @@ class TestChatDelegation:
         assert _serialize_tool_result_for_history(tool_result) == (
             "Specialist failed after producing a partial answer"
         )
+
+    def test_parent_history_bounds_large_tool_result(self):
+        tool_result = ToolResult(
+            tool_call_id="tc1",
+            tool_name="large_result",
+            result="A" * 40_000,
+        )
+
+        serialized = _serialize_tool_result_for_history(tool_result)
+
+        assert len(serialized) < 40_000
+        assert "[tool result truncated: 16000 of 40000 characters omitted" in serialized
 
     @pytest.mark.asyncio
     async def test_delegation_without_conversation_still_uses_shared_runner(
@@ -869,6 +906,8 @@ class TestChatDelegation:
             tool_call=tool_call,
             conversation_id=None,
             caller=None,
+            _shared_usage=None,
+            _shared_budget=None,
         )
         assert result.error is None
 
@@ -1113,18 +1152,16 @@ class TestDefaultSystemPrompt:
     @pytest.mark.asyncio
     async def test_returns_configured_default_system_prompt(self, executor):
         """Configured LLM prompt is returned when available."""
-        config = SimpleNamespace(default_system_prompt="Use the repo playbook.")
-
-        class FakeConfigService:
+        class FakeBehaviorService:
             def __init__(self, _session):
                 pass
 
-            async def get_config(self):
-                return config
+            async def get_default_system_prompt(self):
+                return "Use the repo playbook."
 
         with patch(
-            "src.services.llm_config_service.LLMConfigService",
-            FakeConfigService,
+            "src.services.ai_behavior_service.AIBehaviorService",
+            FakeBehaviorService,
         ):
             result = await executor._get_default_system_prompt()
 
@@ -1133,18 +1170,16 @@ class TestDefaultSystemPrompt:
     @pytest.mark.asyncio
     async def test_falls_back_when_config_has_no_default_prompt(self, executor):
         """Empty config prompts use the built-in fallback."""
-        config = SimpleNamespace(default_system_prompt="")
-
-        class FakeConfigService:
+        class FakeBehaviorService:
             def __init__(self, _session):
                 pass
 
-            async def get_config(self):
-                return config
+            async def get_default_system_prompt(self):
+                return None
 
         with patch(
-            "src.services.llm_config_service.LLMConfigService",
-            FakeConfigService,
+            "src.services.ai_behavior_service.AIBehaviorService",
+            FakeBehaviorService,
         ):
             result = await executor._get_default_system_prompt()
 
@@ -1153,16 +1188,16 @@ class TestDefaultSystemPrompt:
     @pytest.mark.asyncio
     async def test_falls_back_when_config_lookup_fails(self, executor):
         """Config lookup errors do not break chat startup."""
-        class FakeConfigService:
+        class FakeBehaviorService:
             def __init__(self, _session):
                 pass
 
-            async def get_config(self):
+            async def get_default_system_prompt(self):
                 raise RuntimeError("config unavailable")
 
         with patch(
-            "src.services.llm_config_service.LLMConfigService",
-            FakeConfigService,
+            "src.services.ai_behavior_service.AIBehaviorService",
+            FakeBehaviorService,
         ):
             result = await executor._get_default_system_prompt()
 

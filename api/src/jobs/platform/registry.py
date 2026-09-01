@@ -1,14 +1,83 @@
 """Explicit registry for scheduler-owned platform-job handlers."""
 
-from src.jobs.platform.application_publish import (
-    APPLICATION_PUBLISH_DEFINITION,
+from src.jobs.execution_policy import (
+    ExecutionOperationsPolicy,
+    all_execution_policies,
 )
+from src.jobs.platform.application_publish import APPLICATION_PUBLISH_DEFINITION
 from src.jobs.platform.base import PlatformJobDefinition
+from src.jobs.platform.embedding_reindex import EMBEDDING_REINDEX_DEFINITION
+from src.jobs.platform.git_operation import GIT_OPERATION_DEFINITION
+from src.jobs.platform.reimport import WORKSPACE_REIMPORT_DEFINITION
+from src.jobs.platform.solution_deploy import SOLUTION_DEPLOY_DEFINITION
+from src.jobs.platform.solution_export import SOLUTION_EXPORT_DEFINITION
+from src.jobs.platform.summary_backfill import SUMMARY_BACKFILL_DEFINITION
+from src.jobs.platform.system_maintenance import (
+    ARTIFACT_RETENTION_CLEANUP_DEFINITION,
+    FILE_INDEX_RECONCILIATION_DEFINITION,
+    OAUTH_REFRESH_DEFINITION,
+    SOLUTION_UPDATE_CHECK_DEFINITION,
+    WEBHOOK_RENEWAL_DEFINITION,
+)
+from src.jobs.platform.video_generation import (
+    SDK_VIDEO_GENERATION_DEFINITION,
+    VIDEO_GENERATION_DEFINITION,
+)
+from src.jobs.platform.workspace_promotion_preview import (
+    WORKSPACE_PROMOTION_PREVIEW_DEFINITION,
+)
+from src.jobs.platform.workspace_release_lock import (
+    WORKSPACE_RELEASE_LOCK_DEFINITION,
+)
+from src.jobs.platform.workspace_release_prepare import (
+    WORKSPACE_RELEASE_PREPARE_DEFINITION,
+)
 
 _DEFINITIONS = {
     APPLICATION_PUBLISH_DEFINITION.job_type: APPLICATION_PUBLISH_DEFINITION,
+    OAUTH_REFRESH_DEFINITION.job_type: OAUTH_REFRESH_DEFINITION,
+    WEBHOOK_RENEWAL_DEFINITION.job_type: WEBHOOK_RENEWAL_DEFINITION,
+    SOLUTION_UPDATE_CHECK_DEFINITION.job_type: SOLUTION_UPDATE_CHECK_DEFINITION,
+    FILE_INDEX_RECONCILIATION_DEFINITION.job_type: FILE_INDEX_RECONCILIATION_DEFINITION,
+    ARTIFACT_RETENTION_CLEANUP_DEFINITION.job_type: ARTIFACT_RETENTION_CLEANUP_DEFINITION,
+    SOLUTION_EXPORT_DEFINITION.job_type: SOLUTION_EXPORT_DEFINITION,
+    SOLUTION_DEPLOY_DEFINITION.job_type: SOLUTION_DEPLOY_DEFINITION,
+    EMBEDDING_REINDEX_DEFINITION.job_type: EMBEDDING_REINDEX_DEFINITION,
+    WORKSPACE_REIMPORT_DEFINITION.job_type: WORKSPACE_REIMPORT_DEFINITION,
+    GIT_OPERATION_DEFINITION.job_type: GIT_OPERATION_DEFINITION,
+    SUMMARY_BACKFILL_DEFINITION.job_type: SUMMARY_BACKFILL_DEFINITION,
+    WORKSPACE_RELEASE_PREPARE_DEFINITION.job_type: (
+        WORKSPACE_RELEASE_PREPARE_DEFINITION
+    ),
+    WORKSPACE_PROMOTION_PREVIEW_DEFINITION.job_type: (
+        WORKSPACE_PROMOTION_PREVIEW_DEFINITION
+    ),
+    WORKSPACE_RELEASE_LOCK_DEFINITION.job_type: WORKSPACE_RELEASE_LOCK_DEFINITION,
+    VIDEO_GENERATION_DEFINITION.job_type: VIDEO_GENERATION_DEFINITION,
+    SDK_VIDEO_GENERATION_DEFINITION.job_type: SDK_VIDEO_GENERATION_DEFINITION,
 }
 
 
 def get_platform_job_definition(job_type: str) -> PlatformJobDefinition | None:
     return _DEFINITIONS.get(job_type)
+
+
+def list_platform_job_definitions() -> tuple[PlatformJobDefinition, ...]:
+    """Return the immutable registry view used by diagnostics and validation."""
+
+    return tuple(_DEFINITIONS.values())
+
+
+def get_execution_operations_policy(
+    identifier: str,
+) -> ExecutionOperationsPolicy | None:
+    """Resolve broker and PlatformJob semantics through one registry."""
+
+    return all_execution_policies(list_platform_job_definitions()).get(identifier)
+
+
+def list_execution_operations_policies() -> tuple[ExecutionOperationsPolicy, ...]:
+    """Return every registered policy in stable identifier order."""
+
+    policies = all_execution_policies(list_platform_job_definitions())
+    return tuple(policies[key] for key in sorted(policies))

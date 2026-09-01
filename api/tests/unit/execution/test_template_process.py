@@ -81,10 +81,13 @@ class TestTemplateProcessLifecycle:
                 "src.services.execution.virtual_import.install_virtual_import_hook",
                 hook,
             ):
-                _load_execution_infrastructure(install_requirements_on_startup=False)
+                deferred_hook = _load_execution_infrastructure(
+                    install_requirements_on_startup=False
+                )
 
         install.assert_not_called()
-        hook.assert_called_once()
+        hook.assert_not_called()
+        assert deferred_hook is hook
 
     def test_start_and_ready(self):
         """Template process should start and signal ready."""
@@ -226,18 +229,20 @@ class TestTemplateProcessFork:
         try:
             child_pid, work_queue, result_queue = template.fork()
 
-            # Send a simple test execution ID
-            work_queue.put("test-exec-id")
+            # A malformed context is sufficient to verify that the complete
+            # work item crosses the private pipe and a structured failure comes
+            # back. Include the one-shot token every queued production item
+            # carries so this test cannot activate the legacy direct-engine
+            # credential-persistence path in the shared test filesystem.
+            work_queue.put((
+                "test-exec-id",
+                {"engine_token": "one-shot-test-token"},
+            ))
 
-            # Child should process and return result (or we just verify
-            # the queue is functional by checking the child is alive)
-            # Full execution tests are in E2E — here we verify the plumbing
-            time.sleep(0.5)
-            os.kill(child_pid, 0)  # Still alive, waiting for work or processing
-
-            # Clean up (grandchild of test runner — cannot waitpid)
-            os.kill(child_pid, signal.SIGTERM)
-            _wait_for_pid_to_die(child_pid)
+            result = result_queue.get(timeout=5.0)
+            assert result["execution_id"] == "test-exec-id"
+            assert result["success"] is False
+            _wait_for_pid_to_disappear(child_pid)
         finally:
             template.shutdown()
 

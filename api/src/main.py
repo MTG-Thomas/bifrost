@@ -21,7 +21,7 @@ from src.core.telemetry import configure_opentelemetry
 from src.models.contracts.common import ErrorResponse
 from src.core.csrf import CSRFMiddleware
 from src.core.embed_middleware import EmbedScopeMiddleware
-from src.core.database import close_db, init_db
+from src.core.database import close_db, get_session_factory, init_db
 from src.core.pubsub import manager as pubsub_manager
 from src.routers.health import close_health_check_clients
 from src.routers import (
@@ -42,6 +42,7 @@ from src.routers import (
     branding_router,
     files_router,
     workspace_repo_changesets_router,
+    workspace_promotions_router,
     schedules_router,
     workflow_keys_router,
     audit_router,
@@ -50,17 +51,23 @@ from src.routers import (
     github_router,
     jobs_router,
     platform_jobs_router,
+    scheduler_diagnostics_router,
     oauth_connections_router,
     endpoints_router,
     cli_router,
     cli_install_router,
     notifications_router,
     profile_router,
+    memory_router,
+    memory_admin_router,
+    required_instructions_admin_router,
+    required_instructions_router,
     agent_runs_router,
     agent_tuning_router,
     agents_router,
     chat_router,
     llm_config_router,
+    ai_models_router,
     integrations_router,
     decorator_properties_router,
     maintenance_router,
@@ -149,22 +156,6 @@ async def app_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if settings.default_user_email and settings.default_user_password:
         await create_default_user()
 
-    from src.core.database import get_session_factory
-    from src.routers.solutions import reconcile_orphaned_deploy_jobs
-
-    try:
-        session_factory = get_session_factory()
-        async with session_factory() as db:
-            count = await reconcile_orphaned_deploy_jobs(db)
-            if count:
-                await db.commit()
-                logger.warning(
-                    "Marked %d orphaned solution deploy job(s) as failed after API startup",
-                    count,
-                )
-    except Exception as e:
-        logger.warning(f"Solution deploy job reconciliation failed: {e}")
-
     # Seed built-in policy rules (idempotent; must exist before any file prefix
     # with {"$ref": "admin_bypass"} is created).
     try:
@@ -178,32 +169,23 @@ async def app_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.warning(f"Built-in policy rule seeding failed: {e}")
 
-    # Reconcile file_index with S3 _repo/ in background
-    from src.services.file_index_reconciler import reconcile_file_index
-
-    async def _run_reconciler():
-        try:
-            session_factory = get_session_factory()
-            async with session_factory() as db:
-                stats = await reconcile_file_index(db)
-                await db.commit()
-                logger.info(f"File index reconciliation complete: {stats}")
-        except Exception as e:
-            logger.warning(f"File index reconciliation failed: {e}")
-
-    asyncio.create_task(_run_reconciler())
-
     logger.info(f"Bifrost API started in {settings.environment} mode")
 
-    yield
+    try:
+        yield
+    finally:
+        # Shutdown
+        logger.info("Shutting down Bifrost API...")
 
-    # Shutdown
-    logger.info("Shutting down Bifrost API...")
+        from src.services.agent_runtime.retry_transport import (
+            close_ai_retry_http_client,
+        )
 
-    await pubsub_manager.close()
-    await close_health_check_clients()
-    await close_db()
-    logger.info("Bifrost API shutdown complete")
+        await close_ai_retry_http_client()
+        await pubsub_manager.close()
+        await close_health_check_clients()
+        await close_db()
+        logger.info("Bifrost API shutdown complete")
 
 
 # MCP ASGI app cached at module level for lifespan access
@@ -284,6 +266,21 @@ async def create_default_user() -> None:
 
         existing = await user_repo.get_by_email(settings.default_user_email)
         if existing:
+            if settings.debug:
+                # In debug stacks the configured seed credential is the source
+                # of truth. This lets debug.sh replace the shared development
+                # password before a NetBird public proxy is enabled, including
+                # for a stack created before public exposure was introduced.
+                existing.hashed_password = get_password_hash(
+                    settings.default_user_password
+                )
+                existing.mfa_enabled = False
+                await db.commit()
+                logger.info(
+                    "Synchronized debug user credentials: %s",
+                    settings.default_user_email,
+                )
+                return
             logger.info(f"Default user already exists: {settings.default_user_email}")
             return
 
@@ -482,6 +479,11 @@ def create_app() -> FastAPI:
     # Restrict embed tokens to app-rendering endpoints only
     app.add_middleware(EmbedScopeMiddleware)
 
+    # Return allocator arenas after large table JSON requests have fully sent.
+    # This prevents request bursts from becoming permanent pod RSS high-water.
+    from src.core.allocation_trim import AllocationTrimMiddleware
+    app.add_middleware(AllocationTrimMiddleware)
+
     # Set request-scoped ContextVars for user attribution and session tracking
     from src.core.request_context import RequestUser, set_request_user, set_request_session_id
     from src.core.rate_limit import get_client_ip
@@ -574,6 +576,7 @@ def create_app() -> FastAPI:
     app.include_router(branding_router)
     app.include_router(files_router)
     app.include_router(workspace_repo_changesets_router)
+    app.include_router(workspace_promotions_router)
     app.include_router(schedules_router)
     app.include_router(workflow_keys_router)
     app.include_router(audit_router)
@@ -582,17 +585,23 @@ def create_app() -> FastAPI:
     app.include_router(github_router)
     app.include_router(jobs_router)
     app.include_router(platform_jobs_router)
+    app.include_router(scheduler_diagnostics_router)
     app.include_router(oauth_connections_router)
     app.include_router(endpoints_router)
     app.include_router(cli_router)
     app.include_router(cli_install_router)
     app.include_router(notifications_router)
     app.include_router(profile_router)
+    app.include_router(memory_router)
+    app.include_router(memory_admin_router)
+    app.include_router(required_instructions_router)
+    app.include_router(required_instructions_admin_router)
     app.include_router(agents_router)
     app.include_router(agent_runs_router)
     app.include_router(agent_tuning_router)
     app.include_router(chat_router)
     app.include_router(llm_config_router)
+    app.include_router(ai_models_router)
     app.include_router(integrations_router)
     app.include_router(decorator_properties_router)
     app.include_router(maintenance_router)

@@ -29,12 +29,15 @@ from src.core.database import get_db_context
 from src.core.log_safety import log_safe
 from src.core.pubsub import manager
 from src.models import Conversation, Execution
+from src.models.contracts.agents import ChatRequest
 from src.models.contracts.policies import Expr, TablePolicies
 from src.models.contracts.policies import FileAction
 from src.models.orm import Agent
 from src.models.orm.applications import Application
 from src.models.orm.tables import Table as TableOrm
 from src.services.agent_run_access import load_agent_run_for_user
+from src.services.audit import emit_file_policy_deny, emit_table_policy_deny
+from src.services.audit_context import ActorContext
 
 logger = logging.getLogger(__name__)
 
@@ -454,6 +457,11 @@ async def _authorize_table_subscribe(
         return None
 
     if not is_subscribe_authorized(policies, policy_user):
+        await _emit_table_subscribe_denial(
+            websocket=websocket,
+            user=user,
+            table_id=UUID(canonical_id),
+        )
         await websocket.send_json({
             "type": "error",
             "channel": spec.name,
@@ -583,6 +591,13 @@ async def _authorize_file_subscribe(
         requested_scope=spec.scope,
     )
     if scope_result is None:
+        await _emit_file_subscribe_denial(
+            websocket=websocket,
+            user=user,
+            location=location,
+            path=prefix,
+            scope=spec.scope,
+        )
         await websocket.send_json({
             "type": "error",
             "channel": spec.name,
@@ -597,6 +612,13 @@ async def _authorize_file_subscribe(
         location=location,
         path=prefix,
     ):
+        await _emit_file_subscribe_denial(
+            websocket=websocket,
+            user=user,
+            location=location,
+            path=prefix,
+            scope=scope,
+        )
         await websocket.send_json({
             "type": "error",
             "channel": spec.name,
@@ -620,6 +642,68 @@ async def _authorize_file_subscribe(
     if not hasattr(websocket, "_file_dispatcher"):
         websocket._file_dispatcher = _make_file_dispatcher(websocket, user)  # type: ignore[attr-defined]
     return canonical_channel
+
+
+async def _emit_file_subscribe_denial(
+    *,
+    websocket: WebSocket,
+    user: UserPrincipal,
+    location: str,
+    path: str,
+    scope: str | None,
+) -> None:
+    """Persist a WebSocket denial through the same Event Log path as REST."""
+    actor = _websocket_actor(websocket, user)
+    async with get_db_context() as db:
+        await emit_file_policy_deny(
+            db,
+            policy_action="subscribe",
+            location=location,
+            path=path,
+            scope=scope,
+            solution_id=None,
+            actor_override=actor,
+        )
+
+
+def _websocket_actor(websocket: WebSocket, user: UserPrincipal) -> ActorContext:
+    """Build the HTTP-equivalent audit actor for an upgraded connection."""
+    forwarded = websocket.headers.get("x-forwarded-for")
+    ip_address = (
+        forwarded.split(",", 1)[0].strip()
+        if forwarded
+        else websocket.client.host if websocket.client else "unknown"
+    )
+    return ActorContext(
+        user_id=user.user_id,
+        organization_id=user.organization_id,
+        email=user.email,
+        name=user.name,
+        ip_address=ip_address,
+        user_agent=websocket.headers.get("user-agent"),
+    )
+
+
+async def _emit_table_subscribe_denial(
+    *,
+    websocket: WebSocket,
+    user: UserPrincipal,
+    table_id: UUID,
+) -> None:
+    """Persist a table subscribe denial through the canonical Event Log path."""
+    async with get_db_context() as db:
+        table_name = await db.scalar(
+            select(TableOrm.name).where(TableOrm.id == table_id)
+        )
+        if table_name is None:
+            return
+        await emit_table_policy_deny(
+            db,
+            policy_action="subscribe",
+            table_id=table_id,
+            table_name=table_name,
+            actor_override=_websocket_actor(websocket, user),
+        )
 
 
 async def _handle_file_message(
@@ -737,13 +821,25 @@ async def can_access_execution(user: UserPrincipal, execution_id: str) -> bool:
     if user.is_superuser:
         return True
 
-    # Embed users: check Redis key linking their session (jti) to the execution
-    if user.embed and user.jti:
+    # App embeds and trusted HMAC form sessions retain exact-execution scoping
+    # through their session JTI. Anonymous public form sessions never receive
+    # execution channels or status data.
+    if (
+        user.embed
+        and user.jti
+        and (
+            user.embed_kind == "app"
+            or (user.embed_kind == "form" and user.grant == "hmac")
+        )
+    ):
         from src.core.cache.keys import embed_execution_key
         from src.core.cache.redis_client import get_redis
 
         async with get_redis() as r:
             return bool(await r.exists(embed_execution_key(user.jti, execution_id)))
+
+    if user.embed and user.embed_kind == "form":
+        return False
 
     try:
         execution_uuid = UUID(execution_id)
@@ -884,6 +980,11 @@ async def websocket_connect(
         await websocket.close(code=4001, reason="Unauthorized")
         return
 
+    if user.embed and user.embed_kind == "form":
+        await websocket.accept()
+        await websocket.close(code=4003, reason="Form sessions cannot use WebSockets")
+        return
+
     # Filter channels - users can only subscribe to their own user channel
     # and execution channels (we'll validate execution access separately)
     allowed_channels = []
@@ -1005,7 +1106,9 @@ async def websocket_connect(
 
     # Track active chat tasks per conversation so they can be cancelled
     active_chat_tasks: dict[str, asyncio.Task] = {}
-    pending_messages: dict[str, tuple[str, str | None]] = {}  # conversation_id -> (message, local_id)
+    pending_messages: dict[
+        str, tuple[str, str | None, list[UUID], UUID | None]
+    ] = {}
 
     # Per-connection state for policy-driven table subscriptions.
     # Populated by `_authorize_table_subscribe`; consulted by the dispatcher.
@@ -1305,11 +1408,23 @@ async def websocket_connect(
                 conversation_id = data.get("conversation_id")
                 message_text = data.get("message", "")
                 local_id = data.get("local_id")  # Client-generated ID for dedup
-
-                if not conversation_id or not message_text:
+                try:
+                    request = ChatRequest.model_validate({
+                        "message": message_text,
+                        "attachment_ids": data.get("attachment_ids", []),
+                        "model_profile_id": data.get("model_profile_id"),
+                    })
+                except ValueError as exc:
                     await websocket.send_json({
                         "type": "error",
-                        "error": "Missing conversation_id or message"
+                        "error": str(exc),
+                    })
+                    continue
+
+                if not conversation_id:
+                    await websocket.send_json({
+                        "type": "error",
+                        "error": "Missing conversation_id"
                     })
                     continue
 
@@ -1327,11 +1442,22 @@ async def websocket_connect(
                 # interleaved messages that break the Anthropic API contract.
                 existing_task = active_chat_tasks.get(conversation_id)
                 if existing_task and not existing_task.done():
-                    pending_messages[conversation_id] = (message_text, local_id)
+                    pending_messages[conversation_id] = (
+                        request.message,
+                        local_id,
+                        request.attachment_ids,
+                        request.model_profile_id,
+                    )
                     continue
 
                 # No running task — process immediately
-                def _start_chat_task(cid: str, msg: str, lid: str | None) -> asyncio.Task:
+                def _start_chat_task(
+                    cid: str,
+                    msg: str,
+                    lid: str | None,
+                    attachment_ids: list[UUID],
+                    model_profile_id: UUID | None,
+                ) -> asyncio.Task:
                     t = asyncio.create_task(
                         _process_chat_message(
                             websocket=websocket,
@@ -1339,6 +1465,8 @@ async def websocket_connect(
                             conversation_id=cid,
                             message=msg,
                             local_id=lid,
+                            attachment_ids=attachment_ids,
+                            model_profile_id=model_profile_id,
                         )
                     )
                     active_chat_tasks[cid] = t
@@ -1347,13 +1475,21 @@ async def websocket_connect(
                         active_chat_tasks.pop(_cid, None)
                         queued = pending_messages.pop(_cid, None)
                         if queued:
-                            q_msg, q_lid = queued
-                            _start_chat_task(_cid, q_msg, q_lid)
+                            q_msg, q_lid, q_attachments, q_profile_id = queued
+                            _start_chat_task(
+                                _cid, q_msg, q_lid, q_attachments, q_profile_id
+                            )
 
                     t.add_done_callback(_on_task_done)
                     return t
 
-                _start_chat_task(conversation_id, message_text, local_id)
+                _start_chat_task(
+                    conversation_id,
+                    request.message,
+                    local_id,
+                    request.attachment_ids,
+                    request.model_profile_id,
+                )
 
             elif data.get("type") == "chat_stop":
                 conversation_id = data.get("conversation_id")
@@ -1397,6 +1533,9 @@ async def websocket_execution(
 
     if not user:
         await websocket.close(code=4001, reason="Unauthorized")
+        return
+    if user.embed and user.embed_kind == "form":
+        await websocket.close(code=4003, reason="Form sessions cannot use WebSockets")
         return
 
     # Validate user has access to this execution
@@ -1477,6 +1616,8 @@ async def _process_chat_message(
     conversation_id: str,
     message: str,
     local_id: str | None = None,
+    attachment_ids: list[UUID] | None = None,
+    model_profile_id: UUID | None = None,
 ) -> None:
     """
     Process a chat message and stream the response.
@@ -1559,6 +1700,8 @@ async def _process_chat_message(
                 stream=True,
                 local_id=local_id,
                 user=user,
+                attachment_ids=attachment_ids or [],
+                model_profile_id=model_profile_id,
             ):
                 # Track partial content from deltas
                 if chunk.type == "delta" and chunk.content:
@@ -1571,7 +1714,10 @@ async def _process_chat_message(
                     assistant_message_id = None
 
                 # Send chunk to WebSocket with conversation_id for client routing
-                chunk_data = chunk.model_dump(exclude_none=True)
+                # WebSocket.send_json ultimately uses the stdlib JSON encoder.
+                # Pydantic's JSON mode converts nested UUIDs and datetimes (for
+                # example ArtifactRef.created_at) before they reach Starlette.
+                chunk_data = chunk.model_dump(mode="json", exclude_none=True)
                 chunk_data["conversation_id"] = conversation_id
                 await websocket.send_json(chunk_data)
         except asyncio.CancelledError:
@@ -1596,7 +1742,7 @@ async def _process_chat_message(
                 })
             except Exception:
                 pass  # WebSocket may already be closed
-            return
+            raise
 
         # Generate title if this is a new conversation (no title yet)
         if needs_title:

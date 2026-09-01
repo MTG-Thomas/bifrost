@@ -94,9 +94,22 @@ test.describe("Scheduled executions", () => {
 		const registerResp = await api.post("/api/workflows/register", {
 			data: { path: WORKFLOW_PATH, function_name: WORKFLOW_FUNCTION },
 		});
-		expect(registerResp.ok(), await registerResp.text()).toBe(true);
-		const workflow = await registerResp.json();
-		workflowId = workflow.id;
+		if (registerResp.ok()) {
+			const workflow = (await registerResp.json()) as { id: string };
+			workflowId = workflow.id;
+		} else {
+			expect(registerResp.status(), await registerResp.text()).toBe(409);
+			const workflowsResp = await api.get("/api/workflows");
+			expect(workflowsResp.ok(), await workflowsResp.text()).toBe(true);
+			const workflow = (
+				(await workflowsResp.json()) as Array<{
+					id: string;
+					name: string;
+				}>
+			).find((item) => item.name === WORKFLOW_FUNCTION);
+			expect(workflow).toBeTruthy();
+			workflowId = workflow!.id;
+		}
 		expect(workflowId).toBeTruthy();
 	});
 

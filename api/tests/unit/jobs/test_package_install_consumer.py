@@ -5,6 +5,7 @@ Tests the consumer that pip installs packages on the worker,
 recycles processes, and updates the package list in Redis.
 """
 
+import asyncio
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -293,6 +294,52 @@ class TestPipHelpers:
 
         with patch.object(package_install.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)):
             assert await consumer._pip_install("demo", "1.2.3") == "resolver failed"
+
+    @pytest.mark.asyncio
+    async def test_pip_install_reaps_process_on_timeout(
+        self, consumer: PackageInstallConsumer
+    ):
+        proc = MagicMock()
+        proc.returncode = None
+        proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+        proc.wait = AsyncMock(return_value=-15)
+
+        with patch.object(
+            package_install.asyncio,
+            "create_subprocess_exec",
+            AsyncMock(return_value=proc),
+        ):
+            assert await consumer._pip_install("demo", None) == "pip install demo timed out"
+
+        proc.terminate.assert_called_once_with()
+        proc.wait.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_temp_write_removes_completed_file(self, monkeypatch):
+        started = asyncio.Event()
+        release = asyncio.Event()
+        removed: list[str] = []
+
+        async def fake_to_thread(func, *args):
+            if func is package_install._write_temp_requirements:
+                started.set()
+                await release.wait()
+                return "/tmp/cancelled-requirements.txt"
+            removed.append(args[0])
+
+        monkeypatch.setattr(package_install.asyncio, "to_thread", fake_to_thread)
+
+        task = asyncio.create_task(
+            package_install._write_temp_requirements_cancellation_safe("demo==1")
+        )
+        await started.wait()
+        task.cancel()
+        release.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert removed == ["/tmp/cancelled-requirements.txt"]
 
     @pytest.mark.asyncio
     async def test_pip_install_requirements_skips_empty_cache(

@@ -4,8 +4,10 @@ Unit tests for Redis module cache.
 Tests both async (module_cache.py) and sync (module_cache_sync.py) cache operations.
 """
 
+import asyncio
+import hashlib
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -22,12 +24,19 @@ class TestModuleCacheAsync:
         mock_client.get = AsyncMock()
         mock_client.setex = AsyncMock()
         mock_client.delete = AsyncMock()
+        mock_redis.get.return_value = "generation-1"
         return mock_client, mock_redis
 
     async def test_get_module_found(self, mock_redis_client):
         """Test fetching a module that exists in cache."""
         mock_client, _ = mock_redis_client
-        cached_data = {"content": "print('hello')", "path": "shared/test.py", "hash": "abc123"}
+        content = "print('hello')"
+        cached_data = {
+            "content": content,
+            "path": "shared/test.py",
+            "hash": hashlib.sha256(content.encode()).hexdigest(),
+            "generation": "generation-1",
+        }
         mock_client.get.return_value = json.dumps(cached_data)
 
         with patch("src.core.module_cache.get_redis_client", return_value=mock_client):
@@ -38,7 +47,7 @@ class TestModuleCacheAsync:
             assert result is not None
             assert result["content"] == "print('hello')"
             assert result["path"] == "shared/test.py"
-            assert result["hash"] == "abc123"
+            assert result["hash"] == hashlib.sha256(content.encode()).hexdigest()
             mock_client.get.assert_called_once_with("bifrost:module:shared/test.py")
 
     async def test_get_module_not_found(self, mock_redis_client):
@@ -82,7 +91,81 @@ class TestModuleCacheAsync:
             # Verify re-cached to Redis
             mock_client.setex.assert_called_once()
 
-    async def test_get_module_falls_back_to_solution_storage_for_solution_module(self, mock_redis_client):
+    async def test_immutable_cache_rejects_corrupt_content_with_trusted_hash_label(
+        self, mock_redis_client
+    ):
+        """A manifest-looking label cannot make different cached bytes trusted."""
+        mock_client, _ = mock_redis_client
+        reviewed = b"VALUE = 'reviewed'\n"
+        expected_hash = hashlib.sha256(reviewed).hexdigest()
+        storage_path = (
+            "_workspace_releases/org-1/release-1/files/modules/vendor.py"
+        )
+        mock_client.get.return_value = json.dumps(
+            {
+                "content": "VALUE = 'corrupt'\n",
+                "path": storage_path,
+                # Simulate a corrupt cache entry retaining the trusted label.
+                "hash": expected_hash,
+            }
+        )
+
+        with (
+            patch("src.core.module_cache.get_redis_client", return_value=mock_client),
+            patch(
+                "src.core.module_cache._read_module_from_storage",
+                new=AsyncMock(return_value=reviewed),
+            ) as read_storage,
+        ):
+            from src.core.module_cache import get_module
+
+            result = await get_module(storage_path)
+
+        assert result == {
+            "content": reviewed.decode(),
+            "path": storage_path,
+            "hash": expected_hash,
+        }
+        read_storage.assert_awaited_once_with(storage_path)
+        stored = json.loads(mock_client.setex.await_args.args[2])
+        assert stored == result
+
+    async def test_get_module_rejects_stale_runtime_from_current_durable_source(
+        self, mock_redis_client
+    ):
+        """A stale Redis hit cannot override exact object-storage bytes."""
+        mock_client, mock_redis = mock_redis_client
+        stale = {
+            "content": "VALUE = 'stale'\n",
+            "path": "shared/test.py",
+            "hash": hashlib.sha256(b"VALUE = 'stale'\n").hexdigest(),
+            "generation": "generation-1",
+        }
+        mock_client.get.return_value = json.dumps(stale)
+        mock_redis.get.return_value = "generation-2"
+        mock_repo = AsyncMock()
+        mock_repo.read.return_value = b"VALUE = 'reviewed'\n"
+
+        with (
+            patch("src.core.module_cache.get_redis_client", return_value=mock_client),
+            patch("src.core.module_cache.RepoStorage", return_value=mock_repo),
+        ):
+            from src.core.module_cache import get_module
+
+            result = await get_module("shared/test.py")
+
+        assert result == {
+            "content": "VALUE = 'reviewed'\n",
+            "path": "shared/test.py",
+            "hash": hashlib.sha256(b"VALUE = 'reviewed'\n").hexdigest(),
+            "generation": "generation-2",
+        }
+        stored = json.loads(mock_client.setex.await_args.args[2])
+        assert stored == result
+
+    async def test_get_module_falls_back_to_solution_storage_for_solution_module(
+        self, mock_redis_client
+    ):
         """Cold solution module lookups read from _solutions storage and re-cache."""
         mock_client, mock_redis = mock_redis_client
         mock_client.get.return_value = None
@@ -91,7 +174,9 @@ class TestModuleCacheAsync:
         storage_path = f"_solutions/{solution_id}/workflows/triage.py"
 
         mock_repo = AsyncMock()
-        mock_repo.read.side_effect = AssertionError("solution modules must not use RepoStorage")
+        mock_repo.read.side_effect = AssertionError(
+            "solution modules must not use RepoStorage"
+        )
         mock_solution_storage = AsyncMock()
         mock_solution_storage.read.return_value = b"print('from solution s3')"
 
@@ -114,7 +199,37 @@ class TestModuleCacheAsync:
             solution_storage_cls.assert_called_once_with(solution_id)
             mock_solution_storage.read.assert_called_once_with("workflows/triage.py")
             mock_client.setex.assert_called_once()
-            mock_redis.sadd.assert_called_once_with("bifrost:module:index", storage_path)
+            mock_redis.sadd.assert_called_once_with(
+                "bifrost:module:index", storage_path
+            )
+
+    async def test_reconcile_module_coherence_proves_deleted_cache_is_absent(
+        self, mock_redis_client
+    ):
+        mock_client, mock_redis = mock_redis_client
+        mock_redis.get.return_value = "generation-2"
+        mock_redis.mget.return_value = [None]
+        mock_redis.smembers.return_value = set()
+
+        with (
+            patch("src.core.module_cache.get_redis_client", return_value=mock_client),
+            patch(
+                "src.core.module_cache._read_module_from_storage",
+                new=AsyncMock(side_effect=FileNotFoundError),
+            ),
+            patch(
+                "src.core.module_cache.invalidate_module", new=AsyncMock()
+            ) as invalidate,
+        ):
+            from src.core.module_cache import reconcile_module_coherence
+
+            generation, evidence = await reconcile_module_coherence(
+                ["workflows/deleted.py"]
+            )
+
+        assert generation == "generation-2"
+        assert evidence == []
+        invalidate.assert_awaited_once_with("workflows/deleted.py")
 
     async def test_get_module_s3_not_found(self, mock_redis_client):
         """When both Redis and S3 miss, get_module returns None."""
@@ -174,9 +289,12 @@ class TestModuleCacheAsync:
             assert stored_data["content"] == "print('hello')"
             assert stored_data["path"] == "shared/test.py"
             assert stored_data["hash"] == "abc123"
+            assert stored_data["generation"] == "generation-1"
 
             # Verify path was added to index
-            mock_redis.sadd.assert_called_once_with("bifrost:module:index", "shared/test.py")
+            mock_redis.sadd.assert_called_once_with(
+                "bifrost:module:index", "shared/test.py"
+            )
 
     async def test_invalidate_module(self, mock_redis_client):
         """Test removing a module from cache."""
@@ -188,7 +306,9 @@ class TestModuleCacheAsync:
             await invalidate_module("shared/test.py")
 
             mock_client.delete.assert_called_once_with("bifrost:module:shared/test.py")
-            mock_redis.srem.assert_called_once_with("bifrost:module:index", "shared/test.py")
+            mock_redis.srem.assert_called_once_with(
+                "bifrost:module:index", "shared/test.py"
+            )
 
     async def test_module_paths_are_log_safe(self, mock_redis_client):
         """Caller-controlled module paths cannot forge additional log lines."""
@@ -226,9 +346,18 @@ class TestModuleCacheAsync:
     async def test_get_all_module_paths(self, mock_redis_client):
         """Test getting all cached module paths."""
         mock_client, mock_redis = mock_redis_client
-        mock_redis.smembers.return_value = {"shared/a.py", "shared/b.py", "modules/c.py"}
+        mock_redis.smembers.return_value = {
+            "shared/a.py",
+            "shared/b.py",
+            "modules/c.py",
+        }
 
-        with patch("src.core.module_cache.get_redis_client", return_value=mock_client):
+        mock_repo = AsyncMock()
+        mock_repo.list.return_value = []
+        with (
+            patch("src.core.module_cache.get_redis_client", return_value=mock_client),
+            patch("src.core.module_cache.RepoStorage", return_value=mock_repo),
+        ):
             from src.core.module_cache import get_all_module_paths
 
             result = await get_all_module_paths()
@@ -240,8 +369,13 @@ class TestModuleCacheAsync:
         """Test getting module paths when cache is empty."""
         mock_client, mock_redis = mock_redis_client
         mock_redis.smembers.return_value = set()
+        mock_repo = AsyncMock()
+        mock_repo.list.return_value = []
 
-        with patch("src.core.module_cache.get_redis_client", return_value=mock_client):
+        with (
+            patch("src.core.module_cache.get_redis_client", return_value=mock_client),
+            patch("src.core.module_cache.RepoStorage", return_value=mock_repo),
+        ):
             from src.core.module_cache import get_all_module_paths
 
             result = await get_all_module_paths()
@@ -273,6 +407,276 @@ class TestModuleCacheAsync:
 
             assert count == 0
 
+    async def test_workspace_generation_cold_start_converges(self, mock_redis_client):
+        mock_client, mock_redis = mock_redis_client
+        mock_redis.get.side_effect = [None, b"winner-generation"]
+        mock_redis.set.return_value = False
+
+        with patch("src.core.module_cache.get_redis_client", return_value=mock_client):
+            from src.core.module_cache import get_workspace_generation
+
+            assert await get_workspace_generation() == "winner-generation"
+
+        mock_redis.set.assert_awaited_once()
+        assert mock_redis.set.await_args.kwargs == {"nx": True}
+
+    async def test_rotate_workspace_generation_broadcasts_sorted_paths(
+        self, mock_redis_client
+    ):
+        mock_client, mock_redis = mock_redis_client
+
+        with (
+            patch("src.core.module_cache.get_redis_client", return_value=mock_client),
+            patch("src.core.module_cache.uuid4") as new_uuid,
+        ):
+            from src.core.module_cache import rotate_workspace_generation
+
+            new_uuid.return_value.hex = "generation-2"
+            generation = await rotate_workspace_generation(
+                reason="activation",
+                changed_paths=["z.py", "a.py", "z.py"],
+                broadcast=True,
+            )
+
+        assert generation == "generation-2"
+        assert mock_redis.set.await_args_list[:2] == [
+            call("bifrost:workspace:generation", "generation-2"),
+            call("bifrost:module:index:generation", "generation-2"),
+        ]
+        payload = json.loads(mock_redis.publish.await_args.args[1])
+        assert payload == {
+            "action": "workspace_generation_changed",
+            "generation": "generation-2",
+            "reason": "activation",
+            "changed_paths": ["a.py", "z.py"],
+        }
+
+    async def test_updating_generation_expires_with_the_writer_lock(
+        self, mock_redis_client
+    ):
+        mock_client, mock_redis = mock_redis_client
+
+        with (
+            patch("src.core.module_cache.get_redis_client", return_value=mock_client),
+            patch("src.core.module_cache.uuid4") as new_uuid,
+        ):
+            from src.core.module_cache import (
+                WORKSPACE_UPDATE_LOCK_SECONDS,
+                mark_workspace_generation_updating,
+            )
+
+            new_uuid.return_value.hex = "transaction-1"
+            generation = await mark_workspace_generation_updating(
+                reason="write", changed_paths=["a.py"]
+            )
+
+        assert generation == "updating:transaction-1"
+        mock_redis.set.assert_awaited_once_with(
+            "bifrost:workspace:generation",
+            "updating:transaction-1",
+            ex=WORKSPACE_UPDATE_LOCK_SECONDS,
+        )
+
+    async def test_workspace_source_update_uses_one_barrier_for_nested_writes(
+        self, mock_redis_client
+    ):
+        mock_client, mock_redis = mock_redis_client
+        lock = AsyncMock()
+        lock.acquire.return_value = True
+        lock.reacquire.return_value = True
+        mock_redis.lock = MagicMock(return_value=lock)
+        mock_redis.get.return_value = "updating:outer"
+        mock_redis.expire.return_value = True
+
+        with (
+            patch("src.core.module_cache.get_redis_client", return_value=mock_client),
+            patch(
+                "src.core.module_cache.mark_workspace_generation_updating",
+                new=AsyncMock(return_value="updating:outer"),
+            ) as mark,
+            patch(
+                "src.core.module_cache.rotate_workspace_generation", new=AsyncMock()
+            ) as rotate,
+            patch("src.core.module_cache.reconcile_module_coherence", new=AsyncMock()),
+        ):
+            from src.core.module_cache import workspace_source_update
+
+            async with workspace_source_update(
+                reason="outer", changed_paths=["a.py", "notes.md"], broadcast=True
+            ):
+                async with workspace_source_update(
+                    reason="inner", changed_paths=["b.py"]
+                ):
+                    pass
+
+        mark.assert_awaited_once_with(reason="outer", changed_paths=["a.py"])
+        rotate.assert_awaited_once_with(
+            reason="outer",
+            changed_paths=["a.py"],
+            broadcast=True,
+            generation="outer",
+        )
+        lock.acquire.assert_awaited_once()
+        lock.release.assert_awaited_once()
+
+    async def test_workspace_source_update_rotates_after_body_failure(
+        self, mock_redis_client
+    ):
+        mock_client, mock_redis = mock_redis_client
+        lock = AsyncMock()
+        lock.acquire.return_value = True
+        lock.reacquire.return_value = True
+        mock_redis.lock = MagicMock(return_value=lock)
+        mock_redis.get.return_value = "updating:write"
+        mock_redis.expire.return_value = True
+
+        with (
+            patch("src.core.module_cache.get_redis_client", return_value=mock_client),
+            patch(
+                "src.core.module_cache.mark_workspace_generation_updating",
+                new=AsyncMock(return_value="updating:write"),
+            ),
+            patch(
+                "src.core.module_cache.rotate_workspace_generation", new=AsyncMock()
+            ) as rotate,
+            patch("src.core.module_cache.reconcile_module_coherence", new=AsyncMock()),
+        ):
+            from src.core.module_cache import workspace_source_update
+
+            with pytest.raises(RuntimeError, match="write failed"):
+                async with workspace_source_update(
+                    reason="write", changed_paths=["a.py"]
+                ):
+                    await AsyncMock(side_effect=RuntimeError("write failed"))()
+
+        rotate.assert_awaited_once_with(
+            reason="write",
+            changed_paths=["a.py"],
+            broadcast=False,
+            generation="write",
+        )
+        lock.release.assert_awaited_once()
+
+    async def test_workspace_source_update_rejects_lock_contention(
+        self, mock_redis_client
+    ):
+        mock_client, mock_redis = mock_redis_client
+        lock = AsyncMock()
+        lock.acquire.return_value = False
+        mock_redis.lock = MagicMock(return_value=lock)
+
+        with (
+            patch("src.core.module_cache.get_redis_client", return_value=mock_client),
+            patch(
+                "src.core.module_cache.mark_workspace_generation_updating",
+                new=AsyncMock(),
+            ) as mark,
+            patch(
+                "src.core.module_cache.rotate_workspace_generation", new=AsyncMock()
+            ) as rotate,
+            patch("src.core.module_cache.reconcile_module_coherence", new=AsyncMock()),
+        ):
+            from src.core.module_cache import workspace_source_update
+
+            with pytest.raises(RuntimeError, match="still in progress"):
+                async with workspace_source_update(
+                    reason="write", changed_paths=["a.py"]
+                ):
+                    pass
+
+        mark.assert_not_awaited()
+        rotate.assert_not_awaited()
+        lock.release.assert_not_awaited()
+
+    async def test_workspace_source_update_suppresses_expired_writer_rotation(
+        self, mock_redis_client
+    ):
+        mock_client, mock_redis = mock_redis_client
+        first_lock = AsyncMock()
+        first_lock.acquire.return_value = True
+        first_lock.reacquire.return_value = False
+        second_lock = AsyncMock()
+        second_lock.acquire.return_value = True
+        second_lock.reacquire.return_value = True
+        mock_redis.lock = MagicMock(side_effect=[first_lock, second_lock])
+        mock_redis.get.return_value = "updating:second"
+        mock_redis.expire.return_value = True
+
+        start_second = asyncio.Event()
+        second_finished = asyncio.Event()
+
+        async def second_writer() -> None:
+            await start_second.wait()
+            async with workspace_source_update(reason="second", changed_paths=["b.py"]):
+                pass
+            second_finished.set()
+
+        with (
+            patch("src.core.module_cache.get_redis_client", return_value=mock_client),
+            patch(
+                "src.core.module_cache.mark_workspace_generation_updating",
+                new=AsyncMock(side_effect=["updating:first", "updating:second"]),
+            ) as mark,
+            patch(
+                "src.core.module_cache.rotate_workspace_generation", new=AsyncMock()
+            ) as rotate,
+            patch("src.core.module_cache.reconcile_module_coherence", new=AsyncMock()),
+        ):
+            from src.core.module_cache import workspace_source_update
+
+            # Create the competing task before entering the first context so it
+            # receives an independent contextvar depth, like another replica.
+            second_task = asyncio.create_task(second_writer())
+            with pytest.raises(RuntimeError, match="lease was lost"):
+                async with workspace_source_update(
+                    reason="first", changed_paths=["a.py"]
+                ):
+                    start_second.set()
+                    await second_finished.wait()
+            await second_task
+
+        assert mark.await_count == 2
+        rotate.assert_awaited_once_with(
+            reason="second",
+            changed_paths=["b.py"],
+            broadcast=False,
+            generation="second",
+        )
+
+    async def test_workspace_update_renewal_keeps_lock_and_barrier_alive(
+        self, mock_redis_client
+    ):
+        _mock_client, mock_redis = mock_redis_client
+        lock = AsyncMock()
+        lock.reacquire.return_value = True
+        mock_redis.get.return_value = b"updating:writer"
+        mock_redis.expire.return_value = True
+        lease_lost = asyncio.Event()
+
+        with patch(
+            "src.core.module_cache.asyncio.sleep",
+            new=AsyncMock(side_effect=[None, asyncio.CancelledError()]),
+        ):
+            from src.core.module_cache import (
+                WORKSPACE_GENERATION_KEY,
+                WORKSPACE_UPDATE_LOCK_SECONDS,
+                _renew_workspace_update_lease,
+            )
+
+            with pytest.raises(asyncio.CancelledError):
+                await _renew_workspace_update_lease(
+                    lock=lock,
+                    redis_conn=mock_redis,
+                    updating_generation="updating:writer",
+                    lease_lost=lease_lost,
+                )
+
+        assert not lease_lost.is_set()
+        lock.reacquire.assert_awaited_once()
+        mock_redis.expire.assert_awaited_once_with(
+            WORKSPACE_GENERATION_KEY, WORKSPACE_UPDATE_LOCK_SECONDS
+        )
+
 
 class TestModuleCacheSync:
     """Tests for synchronous module cache functions."""
@@ -287,10 +691,25 @@ class TestModuleCacheSync:
 
     def test_get_module_sync_found(self, mock_sync_redis):
         """Test fetching a module synchronously."""
-        cached_data = {"content": "print('hello')", "path": "shared/test.py", "hash": "abc123"}
+        content = "print('hello')"
+        cached_data = {
+            "content": content,
+            "path": "shared/test.py",
+            "hash": hashlib.sha256(content.encode()).hexdigest(),
+            "generation": "generation-1",
+        }
         mock_sync_redis.get.return_value = json.dumps(cached_data)
 
-        with patch("src.core.module_cache_sync._get_sync_redis", return_value=mock_sync_redis):
+        with (
+            patch(
+                "src.core.module_cache_sync._get_sync_redis",
+                return_value=mock_sync_redis,
+            ),
+            patch(
+                "src.core.module_cache_sync.workspace_generation_for_import",
+                return_value="generation-1",
+            ),
+        ):
             from src.core.module_cache_sync import get_module_sync
 
             result = get_module_sync("shared/test.py")
@@ -303,7 +722,16 @@ class TestModuleCacheSync:
         """Test fetching a nonexistent module returns None (no DB fallback)."""
         mock_sync_redis.get.return_value = None
 
-        with patch("src.core.module_cache_sync._get_sync_redis", return_value=mock_sync_redis):
+        with (
+            patch(
+                "src.core.module_cache_sync._get_sync_redis",
+                return_value=mock_sync_redis,
+            ),
+            patch(
+                "src.core.module_cache_sync.workspace_generation_for_import",
+                return_value="generation-1",
+            ),
+        ):
             from src.core.module_cache_sync import get_module_sync
 
             result = get_module_sync("nonexistent.py")
@@ -316,7 +744,16 @@ class TestModuleCacheSync:
 
         mock_sync_redis.get.side_effect = redis.RedisError("Connection failed")
 
-        with patch("src.core.module_cache_sync._get_sync_redis", return_value=mock_sync_redis):
+        with (
+            patch(
+                "src.core.module_cache_sync._get_sync_redis",
+                return_value=mock_sync_redis,
+            ),
+            patch(
+                "src.core.module_cache_sync.workspace_generation_for_import",
+                return_value="generation-1",
+            ),
+        ):
             from src.core.module_cache_sync import get_module_sync
 
             result = get_module_sync("shared/test.py")
@@ -326,8 +763,18 @@ class TestModuleCacheSync:
     def test_get_module_index_sync(self, mock_sync_redis):
         """Test getting module index synchronously."""
         mock_sync_redis.smembers.return_value = {"shared/a.py", "modules/b.py"}
+        mock_sync_redis.get.return_value = "generation-1"
 
-        with patch("src.core.module_cache_sync._get_sync_redis", return_value=mock_sync_redis):
+        with (
+            patch(
+                "src.core.module_cache_sync._get_sync_redis",
+                return_value=mock_sync_redis,
+            ),
+            patch(
+                "src.core.module_cache_sync.workspace_generation_for_import",
+                return_value="generation-1",
+            ),
+        ):
             from src.core.module_cache_sync import get_module_index_sync
 
             result = get_module_index_sync()
@@ -344,8 +791,21 @@ class TestModuleCacheSync:
         """
         mock_sync_redis.smembers.return_value = set()
 
-        with patch("src.core.module_cache_sync._get_sync_redis", return_value=mock_sync_redis), \
-             patch("src.core.module_cache_sync._list_s3_modules", return_value=set()):
+        with (
+            patch(
+                "src.core.module_cache_sync._get_sync_redis",
+                return_value=mock_sync_redis,
+            ),
+            patch("src.core.module_cache_sync._list_s3_modules", return_value=set()),
+            patch(
+                "src.core.module_cache_sync._fetch_module_index_from_api",
+                return_value=set(),
+            ),
+            patch(
+                "src.core.module_cache_sync.workspace_generation_for_import",
+                return_value="generation-1",
+            ),
+        ):
             from src.core.module_cache_sync import get_module_index_sync
 
             result = get_module_index_sync()
@@ -358,7 +818,16 @@ class TestModuleCacheSync:
 
         mock_sync_redis.smembers.side_effect = redis.RedisError("Connection failed")
 
-        with patch("src.core.module_cache_sync._get_sync_redis", return_value=mock_sync_redis):
+        with (
+            patch(
+                "src.core.module_cache_sync._get_sync_redis",
+                return_value=mock_sync_redis,
+            ),
+            patch(
+                "src.core.module_cache_sync.workspace_generation_for_import",
+                return_value="generation-1",
+            ),
+        ):
             from src.core.module_cache_sync import get_module_index_sync
 
             result = get_module_index_sync()
@@ -371,6 +840,86 @@ class TestModuleCacheSync:
 
         # Should not raise
         reset_sync_redis()
+
+    def test_workspace_generation_rejects_update_barrier(self, mock_sync_redis):
+        mock_sync_redis.get.return_value = b"updating:transaction-1"
+
+        with patch(
+            "src.core.module_cache_sync._get_sync_redis",
+            return_value=mock_sync_redis,
+        ):
+            from src.core.module_cache_sync import (
+                WorkspaceSourceUpdatingError,
+                get_workspace_generation_sync,
+            )
+
+            with pytest.raises(WorkspaceSourceUpdatingError, match="being updated"):
+                get_workspace_generation_sync()
+
+    def test_wait_for_workspace_generation_retries_until_ready(self):
+        from src.core.module_cache_sync import (
+            WorkspaceSourceUpdatingError,
+            wait_for_workspace_generation_sync,
+        )
+
+        with (
+            patch(
+                "src.core.module_cache_sync.get_workspace_generation_sync",
+                side_effect=[
+                    WorkspaceSourceUpdatingError("updating"),
+                    "generation-2",
+                ],
+            ) as get_generation,
+            patch("src.core.module_cache_sync.time.sleep") as sleep,
+        ):
+            assert (
+                wait_for_workspace_generation_sync(timeout_seconds=1, poll_seconds=0.01)
+                == "generation-2"
+            )
+
+        assert get_generation.call_count == 2
+        sleep.assert_called_once_with(0.01)
+
+    def test_assert_workspace_generation_fails_closed_on_change(self):
+        with patch(
+            "src.core.module_cache_sync.get_workspace_generation_sync",
+            return_value="generation-2",
+        ):
+            from src.core.module_cache_sync import (
+                WorkspaceGenerationChangedError,
+                assert_workspace_generation,
+            )
+
+            with pytest.raises(WorkspaceGenerationChangedError, match="stale import"):
+                assert_workspace_generation("generation-1")
+
+    def test_assert_workspace_generation_rejects_missing_pin(self):
+        from src.core.module_cache_sync import (
+            WorkspaceGenerationMissingError,
+            assert_workspace_generation,
+        )
+
+        with pytest.raises(WorkspaceGenerationMissingError, match="not pinned"):
+            assert_workspace_generation(None)
+
+    def test_lazy_import_generation_pin_is_revalidated(self):
+        from src.core.module_cache_sync import (
+            clear_workspace_generation_context,
+            set_workspace_generation_context,
+            workspace_generation_for_import,
+        )
+
+        set_workspace_generation_context("generation-1")
+        try:
+            with patch(
+                "src.core.module_cache_sync.assert_workspace_generation",
+                return_value="generation-1",
+            ) as validate:
+                assert workspace_generation_for_import() == "generation-1"
+        finally:
+            clear_workspace_generation_context()
+
+        validate.assert_called_once_with("generation-1")
 
 
 class TestCachedModuleTypedDict:
@@ -406,6 +955,50 @@ class TestKeyPatterns:
         from src.core.module_cache import MODULE_INDEX_KEY
 
         assert MODULE_INDEX_KEY == "bifrost:module:index"
+
+
+@pytest.mark.asyncio
+async def test_set_module_invalidates_resolution_cache_for_exact_and_ancestors():
+    from src.core.module_cache import set_module
+
+    class FakeRedisConn:
+        async def get(self, _key):
+            return "generation-1"
+
+        async def set(self, *_args, **_kwargs):
+            return True
+
+        async def sadd(self, *_args):
+            return 1
+
+        async def scan_iter(self, pattern):
+            patterns.append(pattern)
+            for key in [f"cached:{pattern}"]:
+                yield key
+
+        async def delete(self, *keys):
+            deleted.extend(keys)
+            return len(keys)
+
+    class FakeRedis:
+        async def setex(self, *_args):
+            return True
+
+        async def _get_redis(self):
+            return FakeRedisConn()
+
+    patterns: list[str] = []
+    deleted: list[str] = []
+
+    with patch("src.core.module_cache.get_redis_client", return_value=FakeRedis()):
+        await set_module("modules/helpers/tool.py", "VALUE = 1", "hash")
+
+    assert patterns == [
+        "bifrost:module:resolution:*:modules",
+        "bifrost:module:resolution:*:modules.helpers",
+        "bifrost:module:resolution:*:modules.helpers.tool",
+    ]
+    assert deleted == [f"cached:{pattern}" for pattern in patterns]
 
     def test_key_patterns_consistent(self):
         """Verify async and sync modules use same key patterns."""

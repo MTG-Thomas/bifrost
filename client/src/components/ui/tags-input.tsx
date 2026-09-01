@@ -97,6 +97,10 @@ export function TagsInput({
 					className,
 				)}
 				onClick={handleContainerClick}
+				onKeyDown={(event) => {
+					if (event.key === "Enter") handleContainerClick();
+				}}
+				role="group"
 			>
 				{value.map((tag, index) => (
 					<Badge

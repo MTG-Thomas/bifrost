@@ -57,7 +57,9 @@ def test_occurrence_key_and_stable_id_are_deterministic() -> None:
         "11111111-1111-1111-1111-111111111111:"
         "cve-2026-test:https://example.test:2026-04-26T12:00:00+00:00"
     )
-    assert _stable_id(key) == _stable_id(key)
+    first_id = _stable_id(key)
+    second_id = _stable_id(key)
+    assert first_id == second_id
 
 
 def test_ingest_request_defaults_to_complete_empty_findings() -> None:

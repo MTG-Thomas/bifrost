@@ -4,21 +4,28 @@
 # Usage (via test.sh):
 #   ./test.sh client e2e      # Run Playwright E2E tests in the client container
 
+# Keep the browser/system dependencies from Playwright's image, but use the
+# same Node runtime required by package.json and used by CI/client builds.
+FROM node:26-slim@sha256:4ebb5ace66f15a24c14c492e01a8beeed4fddf970a856109f5126e703e5fe503 AS node-runtime
+
 # mcr.microsoft.com/playwright:v1.56.0-jammy
 FROM mcr.microsoft.com/playwright:v1.62.1-jammy@sha256:b3251f7ff1a9fa559a28d1c67eaa15fc1a9800f7845e82756caea7842967f615
+
+COPY --from=node-runtime /usr/local/ /usr/local/
 
 WORKDIR /app
 
 # Copy package files and install dependencies
-COPY package*.json ./
+RUN chown pwuser:pwuser /app
+USER pwuser
+
+COPY --chown=pwuser:pwuser package*.json ./
 RUN npm ci
 
 # Install only Chromium browser (faster than installing all browsers)
 RUN npx playwright install chromium
 
-RUN mkdir -p /app/playwright-results && chown -R pwuser:pwuser /app
-
-USER pwuser
+RUN mkdir -p /app/playwright-results
 
 # Test files, config, and fixtures come from volume mounts
 # This allows live editing without rebuilding the image

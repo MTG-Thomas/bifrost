@@ -7,43 +7,45 @@ Uses FastMCP to expose tools via Streamable HTTP transport with Bearer token aut
 Architecture:
     - FastMCP server is mounted as an ASGI sub-application at /mcp
     - JWT Bearer token authentication using Bifrost's existing auth system
-    - /mcp exposes four stable agent discovery and dispatch tools
+    - /mcp exposes stable agent discovery, dispatch, instruction, and memory tools
     - /mcp/{agent_id} preserves the native agent-scoped tool surface
 
 Authentication:
-    Users authenticate through Bifrost's normal login flow (UI or CLI) and use
-    their access token as a Bearer token for MCP requests. The token is validated
-    using Bifrost's existing JWT infrastructure (HS256 with shared secret).
+    Users authenticate through the MCP OAuth flow and receive a token bound to
+    the canonical MCP resource, audience, and scope. General Bifrost UI/API
+    tokens are not accepted by the MCP endpoint.
 
 Usage:
-    # Get access token from Bifrost login
-    curl -X POST https://your-bifrost.com/auth/login \
-        -d '{"email":"admin@example.com","password":"..."}' \
-        -H "Content-Type: application/json"
-
-    # Use token for MCP access (example with test initialize)
+    # Use an MCP OAuth access token (example initialize request)
     curl -X POST https://your-bifrost.com/mcp \
         -H "Authorization: Bearer <access_token>" \
         -H "Accept: application/json, text/event-stream" \
         -d '{"jsonrpc":"2.0","id":1,"method":"initialize",...}'
 """
 
+import hashlib
 import logging
 from typing import NoReturn
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
+from fastapi.responses import Response
 from starlette.middleware.cors import CORSMiddleware
 
-from src.core.auth import CurrentActiveUser
+from src.config import get_settings
+from src.core.auth import CurrentActiveUser, CurrentSuperuser
 from src.core.db_deps import DbSession
 from src.models.contracts.mcp import (
     MCPConfigRequest,
     MCPConfigResponse,
-    MCPGatewayAgentResponse,
+    MCPGatewayCapabilitySearchRequest,
+    MCPGatewayCapabilitySearchResponse,
     MCPGatewayExecuteRequest,
     MCPGatewayExecuteResponse,
-    MCPGatewayFindAgentsResponse,
-    MCPGatewayToolSchemaResponse,
+    MCPGatewayExecutionResponse,
+    MCPOperationReceiptResolutionRequest,
+    MCPOperationReceiptResolutionResponse,
+    MCPRunInfoResponse,
     MCPToolInfo,
     MCPToolsResponse,
 )
@@ -94,66 +96,65 @@ def _raise_gateway_http_error(exc: Exception) -> NoReturn:
         raise exc
     status_code = {
         "INVALID_ARGUMENTS": status.HTTP_422_UNPROCESSABLE_ENTITY,
+        "INVALID_CAPABILITY_SEARCH": status.HTTP_422_UNPROCESSABLE_ENTITY,
+        "INVALID_RESULT_PATH": status.HTTP_422_UNPROCESSABLE_ENTITY,
         "AGENT_NOT_FOUND_OR_FORBIDDEN": status.HTTP_404_NOT_FOUND,
         "TOOL_NOT_FOUND_OR_FORBIDDEN": status.HTTP_404_NOT_FOUND,
+        "EXECUTION_NOT_FOUND_OR_FORBIDDEN": status.HTTP_404_NOT_FOUND,
+        "ASYNC_NOT_SUPPORTED": status.HTTP_422_UNPROCESSABLE_ENTITY,
         "NEEDS_REAUTH": status.HTTP_409_CONFLICT,
         "TOOL_SCHEMA_INVALID": status.HTTP_500_INTERNAL_SERVER_ERROR,
         "TOOL_EXECUTION_FAILED": status.HTTP_502_BAD_GATEWAY,
+        "TASKS_UNSUPPORTED": status.HTTP_409_CONFLICT,
+        "OPERATION_ID_REUSED": status.HTTP_409_CONFLICT,
+        "OPERATION_IN_PROGRESS_OR_UNKNOWN": status.HTTP_409_CONFLICT,
+        "OPERATION_RESULT_EXPIRED": status.HTTP_409_CONFLICT,
     }.get(exc.code, status.HTTP_500_INTERNAL_SERVER_ERROR)
     raise HTTPException(status_code=status_code, detail=exc.as_dict()) from exc
 
 
-@router.get(
-    "/gateway/agents",
-    response_model=MCPGatewayFindAgentsResponse,
+@router.post(
+    "/gateway/capabilities/search",
+    response_model=MCPGatewayCapabilitySearchResponse,
 )
-async def find_gateway_agents(
-    current_user: CurrentActiveUser,
-    db: DbSession,
-    query: str | None = None,
-    limit: int = Query(default=10, ge=1, le=20),
-) -> dict:
-    """Find accessible agents for progressive MCP discovery."""
-    await _require_mcp_enabled(db)
-    return await _gateway_service(current_user).find_agents(
-        query=query,
-        limit=limit,
-    )
-
-
-@router.get(
-    "/gateway/agents/{agent_id}",
-    response_model=MCPGatewayAgentResponse,
-)
-async def get_gateway_agent(
-    agent_id: str,
+async def search_gateway_capabilities(
+    request: MCPGatewayCapabilitySearchRequest,
     current_user: CurrentActiveUser,
     db: DbSession,
 ) -> dict:
-    """Load one accessible agent's live capability package."""
+    """Search agents and tools or hydrate one exact capability."""
     await _require_mcp_enabled(db)
     try:
-        return await _gateway_service(current_user).get_agent(agent_id)
+        return await _gateway_service(current_user).search_capabilities(
+            query=request.query,
+            agent_id=request.agent_id,
+            tool_ref=request.tool_ref,
+            limit=request.limit,
+        )
     except Exception as exc:
         _raise_gateway_http_error(exc)
 
 
 @router.get(
-    "/gateway/agents/{agent_id}/tools/{tool_ref}",
-    response_model=MCPGatewayToolSchemaResponse,
+    "/gateway/executions/{execution_id}",
+    response_model=MCPGatewayExecutionResponse,
 )
-async def get_gateway_tool_schema(
-    agent_id: str,
-    tool_ref: str,
+async def get_gateway_execution(
+    execution_id: str,
     current_user: CurrentActiveUser,
     db: DbSession,
+    result_path: str = "",
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
 ) -> dict:
-    """Load the current schema for an agent-bound tool."""
+    """Read compact status and a bounded result page for an owned execution."""
     await _require_mcp_enabled(db)
     try:
-        return await _gateway_service(current_user).get_tool_schema(
-            agent_id,
-            tool_ref,
+        return await _gateway_service(current_user).get_execution(
+            execution_id,
+            result_path=result_path,
+            offset=offset,
+            limit=limit,
         )
     except Exception as exc:
         _raise_gateway_http_error(exc)
@@ -177,14 +178,112 @@ async def execute_gateway_tool(
             agent_id,
             tool_ref,
             request.arguments,
+            operation_id=request.operation_id,
+            task_requested=request.task_requested,
         )
     except Exception as exc:
         _raise_gateway_http_error(exc)
 
 
+@router.post(
+    "/operation-receipts/{receipt_id}/resolve",
+    response_model=MCPOperationReceiptResolutionResponse,
+    summary="Resolve an ambiguous MCP operation receipt",
+)
+async def resolve_gateway_operation_receipt(
+    receipt_id: UUID,
+    request: MCPOperationReceiptResolutionRequest,
+    current_user: CurrentSuperuser,
+    db: DbSession,
+) -> MCPOperationReceiptResolutionResponse:
+    """Fail-close one STARTED tombstone after platform-admin investigation.
+
+    This never redispatches the effect. The operator reason is represented in
+    audit history by a one-way fingerprint so the audit row cannot become a
+    second store for incident details or customer data.
+    """
+    from src.services.audit import emit_audit
+    from src.services.operation_receipts import resolve_ambiguous_operation_receipt
+
+    try:
+        resolved = await resolve_ambiguous_operation_receipt(receipt_id, db)
+        if not resolved:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Receipt is not an ambiguous STARTED operation",
+            )
+        await emit_audit(
+            db,
+            "mcp.operation_receipt.resolve",
+            resource_type="operation_receipt",
+            resource_id=receipt_id,
+            details={
+                "resolution": request.resolution,
+                "reason_sha256": hashlib.sha256(
+                    request.reason.encode("utf-8")
+                ).hexdigest(),
+            },
+            strict=True,
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+    return MCPOperationReceiptResolutionResponse(
+        receipt_id=receipt_id,
+        status="failed",
+    )
+
+
 # =============================================================================
 # MCP Status Endpoint (for debugging/info)
 # =============================================================================
+
+
+@router.get("/run", response_model=MCPRunInfoResponse)
+async def mcp_run_info(
+    current_user: CurrentActiveUser,
+    db: DbSession,
+) -> MCPRunInfoResponse:
+    """Return install information for the Bifrost Agent plugin."""
+    from src.services.mcp_server.run_package import build_setup_prompt, mcp_url
+
+    config = await MCPConfigService(db).get_config()
+    return MCPRunInfoResponse(
+        enabled=config.enabled,
+        mcp_url=mcp_url(get_settings().public_url),
+        setup_prompt=build_setup_prompt(),
+    )
+
+
+@router.get(
+    "/run/plugin",
+    responses={200: {"content": {"application/zip": {}}}},
+)
+async def download_mcp_run_plugin(
+    current_user: CurrentActiveUser,
+    db: DbSession,
+) -> Response:
+    """Download the instance-matched Bifrost Agent package."""
+    from shared.version import get_version
+    from src.services.mcp_server.run_package import (
+        PLUGIN_FILENAME,
+        build_bifrost_run_plugin,
+    )
+
+    await _require_mcp_enabled(db)
+    zip_bytes = build_bifrost_run_plugin(
+        get_settings().public_url,
+        get_version(),
+    )
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{PLUGIN_FILENAME}"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.get("/status")
@@ -212,7 +311,7 @@ async def mcp_status(
         )
 
     gateway = _gateway_service(current_user)
-    agent_result = await gateway.find_agents(limit=1)
+    accessible_agents_count = await gateway.accessible_agent_count()
     gateway_tools = sorted(GATEWAY_TOOL_NAMES)
 
     return {
@@ -221,7 +320,7 @@ async def mcp_status(
         "is_platform_admin": current_user.is_superuser,
         "tools_count": len(gateway_tools),
         "tools": gateway_tools,
-        "accessible_agents_count": agent_result["total_matches"],
+        "accessible_agents_count": accessible_agents_count,
         "mcp_endpoint": "/mcp",
         "transport": "streamable-http",
         "auth": "oauth2.1",
@@ -257,6 +356,7 @@ def get_mcp_asgi_app():
     """
     from contextlib import asynccontextmanager
 
+    from src.config import get_settings
     from src.services.mcp_server.server import HAS_FASTMCP
 
     if not HAS_FASTMCP:
@@ -267,7 +367,6 @@ def get_mcp_asgi_app():
     from src.services.mcp_server.server import (
         BifrostMCPServer,
         MCPContext,
-        _register_workflow_tools,
     )
 
     # Create OAuth 2.1 auth provider for Bifrost
@@ -288,6 +387,9 @@ def get_mcp_asgi_app():
 
     server = BifrostMCPServer(default_context)
     fastmcp_server = server.get_fastmcp_server(auth=auth_provider)
+    from src.services.mcp_server.tasks import BifrostTasksExtension
+
+    fastmcp_server.add_extension(BifrostTasksExtension())
 
     # Add tool filtering middleware to filter tools/list based on user permissions
     try:
@@ -297,41 +399,55 @@ def get_mcp_asgi_app():
     except ImportError as e:
         logger.warning(f"Could not add ToolFilterMiddleware: {e}")
 
-    # Create ASGI app with default path="/mcp" - we mount at root so FastMCP
-    # handles /mcp directly without Starlette's trailing slash redirect
-    mcp_app = fastmcp_server.http_app(json_response=True, stateless_http=True)
+    # FastMCP v4 serves both modern discover/direct requests and the legacy
+    # initialize handshake from this one stateless app. Mount at root so it
+    # handles /mcp directly without Starlette's trailing slash redirect.
+    settings = get_settings()
+    mcp_app = fastmcp_server.http_app(
+        json_response=True,
+        stateless_http=True,
+        host_origin_protection=True,
+        allowed_hosts=settings.mcp_allowed_hosts,
+        allowed_origins=settings.mcp_allowed_origins,
+    )
 
     # Store original lifespan before wrapping
     original_lifespan = getattr(mcp_app, 'lifespan', None)
 
-    # Create combined lifespan that registers workflow tools on startup
+    # Keep this replica's workflow catalog synchronized for its full lifespan.
     @asynccontextmanager
     async def combined_lifespan(app):
-        """Combined lifespan that registers workflow tools and runs FastMCP lifespan."""
-        # Register workflow tools on startup
-        try:
-            count = await _register_workflow_tools(fastmcp_server)
-            logger.info(f"Registered {count} workflow tools during MCP startup")
-        except Exception as e:
-            logger.warning(f"Failed to register workflow tools: {e}")
+        """Synchronize the workflow catalog around the FastMCP lifespan."""
+        from src.services.mcp_server.catalog_sync import (
+            start_workflow_catalog_sync,
+            stop_workflow_catalog_sync,
+        )
 
-        # Run original FastMCP lifespan if present
-        if original_lifespan:
-            async with original_lifespan(app):
+        count = await start_workflow_catalog_sync(fastmcp_server)
+        logger.info(f"Registered {count} workflow tools during MCP startup")
+
+        try:
+            if original_lifespan:
+                async with original_lifespan(app):
+                    yield
+            else:
                 yield
-        else:
-            yield
+        finally:
+            stop_workflow_catalog_sync()
 
     # Wrap with agent-scoping middleware to handle /mcp/{agent_id} paths
-    from src.services.mcp_server.agent_scope import AgentScopeMCPMiddleware
-    agent_scoped_app = AgentScopeMCPMiddleware(mcp_app)
+    from src.services.mcp_server.agent_scope import (
+        AgentScopeMCPMiddleware,
+        MCPHeaderOWSMiddleware,
+    )
+    agent_scoped_app = MCPHeaderOWSMiddleware(AgentScopeMCPMiddleware(mcp_app))
 
     # Wrap with CORS middleware to expose Mcp-Session-Id header
     # Required for browser-based clients like MCP Inspector to read session ID
     # Without this, CORS policy prevents JavaScript from reading the header
     cors_app = CORSMiddleware(
         agent_scoped_app,
-        allow_origins=["*"],  # MCP clients can come from anywhere
+        allow_origins=settings.mcp_allowed_origins,
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
         expose_headers=["Mcp-Session-Id"],

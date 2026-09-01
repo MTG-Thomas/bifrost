@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from src.models.orm import AgentDelegation, AgentTool
+from src.services.file_storage.indexers import agent as agent_indexer_module
 from src.services.file_storage.indexers.agent import AgentIndexer
 
 
@@ -53,10 +54,7 @@ async def test_index_agent_injects_id_normalizes_lists_and_syncs_existing_refs(
     agent_id = UUID("00000000-0000-0000-0000-000000000001")
     workflow_id = UUID("00000000-0000-0000-0000-000000000002")
     child_id = UUID("00000000-0000-0000-0000-000000000003")
-    monkeypatch.setattr(
-        "src.services.file_storage.indexers.agent.uuid4",
-        MagicMock(return_value=agent_id),
-    )
+    monkeypatch.setattr(agent_indexer_module, "uuid4", MagicMock(return_value=agent_id))
     db = _db(
         None,  # agent upsert
         None,  # delete old tools
@@ -111,8 +109,7 @@ async def test_index_agent_replaces_invalid_id_and_defaults_bad_channels(
 ) -> None:
     generated_id = UUID("00000000-0000-0000-0000-000000000010")
     monkeypatch.setattr(
-        "src.services.file_storage.indexers.agent.uuid4",
-        MagicMock(return_value=generated_id),
+        agent_indexer_module, "uuid4", MagicMock(return_value=generated_id)
     )
     db = _db(None, None, None)
     indexer = AgentIndexer(db)

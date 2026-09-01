@@ -26,19 +26,31 @@ def _fake_response(body: dict, *, status: int = 200) -> httpx.Response:
     return httpx.Response(status, json=body, request=_DUMMY_REQUEST)
 
 
-def _make_mock_client(captured: dict, body_by_path: dict[str, dict]) -> mock.AsyncMock:
+def _make_mock_client(
+    captured: dict,
+    body_by_path: dict[str, dict | httpx.Response],
+) -> mock.AsyncMock:
     """Return a mock BifrostClient that records calls and replies per path."""
 
-    async def capturing_post(path, json=None):  # type: ignore[no-untyped-def]
-        captured.setdefault("calls", []).append({"path": path, "body": json})
-        return _fake_response(body_by_path.get(path, {}))
+    async def capturing_post(path, json=None, **kwargs):  # type: ignore[no-untyped-def]
+        captured.setdefault("calls", []).append(
+            {"path": path, "body": json, "kwargs": kwargs}
+        )
+        body = body_by_path.get(path, {})
+        if isinstance(body, httpx.Response):
+            return body
+        return _fake_response(body)
 
     client = mock.AsyncMock()
     client.post = capturing_post
     return client
 
 
-def _invoke(args: list[str], captured: dict, body_by_path: dict[str, dict]):
+def _invoke(
+    args: list[str],
+    captured: dict,
+    body_by_path: dict[str, dict | httpx.Response],
+):
     client = _make_mock_client(captured, body_by_path)
     with mock.patch("bifrost.client.BifrostClient.get_instance", return_value=client):
         runner = CliRunner()
@@ -81,6 +93,76 @@ class TestRead:
         assert captured["calls"][0]["body"]["location"] == "reports"
 
 
+class TestStat:
+    def test_reports_version_without_printing_content(self) -> None:
+        captured: dict = {}
+        result = _invoke(
+            ["stat", "workflows/contact.py", "--json"],
+            captured,
+            {
+                "/api/files/stat": {
+                    "path": "workflows/contact.py",
+                    "exists": True,
+                    "version": "sha256:abc123",
+                    "size": 13,
+                }
+            },
+        )
+        assert result.exit_code == 0, result.output
+        assert '"path": "workflows/contact.py"' in result.output
+        assert '"version": "sha256:abc123"' in result.output
+        assert "secret source" not in result.output
+
+
+class TestGraph:
+    def test_graphs_proposed_file_in_both_directions(self, tmp_path) -> None:
+        local = tmp_path / "report.py"
+        local.write_text("VALUE = 2\n", encoding="utf-8")
+        captured: dict = {}
+        impact = {
+            "candidate_id": "sha256:" + "a" * 64,
+            "snapshot_id": "sha256:" + "b" * 64,
+            "path": "helpers/report.py",
+            "proposed_sha256": "c" * 64,
+            "current_sha256": "d" * 64,
+            "changed": True,
+            "forward_dependencies": [],
+            "reverse_dependencies": [
+                {"path": "workflows/daily.py", "sha256": "e" * 64, "depth": 1}
+            ],
+            "edges": [
+                {
+                    "importer": "workflows/daily.py",
+                    "dependency": "helpers/report.py",
+                    "kind": "import",
+                }
+            ],
+            "diagnostics": [],
+            "traversal_complete": True,
+            "analyzed_path_count": 2,
+            "blocking_diagnostic_count": 0,
+            "ready_to_write": True,
+        }
+
+        result = _invoke(
+            ["graph", "helpers/report.py", "--from-file", str(local)],
+            captured,
+            {"/api/files/impact": impact},
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Reverse dependencies (1)" in result.output
+        assert "workflows/daily.py" in result.output
+        assert "traversal: complete (2 paths, 1 edges)" in result.output
+        assert "Blocking diagnostics: 0" in result.output
+        assert captured["calls"][0]["body"] == {
+            "path": "helpers/report.py",
+            "content": "VALUE = 2\n",
+            "direction": "both",
+        }
+        assert captured["calls"][0]["kwargs"] == {"timeout": 120.0}
+
+
 class TestWrite:
     def test_writes_with_content_flag(self) -> None:
         captured: dict = {}
@@ -95,12 +177,45 @@ class TestWrite:
         assert body["content"] == "hello"
         assert body["binary"] is False
 
+    def test_release_governed_write_points_to_promote(self) -> None:
+        captured: dict = {}
+        request = httpx.Request("POST", "https://example.test/api/files/write")
+        conflict = httpx.Response(
+            409,
+            request=request,
+            json={
+                "detail": {
+                    "reason": "workspace_release_governed_path",
+                    "path": "modules/vendor.py",
+                    "release_id": "sha256:" + "a" * 64,
+                    "message": (
+                        "path 'modules/vendor.py' is governed by active "
+                        "workspace-release-v1; use `bifrost promote`"
+                    ),
+                }
+            },
+        )
+
+        result = _invoke(
+            ["write", "modules/vendor.py", "--content", "VALUE = 2"],
+            captured,
+            {"/api/files/write": conflict},
+        )
+
+        assert result.exit_code == 4
+        assert "use `bifrost promote`" in result.output
+        assert "merge the changes" not in result.output
+
     def test_writes_from_stdin_when_dash(self) -> None:
         captured: dict = {}
         runner = CliRunner()
         client = _make_mock_client(captured, {"/api/files/write": {}})
-        with mock.patch("bifrost.client.BifrostClient.get_instance", return_value=client):
-            result = runner.invoke(files_group, ["write", "out.txt", "-"], input="from-stdin\n")
+        with mock.patch(
+            "bifrost.client.BifrostClient.get_instance", return_value=client
+        ):
+            result = runner.invoke(
+                files_group, ["write", "out.txt", "-"], input="from-stdin\n"
+            )
         assert result.exit_code == 0, result.output
         assert captured["calls"][0]["body"]["content"] == "from-stdin\n"
 
@@ -137,6 +252,165 @@ class TestWrite:
         assert result.exit_code != 0
         assert "exactly one" in result.output.lower()
 
+    def test_passes_expected_version(self) -> None:
+        captured: dict = {}
+        result = _invoke(
+            [
+                "write",
+                "out.txt",
+                "--content",
+                "next",
+                "--expected-version",
+                "sha256:base",
+            ],
+            captured,
+            {"/api/files/write": {}},
+        )
+        assert result.exit_code == 0, result.output
+        body = captured["calls"][0]["body"]
+        assert body["expected_version"] == "sha256:base"
+        assert body["create_only"] is False
+
+    def test_passes_create_only(self) -> None:
+        captured: dict = {}
+        result = _invoke(
+            ["write", "out.txt", "--content", "new", "--create-only"],
+            captured,
+            {"/api/files/write": {}},
+        )
+        assert result.exit_code == 0, result.output
+        body = captured["calls"][0]["body"]
+        assert body["create_only"] is True
+        assert body["expected_version"] is None
+
+    def test_rejects_two_concurrency_guards(self) -> None:
+        captured: dict = {}
+        result = _invoke(
+            [
+                "write",
+                "out.txt",
+                "--content",
+                "new",
+                "--create-only",
+                "--expected-version",
+                "sha256:base",
+            ],
+            captured,
+            {},
+        )
+        assert result.exit_code != 0
+        assert "cannot be combined" in result.output
+        assert "calls" not in captured
+
+    def test_checked_write_previews_then_binds_candidate(self) -> None:
+        captured: dict = {}
+        impact = {
+            "schema_version": "bifrost.workspace-file-impact/v1",
+            "candidate_id": "sha256:" + "a" * 64,
+            "snapshot_id": "sha256:" + "b" * 64,
+            "path": "workflows/report.py",
+            "proposed": True,
+            "changed": True,
+            "current_sha256": "c" * 64,
+            "proposed_sha256": "d" * 64,
+            "forward_dependencies": [],
+            "reverse_dependencies": [],
+            "diagnostics": [],
+            "ready_to_write": True,
+        }
+        result = _invoke(
+            [
+                "write",
+                "workflows/report.py",
+                "--content",
+                "async def report(): return {}\n",
+                "--check-impact",
+            ],
+            captured,
+            {"/api/files/impact": impact, "/api/files/write": {}},
+        )
+
+        assert result.exit_code == 0, result.output
+        assert [item["path"] for item in captured["calls"]] == [
+            "/api/files/impact",
+            "/api/files/write",
+        ]
+        assert captured["calls"][1]["body"]["impact_candidate_id"] == (
+            "sha256:" + "a" * 64
+        )
+
+    def test_checked_write_stops_before_write_on_blocker(self) -> None:
+        captured: dict = {}
+        impact = {
+            "candidate_id": "sha256:" + "a" * 64,
+            "snapshot_id": "sha256:" + "b" * 64,
+            "path": "workflows/report.py",
+            "proposed_sha256": "d" * 64,
+            "current_sha256": "c" * 64,
+            "changed": True,
+            "forward_dependencies": [],
+            "reverse_dependencies": [],
+            "diagnostics": [
+                {
+                    "code": "unresolved_repo_import",
+                    "severity": "blocker",
+                    "message": "missing helpers.shared",
+                    "path": "workflows/report.py",
+                }
+            ],
+            "ready_to_write": False,
+        }
+        result = _invoke(
+            [
+                "write",
+                "workflows/report.py",
+                "--content",
+                "from helpers.shared import VALUE\n",
+                "--check-impact",
+            ],
+            captured,
+            {"/api/files/impact": impact},
+        )
+
+        assert result.exit_code != 0
+        assert "no bytes were written" in result.output
+        assert [item["path"] for item in captured["calls"]] == ["/api/files/impact"]
+
+    def test_version_conflict_is_machine_readable_and_exit_four(self) -> None:
+        request = httpx.Request("POST", "https://bifrost.test/api/files/write")
+        conflict = httpx.Response(
+            409,
+            json={
+                "detail": {
+                    "reason": "version_conflict",
+                    "path": "out.txt",
+                    "expected_version": "sha256:base",
+                    "current_version": "sha256:other",
+                    "message": "File changed after it was read.",
+                }
+            },
+            request=request,
+        )
+        captured: dict = {}
+        result = _invoke(
+            [
+                "write",
+                "out.txt",
+                "--content",
+                "next",
+                "--expected-version",
+                "sha256:base",
+                "--json",
+            ],
+            captured,
+            {"/api/files/write": conflict},
+        )
+        assert result.exit_code == 4
+        payload = __import__("json").loads(result.stderr)
+        assert payload["error"] == "file_conflict"
+        assert payload["reason"] == "version_conflict"
+        assert payload["current_version"] == "sha256:other"
+
 
 class TestList:
     def test_list_default_directory(self) -> None:
@@ -172,6 +446,16 @@ class TestDelete:
         body = captured["calls"][0]["body"]
         assert body["path"] == "old.txt"
 
+    def test_passes_expected_version(self) -> None:
+        captured: dict = {}
+        result = _invoke(
+            ["delete", "old.txt", "--expected-version", "sha256:base"],
+            captured,
+            {"/api/files/delete": {}},
+        )
+        assert result.exit_code == 0, result.output
+        assert captured["calls"][0]["body"]["expected_version"] == "sha256:base"
+
 
 class TestExists:
     def test_exists_true(self) -> None:
@@ -201,14 +485,16 @@ class TestSearch:
         result = _invoke(
             ["search", "TODO"],
             captured,
-            {"/api/files/search": {
-                "query": "TODO",
-                "total_matches": 0,
-                "files_searched": 0,
-                "results": [],
-                "truncated": False,
-                "search_time_ms": 1,
-            }},
+            {
+                "/api/files/search": {
+                    "query": "TODO",
+                    "total_matches": 0,
+                    "files_searched": 0,
+                    "results": [],
+                    "truncated": False,
+                    "search_time_ms": 1,
+                }
+            },
         )
         assert result.exit_code == 0, result.output
         body = captured["calls"][0]["body"]
@@ -221,17 +507,27 @@ class TestSearch:
     def test_search_passes_through_flags(self) -> None:
         captured: dict = {}
         _invoke(
-            ["search", "f.*o", "--regex", "--case-sensitive",
-             "--include", "**/*.py", "--max-results", "50"],
+            [
+                "search",
+                "f.*o",
+                "--regex",
+                "--case-sensitive",
+                "--include",
+                "**/*.py",
+                "--max-results",
+                "50",
+            ],
             captured,
-            {"/api/files/search": {
-                "query": "f.*o",
-                "total_matches": 0,
-                "files_searched": 0,
-                "results": [],
-                "truncated": False,
-                "search_time_ms": 1,
-            }},
+            {
+                "/api/files/search": {
+                    "query": "f.*o",
+                    "total_matches": 0,
+                    "files_searched": 0,
+                    "results": [],
+                    "truncated": False,
+                    "search_time_ms": 1,
+                }
+            },
         )
         body = captured["calls"][0]["body"]
         assert body["is_regex"] is True
@@ -244,17 +540,25 @@ class TestSearch:
         result = _invoke(
             ["search", "x", "--json"],
             captured,
-            {"/api/files/search": {
-                "query": "x",
-                "total_matches": 1,
-                "files_searched": 1,
-                "results": [{
-                    "file_path": "a.py", "line": 3, "column": 0,
-                    "match_text": "x", "context_before": None, "context_after": None,
-                }],
-                "truncated": False,
-                "search_time_ms": 2,
-            }},
+            {
+                "/api/files/search": {
+                    "query": "x",
+                    "total_matches": 1,
+                    "files_searched": 1,
+                    "results": [
+                        {
+                            "file_path": "a.py",
+                            "line": 3,
+                            "column": 0,
+                            "match_text": "x",
+                            "context_before": None,
+                            "context_after": None,
+                        }
+                    ],
+                    "truncated": False,
+                    "search_time_ms": 2,
+                }
+            },
         )
         assert result.exit_code == 0, result.output
         assert '"total_matches": 1' in result.output
@@ -264,6 +568,7 @@ class TestSearch:
 # ---------------------------------------------------------------------------
 # Fix 5: _resolve_solution_install_id slug ambiguity
 # ---------------------------------------------------------------------------
+
 
 class TestResolveSolutionInstallId:
     """_resolve_solution_install_id must error on multi-org slug ambiguity."""
@@ -281,11 +586,13 @@ class TestResolveSolutionInstallId:
         import asyncio
         from bifrost.commands.files import _resolve_solution_install_id
 
-        client = self._make_get_client({
-            "solutions": [
-                {"id": "aaaa-1111", "slug": "my-sol"},
-            ]
-        })
+        client = self._make_get_client(
+            {
+                "solutions": [
+                    {"id": "aaaa-1111", "slug": "my-sol"},
+                ]
+            }
+        )
         result = asyncio.get_event_loop().run_until_complete(
             _resolve_solution_install_id(client, "my-sol")
         )
@@ -293,7 +600,9 @@ class TestResolveSolutionInstallId:
 
     def test_no_match_raises(self) -> None:
         client = self._make_get_client({"solutions": []})
-        with mock.patch("bifrost.client.BifrostClient.get_instance", return_value=client):
+        with mock.patch(
+            "bifrost.client.BifrostClient.get_instance", return_value=client
+        ):
             runner = CliRunner()
             # Invoke a real read command; slug won't resolve → ClickException
             result = runner.invoke(
@@ -309,12 +618,14 @@ class TestResolveSolutionInstallId:
         import click
         from bifrost.commands.files import _resolve_solution_install_id
 
-        client = self._make_get_client({
-            "solutions": [
-                {"id": "aaaa-1111", "slug": "shared-sol"},
-                {"id": "bbbb-2222", "slug": "shared-sol"},
-            ]
-        })
+        client = self._make_get_client(
+            {
+                "solutions": [
+                    {"id": "aaaa-1111", "slug": "shared-sol"},
+                    {"id": "bbbb-2222", "slug": "shared-sol"},
+                ]
+            }
+        )
         with pytest.raises(click.ClickException, match="multiple orgs"):
             asyncio.get_event_loop().run_until_complete(
                 _resolve_solution_install_id(client, "shared-sol")

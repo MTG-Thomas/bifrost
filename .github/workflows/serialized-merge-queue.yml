@@ -1,0 +1,57 @@
+name: Serialized Merge Queue
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+  pull_request_target:
+    types: [labeled, reopened]
+  workflow_run:
+    workflows: [CI, CodeQL]
+    types: [completed]
+
+concurrency:
+  group: serialized-merge-queue-main
+  cancel-in-progress: false
+
+jobs:
+  advance:
+    name: Advance protected queue
+    permissions:
+      actions: write # dispatch the artifact-producing post-merge CI run
+      checks: read # validate exact-head check runs
+      contents: write # call the protected pull-request merge API
+      issues: write # manage queue labels and failure comments
+      pull-requests: write # squash merge the validated pull request
+    if: >-
+      (github.event_name != 'workflow_run' || github.event.workflow_run.head_branch != 'main') &&
+      (github.event_name != 'pull_request_target' ||
+       (github.event.action == 'labeled' && github.event.label.name == 'merge-queued') ||
+       (github.event.action == 'reopened' && contains(github.event.pull_request.labels.*.name, 'merge-queued')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout trusted main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Advance oldest eligible pull request
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SERIALIZED_MERGE_QUEUE_SSH_KEY: ${{ secrets.SERIALIZED_MERGE_QUEUE_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          queue_ssh_dir="$(mktemp -d)"
+          trap 'rm -rf "$queue_ssh_dir"' EXIT
+          umask 077
+          if [[ -z "$SERIALIZED_MERGE_QUEUE_SSH_KEY" ]]; then
+            echo "SERIALIZED_MERGE_QUEUE_SSH_KEY is required" >&2
+            exit 1
+          fi
+          printf '%s\n' "$SERIALIZED_MERGE_QUEUE_SSH_KEY" > "$queue_ssh_dir/id_ed25519"
+          printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > "$queue_ssh_dir/known_hosts"
+          export QUEUE_DEPLOY_KEY_PATH="$queue_ssh_dir/id_ed25519"
+          export QUEUE_KNOWN_HOSTS_PATH="$queue_ssh_dir/known_hosts"
+          python3 api/scripts/serialized_merge_queue.py

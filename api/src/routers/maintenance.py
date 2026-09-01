@@ -7,13 +7,17 @@ Platform admin resource - no org scoping.
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.auth import Context, CurrentSuperuser
 from src.core.database import get_db
+from src.jobs.platform.system_maintenance import (
+    ARTIFACT_RETENTION_CLEANUP_DEFINITION,
+    EmptyMaintenancePayload,
+)
 from src.models import (
     CleanupOrphanedResponse,
     DocsIndexResponse,
@@ -23,22 +27,117 @@ from src.models import (
     PreflightResponse,
     ReimportJobResponse,
 )
+from src.models.contracts.artifact_retention import (
+    ArtifactRetentionSettings,
+    ArtifactRetentionSettingsUpdate,
+)
 from src.models.contracts.notifications import (
     NotificationCategory,
     NotificationCreate,
     NotificationStatus,
 )
+from src.models.contracts.platform_jobs import PlatformJobAccepted
 from src.models.orm import (
     Application,
     Workflow,
 )
 from src.models.orm.file_index import FileIndex
 from src.services.app_dependencies import parse_dependencies
+from src.services.artifact_retention import ArtifactRetentionSettingsService
 from src.services.notification_service import get_notification_service
+from src.services.platform_jobs import (
+    ensure_platform_job_notification,
+    enqueue_platform_job,
+    publish_platform_job_update,
+)
+from src.services.workspace_release_files import active_workspace_release_file_view
+from src.services.workspace_release_registration_authority import (
+    WorkspaceReleaseRegistrationGoverned,
+    guard_workspace_registration_mutation,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/maintenance", tags=["Maintenance"])
+
+
+@router.get(
+    "/artifact-retention/settings",
+    response_model=ArtifactRetentionSettings,
+    summary="Get artifact retention settings",
+)
+async def get_artifact_retention_settings(
+    user: CurrentSuperuser,
+    db: AsyncSession = Depends(get_db),
+) -> ArtifactRetentionSettings:
+    return await ArtifactRetentionSettingsService(db).get_settings()
+
+
+@router.put(
+    "/artifact-retention/settings",
+    response_model=ArtifactRetentionSettings,
+    summary="Update artifact retention settings",
+)
+async def update_artifact_retention_settings(
+    request: ArtifactRetentionSettingsUpdate,
+    user: CurrentSuperuser,
+    db: AsyncSession = Depends(get_db),
+) -> ArtifactRetentionSettings:
+    service = ArtifactRetentionSettingsService(db)
+    settings = await service.update_settings(
+        ArtifactRetentionSettings.model_validate(request.model_dump()),
+        updated_by=user.email,
+    )
+    await db.commit()
+    return settings
+
+
+@router.post(
+    "/artifact-retention/cleanup",
+    response_model=PlatformJobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Clean up expired artifacts",
+)
+async def cleanup_artifact_retention(
+    response: Response,
+    user: CurrentSuperuser,
+    db: AsyncSession = Depends(get_db),
+) -> PlatformJobAccepted:
+    job, reused = await enqueue_platform_job(
+        db,
+        ARTIFACT_RETENTION_CLEANUP_DEFINITION,
+        EmptyMaintenancePayload(),
+        dedupe_key="manual",
+        resource_lock_key=ARTIFACT_RETENTION_CLEANUP_DEFINITION.job_type,
+        priority=500,
+        organization_id=None,
+        requested_by_user_id=user.user_id,
+        requested_by_email=user.email,
+        requested_by_name=user.name or user.email or "Unknown",
+        resource_type="system",
+        resource_id=ARTIFACT_RETENTION_CLEANUP_DEFINITION.job_type,
+        title="Clean up expired artifacts",
+        action_url="/settings/maintenance",
+    )
+    if job.notification_id is None:
+        try:
+            await ensure_platform_job_notification(db, job)
+        except Exception:
+            logger.warning(
+                "Artifact retention cleanup queued without a progress notification",
+                extra={"platform_job_id": str(job.id)},
+                exc_info=True,
+            )
+    await db.commit()
+    await db.refresh(job)
+    await publish_platform_job_update(job)
+    response.headers["Location"] = f"/api/platform-jobs/{job.id}"
+    return PlatformJobAccepted(
+        job_id=job.id,
+        notification_id=job.notification_id,
+        status=job.status,
+        reused=reused,
+    )
 
 
 @router.get(
@@ -168,6 +267,7 @@ async def index_documentation(
     description="Queue a reimport of all entities from S3. Poll GET /api/jobs/{job_id} for result.",
 )
 async def reimport_from_repo(
+    ctx: Context,
     user: CurrentSuperuser,
 ) -> ReimportJobResponse:
     """
@@ -176,13 +276,31 @@ async def reimport_from_repo(
     Returns a job_id immediately. Poll GET /api/jobs/{job_id} for completion.
     Platform admin only.
     """
-    from uuid import uuid4
+    from src.jobs.platform.reimport import (
+        WORKSPACE_REIMPORT_DEFINITION,
+        WorkspaceReimportPayload,
+    )
+    from src.services.platform_jobs import enqueue_platform_job, publish_platform_job_update
 
-    from src.core.pubsub import publish_reimport_request
-
-    job_id = str(uuid4())
-    await publish_reimport_request(job_id)
-    return ReimportJobResponse(status="queued", job_id=job_id)
+    job, _ = await enqueue_platform_job(
+        ctx.db,
+        WORKSPACE_REIMPORT_DEFINITION,
+        WorkspaceReimportPayload(),
+        dedupe_key="workspace",
+        resource_lock_key="workspace",
+        priority=500,
+        organization_id=None,
+        requested_by_user_id=user.user_id,
+        requested_by_email=user.email,
+        requested_by_name=user.name or user.email or "Unknown",
+        resource_type="workspace",
+        resource_id="_repo",
+        title="Reimport workspace",
+        action_url="/diagnostics",
+    )
+    await ctx.db.commit()
+    await publish_platform_job_update(job)
+    return ReimportJobResponse(status=job.status, job_id=str(job.id))
 
 
 @router.post(
@@ -215,16 +333,25 @@ async def cleanup_orphaned(
         wf_result = await db.execute(
             select(Workflow).where(Workflow.is_active.is_(True))
         )
-        for wf in wf_result.scalars().all():
-            if wf.path and wf.path not in existing_paths:
-                wf.is_active = False
-                wf.is_orphaned = True
-                cleaned.append(OrphanedEntity(
-                    entity_type="workflow",
-                    entity_id=str(wf.id),
-                    entity_name=wf.display_name or wf.name,
-                    path=wf.path,
-                ))
+        orphaned_workflows = [
+            wf
+            for wf in wf_result.scalars().all()
+            if wf.path and wf.path not in existing_paths
+        ]
+        await guard_workspace_registration_mutation(
+            db,
+            operation="clean up orphaned workflows",
+            workflows=orphaned_workflows,
+        )
+        for wf in orphaned_workflows:
+            wf.is_active = False
+            wf.is_orphaned = True
+            cleaned.append(OrphanedEntity(
+                entity_type="workflow",
+                entity_id=str(wf.id),
+                entity_name=wf.display_name or wf.name,
+                path=wf.path,
+            ))
 
         await db.commit()
 
@@ -240,6 +367,11 @@ async def cleanup_orphaned(
             count=len(cleaned),
         )
 
+    except WorkspaceReleaseRegistrationGoverned as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
     except Exception as e:
         logger.error(f"Error cleaning up orphaned entities: {e}", exc_info=True)
         raise HTTPException(
@@ -471,19 +603,27 @@ async def run_preflight(
     # generational GC doesn't reclaim them promptly. Fix: process one file
     # at a time and `del` the tree + strings before the next iteration so
     # peak RSS is bounded to a single file's AST, not the whole workspace.
-    py_files = [f for f in all_files if f.path.endswith(".py")]
+    release_view = await active_workspace_release_file_view(db, None)
+    py_paths = {f.path for f in all_files if f.path.endswith(".py")}
+    if release_view is not None:
+        py_paths.update(
+            path for path in await release_view.list() if path.endswith(".py")
+        )
     decorator_names = {"workflow", "tool", "data_provider"}
-    for py_file in py_files:
+    for py_path in sorted(py_paths):
         # Parse → collect candidate function names → release AST. All of
         # this is synchronous so when the block exits the AST and content
         # are released before we hit any `await`. Previous shape held the
         # tree across the inner `await db.execute(...)` which kept it alive
         # for the full DB round trip per decorator.
         try:
-            content_result = await service.read_file(py_file.path)
-            content = content_result[0] if isinstance(content_result, tuple) else content_result
+            if release_view is not None and release_view.governs(py_path):
+                content = await release_view.read(py_path)
+            else:
+                content_result = await service.read_file(py_path)
+                content = content_result[0] if isinstance(content_result, tuple) else content_result
             content_str = content.decode("utf-8", errors="replace")
-            tree = ast.parse(content_str, filename=py_file.path)
+            tree = ast.parse(content_str, filename=py_path)
         except Exception:
             continue
 
@@ -510,7 +650,7 @@ async def run_preflight(
         for fn_name in candidates:
             result = await db.execute(
                 select(Workflow).where(
-                    Workflow.path == py_file.path,
+                    Workflow.path == py_path,
                     Workflow.function_name == fn_name,
                     Workflow.is_active.is_(True),
                 )
@@ -522,11 +662,11 @@ async def run_preflight(
                         category="unregistered_function",
                         detail=(
                             f"Decorated function '{fn_name}' in"
-                            f" {py_file.path} is not registered."
+                            f" {py_path} is not registered."
                             " Use POST /api/workflows/register to"
                             " register it."
                         ),
-                        path=py_file.path,
+                        path=py_path,
                     )
                 )
 

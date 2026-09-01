@@ -33,6 +33,7 @@ def _form(**overrides):
         id=uuid4(),
         name="Ticket intake",
         description="Collect ticket details",
+        confirmation_markdown="## Form submitted\n\nThank you!",
         workflow_id=uuid4(),
         launch_workflow_id=None,
         is_active=True,
@@ -294,6 +295,7 @@ class TestCreateFormTool:
             "success": True,
             "id": str(created_forms[0].id),
             "name": "Ticket intake",
+            "confirmation_markdown": "## Form submitted\n\nThank you!",
             "url": f"/forms/{created_forms[0].id}",
             "workflow_id": workflow_id,
             "workflow_name": "Submit ticket",
@@ -509,6 +511,7 @@ class TestUpdateFormTool:
             "success": True,
             "id": str(form.id),
             "name": "New intake",
+            "confirmation_markdown": "## Form submitted\n\nThank you!",
             "updates": ["name", "description", "launch_workflow_id", "is_active", "fields"],
         }
         assert form.description == "Updated"

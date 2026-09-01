@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from src.services.file_storage import azure_blob_client as azure_blob_client_module
 from src.services.file_storage.azure_blob_client import AzureBlobStorageClient
 
 
@@ -209,10 +210,9 @@ async def test_list_objects_v2_shapes_contents_prefixes_and_continuation_token()
     client = AzureBlobStorageClient(_settings())
 
     class FakePager:
-        continuation_token = "next-token"
-
         def __init__(self):
             self._sent = False
+            self.continuation_token = None
 
         def by_page(self, continuation_token=None):
             assert continuation_token == "incoming-token"
@@ -225,15 +225,20 @@ async def test_list_objects_v2_shapes_contents_prefixes_and_continuation_token()
             if self._sent:
                 raise StopAsyncIteration
             self._sent = True
-            return [
-                SimpleNamespace(
+
+            async def page():
+                yield SimpleNamespace(
                     name="forms/a.txt",
                     size=10,
                     etag='"etag-a"',
                     last_modified="today",
-                ),
-                SimpleNamespace(name="forms/nested/b.txt", size=20, etag='"etag-b"'),
-            ]
+                )
+                yield SimpleNamespace(
+                    name="forms/nested/b.txt", size=20, etag='"etag-b"'
+                )
+                self.continuation_token = "next-token"
+
+            return page()
 
     class FakeContainer:
         def list_blobs(self, **kwargs):
@@ -405,7 +410,7 @@ async def test_copy_object_polls_until_success(monkeypatch) -> None:
     async def sleep(seconds: float) -> None:
         sleeps.append(seconds)
 
-    monkeypatch.setattr("src.services.file_storage.azure_blob_client.asyncio.sleep", sleep)
+    monkeypatch.setattr(azure_blob_client_module.asyncio, "sleep", sleep)
 
     class FakeDestBlob:
         def __init__(self):
@@ -445,7 +450,7 @@ async def test_copy_object_polls_until_success(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_copy_object_returns_immediately_when_start_reports_success(monkeypatch) -> None:
     sleep = AsyncMock()
-    monkeypatch.setattr("src.services.file_storage.azure_blob_client.asyncio.sleep", sleep)
+    monkeypatch.setattr(azure_blob_client_module.asyncio, "sleep", sleep)
 
     class FakeDestBlob:
         async def start_copy_from_url(self, source_url):
@@ -476,10 +481,7 @@ async def test_copy_object_returns_immediately_when_start_reports_success(monkey
 
 @pytest.mark.asyncio
 async def test_copy_object_raises_on_failed_copy(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "src.services.file_storage.azure_blob_client.asyncio.sleep",
-        AsyncMock(),
-    )
+    monkeypatch.setattr(azure_blob_client_module.asyncio, "sleep", AsyncMock())
 
     class FakeDestBlob:
         async def start_copy_from_url(self, source_url):
@@ -506,10 +508,7 @@ async def test_copy_object_raises_on_failed_copy(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_copy_object_raises_on_aborted_copy(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "src.services.file_storage.azure_blob_client.asyncio.sleep",
-        AsyncMock(),
-    )
+    monkeypatch.setattr(azure_blob_client_module.asyncio, "sleep", AsyncMock())
 
     class FakeDestBlob:
         async def start_copy_from_url(self, source_url):
@@ -580,6 +579,87 @@ async def test_put_and_delete_object_use_blob_content_settings(monkeypatch) -> N
 
 
 @pytest.mark.asyncio
+async def test_chunked_object_round_trip_is_streamed_and_hashed(monkeypatch) -> None:
+    uploaded: dict = {}
+
+    class ContentSettings:
+        def __init__(self, content_type):
+            self.content_type = content_type
+
+    monkeypatch.setitem(
+        sys.modules,
+        "azure.storage.blob",
+        SimpleNamespace(ContentSettings=ContentSettings),
+    )
+
+    class FakeDownload:
+        async def chunks(self):
+            yield b"abcde"
+            yield b"f"
+
+    class FakeContainer:
+        async def upload_blob(self, **kwargs):
+            uploaded.update(kwargs)
+            uploaded["content"] = b"".join([chunk async for chunk in kwargs["data"]])
+
+        async def download_blob(self, key):
+            assert key == "jobs/input.zip"
+            return FakeDownload()
+
+    async def source_chunks():
+        yield b"ab"
+        yield b""
+        yield b"cdef"
+
+    client = AzureBlobStorageClient(_settings())
+    client._container_client = FakeContainer()
+
+    digest, size = await client.put_object_from_chunks(
+        "jobs/input.zip",
+        source_chunks(),
+        content_type="application/zip",
+        part_size=3,
+    )
+    downloaded = [
+        chunk
+        async for chunk in client.iter_object_chunks("jobs/input.zip", chunk_size=3)
+    ]
+
+    assert digest == "bef57ec7f53a6d40beb640a780a639c83bc29ac8a9816f1fc6c5c6dcd93c4721"
+    assert size == 6
+    assert uploaded["name"] == "jobs/input.zip"
+    assert uploaded["content"] == b"abcdef"
+    assert uploaded["overwrite"] is True
+    assert uploaded["content_settings"].content_type == "application/zip"
+    assert downloaded == [b"abc", b"de", b"f"]
+
+
+@pytest.mark.asyncio
+async def test_chunked_object_operations_reject_nonpositive_chunk_sizes() -> None:
+    client = AzureBlobStorageClient(_settings())
+    client._ensure_client = AsyncMock()
+
+    async def source_chunks():
+        yield b"data"
+
+    with pytest.raises(ValueError, match="part_size must be greater than zero"):
+        await client.put_object_from_chunks(
+            "jobs/input.zip",
+            source_chunks(),
+            part_size=0,
+        )
+
+    with pytest.raises(ValueError, match="chunk_size must be greater than zero"):
+        async for _chunk in client.iter_object_chunks(
+            "jobs/input.zip",
+            chunk_size=0,
+        ):
+            pass
+
+    client._ensure_client.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_delete_object_ignores_missing_blob(monkeypatch) -> None:
     class ResourceNotFoundError(Exception):
         pass
@@ -603,7 +683,7 @@ async def test_delete_object_ignores_missing_blob(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_copy_object_times_out_when_copy_never_finishes(monkeypatch) -> None:
     sleep = AsyncMock()
-    monkeypatch.setattr("src.services.file_storage.azure_blob_client.asyncio.sleep", sleep)
+    monkeypatch.setattr(azure_blob_client_module.asyncio, "sleep", sleep)
 
     class FakeDestBlob:
         async def start_copy_from_url(self, source_url):

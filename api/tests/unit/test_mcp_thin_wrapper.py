@@ -99,10 +99,13 @@ PARITY_HANDLERS: dict[str, set[str]] = {
         "delete_policy_rule",
     },
     "gateway": {
-        "bifrost_find_agents",
-        "bifrost_get_agent",
-        "bifrost_get_tool_schema",
+        "bifrost_get_required_instructions",
+        "bifrost_search_capabilities",
         "bifrost_execute_tool",
+        "bifrost_get_execution",
+        "bifrost_search_memory",
+        "bifrost_save_memory",
+        "bifrost_remove_memory",
     },
 }
 

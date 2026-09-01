@@ -4,7 +4,7 @@ E2E: search_knowledge exposure and scoping over the MCP HTTP transport.
 Two MCP surfaces:
 
 - POST /mcp                — progressive agent discovery and dispatch through
-                              four stable gateway tools.
+                              stable gateway tools.
 - POST /mcp/{agent_id}     — agent-scoped: tools/list and tool calls
                               are limited to that one agent.
 
@@ -24,6 +24,7 @@ Skipped without ``EMBEDDINGS_AI_TEST_KEY`` since search_knowledge calls
 the embedding provider.
 """
 
+import json
 import logging
 import os
 import uuid
@@ -136,7 +137,12 @@ def _gateway_call(
         arguments,
     )
     assert "result" in payload, payload
-    return payload["result"]["structuredContent"]
+    result = payload["result"]
+    structured = result.get("structuredContent")
+    if structured is not None:
+        return structured
+    assert len(result.get("content", [])) == 1, result
+    return json.loads(result["content"][0]["text"])
 
 
 @pytest.fixture(scope="module")
@@ -145,10 +151,20 @@ def _embedding_config(e2e_client, platform_admin):
     if not EMBEDDINGS_AVAILABLE:
         pytest.skip("EMBEDDINGS_AI_TEST_KEY not set")
 
+    connection_resp = e2e_client.post(
+        "/api/admin/ai/connections",
+        json={
+            "name": "MCP Knowledge Embeddings",
+            "provider": "openai",
+            "api_key": os.environ["EMBEDDINGS_AI_TEST_KEY"],
+        },
+        headers=platform_admin.headers,
+    )
+    assert connection_resp.status_code == 201, f"Embedding connection failed: {connection_resp.text}"
+    connection = connection_resp.json()
     config = {
-        "provider": "openai",
+        "connection_id": connection["id"],
         "model": "text-embedding-3-small",
-        "api_key": os.environ["EMBEDDINGS_AI_TEST_KEY"],
     }
     resp = e2e_client.post(
         "/api/admin/llm/embedding-config",
@@ -162,6 +178,10 @@ def _embedding_config(e2e_client, platform_admin):
     try:
         e2e_client.delete(
             "/api/admin/llm/embedding-config",
+            headers=platform_admin.headers,
+        )
+        e2e_client.delete(
+            f"/api/admin/ai/connections/{connection['id']}",
             headers=platform_admin.headers,
         )
     except Exception as e:
@@ -272,18 +292,27 @@ class TestMCPKnowledgeScoping:
         tools = _mcp_list_tools(e2e_client, "/mcp", platform_admin.headers)
 
         assert {tool["name"] for tool in tools} == {
-            "bifrost_find_agents",
-            "bifrost_get_agent",
-            "bifrost_get_tool_schema",
+            "bifrost_get_required_instructions",
+            "bifrost_search_capabilities",
             "bifrost_execute_tool",
+            "bifrost_get_execution",
+            "bifrost_search_memory",
+            "bifrost_save_memory",
+            "bifrost_remove_memory",
         }
         loaded = _gateway_call(
             e2e_client,
             platform_admin.headers,
-            "bifrost_get_agent",
-            {"agent_id": _knowledge_scoping_setup["agent_alpha_id"]},
+            "bifrost_search_capabilities",
+            {
+                "agent_id": _knowledge_scoping_setup["agent_alpha_id"],
+                "query": "search knowledge",
+            },
         )
-        assert any(tool["name"] == "search_knowledge" for tool in loaded["tools"])
+        assert any(
+            tool["name"] == "search_knowledge"
+            for tool in loaded["agents"][0]["matching_tools"]
+        )
 
     def test_agent_scoped_lists_search_knowledge(
         self, e2e_client, platform_admin, _knowledge_scoping_setup
@@ -308,12 +337,15 @@ class TestMCPKnowledgeScoping:
         loaded_alpha = _gateway_call(
             e2e_client,
             platform_admin.headers,
-            "bifrost_get_agent",
-            {"agent_id": _knowledge_scoping_setup["agent_alpha_id"]},
+            "bifrost_search_capabilities",
+            {
+                "agent_id": _knowledge_scoping_setup["agent_alpha_id"],
+                "query": "search knowledge",
+            },
         )
         alpha_ref = next(
             tool["tool_ref"]
-            for tool in loaded_alpha["tools"]
+            for tool in loaded_alpha["agents"][0]["matching_tools"]
             if tool["name"] == "search_knowledge"
         )
         result = _gateway_call(
@@ -326,6 +358,7 @@ class TestMCPKnowledgeScoping:
                 "arguments": {
                     "query": _knowledge_scoping_setup["marker_alpha"],
                 },
+                "operation_id": "knowledge-alpha",
             },
         )
         text_blob = str(result)
@@ -343,6 +376,7 @@ class TestMCPKnowledgeScoping:
                 "arguments": {
                     "query": _knowledge_scoping_setup["marker_beta"],
                 },
+                "operation_id": "knowledge-cross",
             },
         )
         assert _knowledge_scoping_setup["ns_beta"] not in str(cross_result), (
@@ -408,12 +442,15 @@ class TestMCPKnowledgeScoping:
         loaded = _gateway_call(
             e2e_client,
             platform_admin.headers,
-            "bifrost_get_agent",
-            {"agent_id": _knowledge_scoping_setup["agent_alpha_id"]},
+            "bifrost_search_capabilities",
+            {
+                "agent_id": _knowledge_scoping_setup["agent_alpha_id"],
+                "query": "search knowledge",
+            },
         )
         search_ref = next(
             tool["tool_ref"]
-            for tool in loaded["tools"]
+            for tool in loaded["agents"][0]["matching_tools"]
             if tool["name"] == "search_knowledge"
         )
         result = _gateway_call(
@@ -427,6 +464,7 @@ class TestMCPKnowledgeScoping:
                     "query": "anything",
                     "namespace": "this_namespace_does_not_exist",
                 },
+                "operation_id": "knowledge-missing-namespace",
             },
         )
         text_blob = str(result)

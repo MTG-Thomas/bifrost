@@ -14,6 +14,7 @@ from fastmcp.tools import ToolResult
 
 from src.core.system_agents import PRIVILEGED_AGENT_MANAGEMENT_TOOLS
 from src.services.mcp_server.tool_result import error_result, success_result
+from src.services.mcp_server.tools._http_bridge import call_rest
 from src.services.mcp_server.tools.db import get_tool_db
 
 # MCPContext is imported where needed to avoid circular imports
@@ -164,7 +165,7 @@ async def get_agent_schema(context: Any) -> ToolResult:  # noqa: ARG001
 - `get_agent` - Get agent details by ID or name
 - `create_agent` - Create a new agent
 - `update_agent` - Update agent properties
-- `delete_agent` - Soft-delete an agent (deactivate)
+- `delete_agent` - Permanently delete an agent
 """
 
     schema_doc = model_docs + channels_doc
@@ -217,7 +218,7 @@ async def list_agents(context: Any) -> ToolResult:
                     "description": agent.description,
                     "channels": agent.channels,
                     "is_active": agent.is_active,
-                    "llm_model": agent.llm_model,
+                    "llm_profile_id": str(agent.llm_profile_id) if agent.llm_profile_id else None,
                 }
                 for agent in agents
             ]
@@ -290,7 +291,7 @@ async def get_agent(
                 "role_ids": [str(r.id) for r in agent.roles] if agent.roles else [],
                 "knowledge_sources": agent.knowledge_sources or [],
                 "system_tools": agent.system_tools or [],
-                "llm_model": agent.llm_model,
+                "llm_profile_id": str(agent.llm_profile_id) if agent.llm_profile_id else None,
                 "llm_max_tokens": agent.llm_max_tokens,
             }
 
@@ -314,7 +315,7 @@ async def create_agent(
     system_tools: list[str] | None = None,
     scope: str = "organization",
     organization_id: str | None = None,
-    llm_model: str | None = None,
+    llm_profile_id: str | None = None,
     llm_max_tokens: int | None = None,
 ) -> ToolResult:
     """Create a new agent.
@@ -331,6 +332,7 @@ async def create_agent(
         system_tools: List of system tool names enabled for this agent
         scope: 'global' (visible to all orgs) or 'organization' (default)
         organization_id: Override context.org_id when scope='organization'
+        llm_profile_id: Optional model profile UUID for this agent
 
     Returns:
         ToolResult with created agent details
@@ -339,7 +341,7 @@ async def create_agent(
     from sqlalchemy.orm import selectinload
 
     from src.models.enums import AgentAccessLevel
-    from src.models.orm import Agent, AgentDelegation, AgentTool, Workflow
+    from src.models.orm import Agent, AgentDelegation, AgentTool, AIModelProfile, Workflow
 
     logger.info(f"MCP create_agent called: name={name}, scope={scope}")
 
@@ -383,6 +385,13 @@ async def create_agent(
     else:
         channels = ["chat"]
 
+    profile_uuid: UUID | None = None
+    if llm_profile_id:
+        try:
+            profile_uuid = UUID(llm_profile_id)
+        except ValueError:
+            return error_result(f"llm_profile_id '{llm_profile_id}' is not a valid UUID")
+
     # Determine effective organization_id based on scope
     effective_org_id: UUID | None = None
     if scope == "global":
@@ -402,6 +411,13 @@ async def create_agent(
 
     try:
         async with get_tool_db(context) as db:
+            if profile_uuid is not None:
+                profile_exists = await db.scalar(
+                    select(AIModelProfile.id).where(AIModelProfile.id == profile_uuid)
+                )
+                if profile_exists is None:
+                    return error_result(f"llm_profile_id '{llm_profile_id}' does not reference an existing model profile")
+
             agent_id = uuid4()
             now = datetime.now(timezone.utc)
 
@@ -417,7 +433,7 @@ async def create_agent(
                 is_active=True,
                 knowledge_sources=knowledge_sources or [],
                 system_tools=system_tools or [],
-                llm_model=llm_model,
+                llm_profile_id=profile_uuid,
                 llm_max_tokens=llm_max_tokens,
                 created_by=context.user_email,
                 created_at=now,
@@ -527,7 +543,7 @@ async def update_agent(
     delegated_agent_ids: list[str] | None = None,
     knowledge_sources: list[str] | None = None,
     system_tools: list[str] | None = None,
-    llm_model: str | None = None,
+    llm_profile_id: str | None = None,
     llm_max_tokens: int | None = None,
 ) -> ToolResult:
     """Update an existing agent.
@@ -544,6 +560,7 @@ async def update_agent(
         delegated_agent_ids: New list of delegated agent IDs (replaces existing)
         knowledge_sources: New list of knowledge namespaces
         system_tools: New list of system tool names
+        llm_profile_id: New model profile UUID
 
     Returns:
         ToolResult with update confirmation
@@ -551,7 +568,7 @@ async def update_agent(
     from sqlalchemy import delete, select
     from sqlalchemy.orm import selectinload
 
-    from src.models.orm import Agent, AgentDelegation, AgentTool, Workflow
+    from src.models.orm import Agent, AgentDelegation, AgentTool, AIModelProfile, Workflow
 
     logger.info(f"MCP update_agent called: agent_id={agent_id}")
 
@@ -570,6 +587,15 @@ async def update_agent(
         invalid_channels = set(channels) - valid_channels
         if invalid_channels:
             return error_result(f"Invalid channels: {list(invalid_channels)}. Valid options: {list(valid_channels)}")
+
+    profile_uuid: UUID | None = None
+    if llm_profile_id:
+        try:
+            profile_uuid = UUID(llm_profile_id)
+        except ValueError:
+            return error_result(
+                f"llm_profile_id '{llm_profile_id}' is not a valid UUID"
+            )
 
     privilege_error = _ensure_can_manage_agent_privileges(
         context,
@@ -645,9 +671,17 @@ async def update_agent(
                 agent.system_tools = system_tools
                 updates_made.append("system_tools")
 
-            if llm_model is not None:
-                agent.llm_model = llm_model if llm_model else None
-                updates_made.append("llm_model")
+            if llm_profile_id is not None:
+                if profile_uuid is None:
+                    agent.llm_profile_id = None
+                else:
+                    profile_exists = await db.scalar(
+                        select(AIModelProfile.id).where(AIModelProfile.id == profile_uuid)
+                    )
+                    if profile_exists is None:
+                        return error_result(f"llm_profile_id '{llm_profile_id}' does not reference an existing model profile")
+                    agent.llm_profile_id = profile_uuid
+                updates_made.append("llm_profile_id")
 
             if llm_max_tokens is not None:
                 agent.llm_max_tokens = llm_max_tokens if llm_max_tokens > 0 else None
@@ -752,7 +786,7 @@ async def delete_agent(
     context: Any,
     agent_id: str,
 ) -> ToolResult:
-    """Delete an agent (soft delete).
+    """Permanently delete an agent through the canonical REST endpoint.
 
     Args:
         context: MCP context with user permissions
@@ -766,55 +800,26 @@ async def delete_agent(
     if not agent_id:
         return error_result("agent_id is required")
 
-    # Validate agent_id is a valid UUID
     try:
         uuid_id = UUID(agent_id)
     except ValueError:
         return error_result(f"'{agent_id}' is not a valid UUID")
 
-    try:
-        async with get_tool_db(context) as db:
-            agent = await _load_accessible_agent(
-                context,
-                db,
-                agent_id=uuid_id,
-            )
+    status_code, body = await call_rest(
+        context,
+        "DELETE",
+        f"/api/agents/{uuid_id}",
+    )
+    if status_code != 204:
+        return error_result(
+            f"delete_agent failed: HTTP {status_code}",
+            {"body": body},
+        )
 
-            if not agent:
-                return error_result(f"Agent '{agent_id}' not found. Use list_agents to see available agents.")
-
-            # Solution-managed agents are read-only (criterion 6). Refuse BEFORE
-            # mutating so the caller gets the clean locked message instead of the
-            # before_flush backstop raising a 500 (audit M-MCP).
-            from src.services.solutions.guard import (
-                SOLUTION_MANAGED_MESSAGE,
-                is_solution_managed,
-            )
-
-            if is_solution_managed(agent):
-                return error_result(SOLUTION_MANAGED_MESSAGE)
-
-            if not _can_manage_agent(context, agent):
-                return error_result("You can only delete your own private agents.")
-
-            # Soft delete
-            agent.is_active = False
-            agent.updated_at = datetime.now(timezone.utc)
-            await db.flush()
-
-            logger.info(f"Deleted (soft) agent {agent.id}: {agent.name}")
-
-            display_text = f"Deleted agent: {agent.name}"
-            return success_result(display_text, {
-                "success": True,
-                "id": str(agent.id),
-                "name": agent.name,
-                "message": f"Agent '{agent.name}' has been deactivated.",
-            })
-
-    except Exception as e:
-        logger.exception(f"Error deleting agent via MCP: {e}")
-        return error_result(f"Error deleting agent: {str(e)}")
+    return success_result(
+        f"Deleted agent {uuid_id}",
+        {"deleted": str(uuid_id)},
+    )
 
 
 # Tool metadata for registration
@@ -823,7 +828,7 @@ TOOLS = [
     ("get_agent", "Get Agent", "Get detailed information about a specific agent including assigned tools and delegation targets."),
     ("create_agent", "Create Agent", "Create a new AI agent with system prompt and configuration."),
     ("update_agent", "Update Agent", "Update an existing agent's properties."),
-    ("delete_agent", "Delete Agent", "Delete an agent (soft delete - sets is_active to false)."),
+    ("delete_agent", "Delete Agent", "Permanently delete an agent."),
 ]
 
 

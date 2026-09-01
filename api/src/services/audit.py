@@ -2,9 +2,9 @@
 Audit log emission helper.
 
 Call emit_audit() from any code path that performs an auditable action.
-The helper reads the ActorContext from audit_context.py, writes an
-audit_logs row, and swallows its own errors so audit failures never break
-the primary operation.
+The helper reads the ActorContext from audit_context.py and writes an
+audit_logs row. Events are best-effort by default; security-sensitive callers
+may require atomic audit persistence with ``strict=True``.
 
 For HTTP-originated calls, the FastAPI audit dependency populates the
 ActorContext automatically, so handlers just call
@@ -39,6 +39,7 @@ async def emit_audit(
     outcome: Outcome = "success",
     details: dict[str, Any] | None = None,
     actor_override: ActorContext | None = None,
+    strict: bool = False,
 ) -> None:
     """
     Record an audit log entry for the current actor.
@@ -53,15 +54,19 @@ async def emit_audit(
         details: Event-specific metadata stored as JSONB.
         actor_override: For worker/CLI/scheduler callers that don't have an
             HTTP actor context. When passed, used instead of current_actor().
+        strict: Re-raise a final audit insertion failure so a security-sensitive
+            caller can roll back its primary mutation in the same transaction.
 
-    Audit failures are logged and swallowed — they must not break the
-    caller's primary operation.
+    Audit failures are logged and swallowed unless ``strict`` is set.
     """
     actor = actor_override or current_actor()
 
-    # No actor context = non-HTTP path without explicit override. Skip silently.
-    # This avoids logging worker-originated changes as if they were user-initiated.
+    # No actor context = non-HTTP path without explicit override. Skip ordinary
+    # best-effort events, but fail strict security events so their primary
+    # transaction cannot commit without an audit row.
     if actor is None:
+        if strict:
+            raise RuntimeError("Strict audit event requires an actor context")
         return
 
     async def _insert(user_id: UUID | None) -> None:
@@ -102,6 +107,8 @@ async def emit_audit(
             logger.warning(
                 "Failed to emit audit event %s: %s", action, exc, exc_info=True
             )
+            if strict:
+                raise
     except Exception as exc:
         # Audit failures must never break the primary operation.
         logger.warning(
@@ -110,3 +117,57 @@ async def emit_audit(
             exc,
             exc_info=True,
         )
+        if strict:
+            raise
+
+
+async def emit_file_policy_deny(
+    db: AsyncSession,
+    *,
+    policy_action: str,
+    location: str,
+    path: str,
+    scope: str | None,
+    solution_id: UUID | None,
+    actor_override: ActorContext | None = None,
+) -> None:
+    """Emit the canonical Event Log payload for a denied file operation."""
+    await emit_audit(
+        db,
+        "policy.deny",
+        resource_type="file",
+        outcome="failure",
+        details={
+            "policy_action": policy_action,
+            "location": location,
+            "path": path,
+            "scope": scope,
+            "solution_id": str(solution_id) if solution_id else None,
+        },
+        actor_override=actor_override,
+    )
+
+
+async def emit_table_policy_deny(
+    db: AsyncSession,
+    *,
+    policy_action: str,
+    table_id: UUID,
+    table_name: str,
+    resource_id: UUID | None = None,
+    actor_override: ActorContext | None = None,
+) -> None:
+    """Emit the canonical Event Log payload for a denied table operation."""
+    await emit_audit(
+        db,
+        "policy.deny",
+        resource_type="table_document",
+        resource_id=resource_id,
+        outcome="failure",
+        details={
+            "policy_action": policy_action,
+            "table_id": str(table_id),
+            "table_name": table_name,
+        },
+        actor_override=actor_override,
+    )

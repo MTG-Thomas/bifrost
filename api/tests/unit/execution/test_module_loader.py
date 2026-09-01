@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-
+from shared.workspace_effects import WorkflowBounds, WorkflowEffect
 from src.services.execution import module_loader
 from src.services.execution.module_loader import (
     DataProviderMetadata,
@@ -25,12 +25,14 @@ def test_exec_from_db_sets_module_dunders_and_exports_function() -> None:
         "VALUE = 41\n\ndef run():\n    return VALUE + 1\n",
         "features/tickets/workflows/run_ticket.py",
         "run",
+        workspace_generation="generation-1",
     )
 
     try:
         assert module.__name__ == "features.tickets.workflows.run_ticket"
         assert module.__file__ == "features/tickets/workflows/run_ticket.py"
         assert module.__package__ == "features.tickets.workflows"
+        assert module.__workspace_generation__ == "generation-1"
         assert module.run() == 42
         assert sys.modules["features.tickets.workflows.run_ticket"] is module
     finally:
@@ -184,6 +186,9 @@ def test_convert_workflow_metadata_maps_legacy_fields() -> None:
         tool_description="Sync tickets",
         time_saved=15,
         value=25.5,
+        effects=(WorkflowEffect(kind="integration.write", target="HaloPSA"),),
+        enforced_bounds=WorkflowBounds(max_records_written=10),
+        requested_bounds=WorkflowBounds(max_duration_seconds=30),
     )
 
     converted = module_loader._convert_workflow_metadata(legacy)
@@ -206,6 +211,11 @@ def test_convert_workflow_metadata_maps_legacy_fields() -> None:
     assert converted.tool_description == "Sync tickets"
     assert converted.time_saved == 15
     assert converted.value == 25.5
+    assert converted.effects == (
+        WorkflowEffect(kind="integration.write", target="HaloPSA"),
+    )
+    assert converted.enforced_bounds == WorkflowBounds(max_records_written=10)
+    assert converted.requested_bounds == WorkflowBounds(max_duration_seconds=30)
 
 
 def test_convert_data_provider_metadata_maps_legacy_fields() -> None:
@@ -220,6 +230,9 @@ def test_convert_data_provider_metadata_maps_legacy_fields() -> None:
         function="callable-marker",
         cache_ttl_seconds=900,
         source="workspace",
+        effects=(),
+        enforced_bounds=WorkflowBounds(max_records_read=100),
+        requested_bounds=None,
     )
 
     converted = module_loader._convert_data_provider_metadata(legacy)
@@ -236,6 +249,9 @@ def test_convert_data_provider_metadata_maps_legacy_fields() -> None:
         function="callable-marker",
         cache_ttl_seconds=900,
         source="workspace",
+        effects=(),
+        enforced_bounds=WorkflowBounds(max_records_read=100),
+        requested_bounds=None,
     )
 
 

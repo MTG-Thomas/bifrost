@@ -12,11 +12,22 @@ from src.models.orm.agent_run_flag_conversations import AgentRunFlagConversation
 from src.models.orm.agent_run_verdict_history import AgentRunVerdictHistory
 from src.models.orm.agent_runs import AgentRun, AgentRunStep
 from src.models.orm.summary_backfill_job import SummaryBackfillJob
-from src.models.orm.agents import Agent, AgentDelegation, AgentRole, AgentTool, Conversation, Message
+from src.models.orm.agents import Agent, AgentDelegation, AgentRole, AgentTool, Conversation, Message, MessageAttachment
 from src.models.orm.ai_usage import AIModelPricing, AIUsage
+from src.models.orm.ai_models import AIEmbeddingConfig, AIModelAssignment, AIModelProfile, AIProviderConnection
 from src.models.orm.app_embed_secrets import AppEmbedSecret
+from src.models.orm.artifacts import Artifact
 from src.models.orm.platform_jobs import PlatformJob
+from src.models.orm.operation_receipts import OperationReceipt
+from src.models.orm.scheduler_leases import SchedulerLease
+from src.models.orm.scheduler_diagnostics import (
+    SchedulerReplica,
+    SchedulerTaskRun,
+    SchedulerTaskState,
+    SystemDiagnosticLog,
+)
 from src.models.orm.form_embed_secrets import FormEmbedSecret
+from src.models.orm.form_publications import FormPublication
 from src.models.orm.app_roles import AppRole
 from src.models.orm.applications import Application
 from src.models.orm.audit import AuditLog
@@ -31,6 +42,10 @@ from src.models.orm.codex_gateway import (
 from src.models.orm.config import Config, SystemConfig
 from src.models.orm.events import Event, EventDelivery, EventSource, EventSubscription, WebhookSource
 from src.models.orm.executions import Execution, ExecutionLog
+from src.models.orm.execution_attempts import ExecutionAttempt
+from src.models.orm.execution_lifecycle_events import ExecutionLifecycleEvent
+from src.models.orm.worker_control_commands import WorkerControlCommand
+from src.models.orm.poison_message_dispositions import PoisonMessageDisposition
 from src.models.orm.external_mcp import (
     AgentMCPConnection,
     MCPConnection,
@@ -42,8 +57,10 @@ from src.models.orm.forms import Form, FormField, FormRole
 from src.models.orm.integrations import Integration, IntegrationConfigSchema, IntegrationMapping
 from src.models.orm.knowledge import KnowledgeStore
 from src.models.orm.knowledge_sources import KnowledgeNamespaceRole
+from src.models.orm.memory import MemoryEntry, MemoryStore
 from src.models.orm.metrics import ExecutionMetricsDaily, KnowledgeStorageDaily, PlatformMetricsSnapshot, WorkflowROIDaily
 from src.models.orm.mfa import MFARecoveryCode, TrustedDevice, UserMFAMethod, UserOAuthAccount
+from src.models.orm.mcp_catalog_revision import MCPCatalogRevision
 from src.models.orm.oauth import OAuthProvider, OAuthToken
 from src.models.orm.organizations import Organization
 from src.models.orm.pending_capture import PendingCaptureORM
@@ -68,6 +85,12 @@ from src.models.orm.file_metadata import FileMetadata, FilePolicy
 from src.models.orm.policy_rule import PolicyRule
 from src.models.orm.worker_metric import WorkerMetric
 from src.models.orm.workspace_repo_changesets import WorkspaceRepoChangeset
+from src.models.orm.workspace_promotions import (
+    SolutionDeployObligation,
+    WorkspacePromotionArtifact,
+    WorkspacePromotionRelease,
+    WorkspaceSourceRelease,
+)
 
 __all__ = [
     # Base
@@ -82,11 +105,19 @@ __all__ = [
     "SolutionDeployJob",
     "SolutionDeployment",
     "SolutionDeploymentDependency",
+    "SolutionDeployObligation",
     "SolutionExportJob",
     "PendingCaptureORM",
     # Applications (App Builder)
     "Application",
+    "Artifact",
     "PlatformJob",
+    "OperationReceipt",
+    "SchedulerLease",
+    "SchedulerReplica",
+    "SchedulerTaskRun",
+    "SchedulerTaskState",
+    "SystemDiagnosticLog",
     "AppEmbedSecret",
     "AppRole",
     # Users and Roles
@@ -108,16 +139,26 @@ __all__ = [
     "AgentRole",
     "Conversation",
     "Message",
+    "MessageAttachment",
     # AI Usage
     "AIModelPricing",
     "AIUsage",
+    "AIModelAssignment",
+    "AIEmbeddingConfig",
+    "AIModelProfile",
+    "AIProviderConnection",
     # Forms
     "Form",
     "FormField",
     "FormRole",
     "FormEmbedSecret",
+    "FormPublication",
     # Executions
     "Execution",
+    "ExecutionAttempt",
+    "ExecutionLifecycleEvent",
+    "WorkerControlCommand",
+    "PoisonMessageDisposition",
     "ExecutionLog",
     # CLI Sessions
     "CLISession",
@@ -134,6 +175,7 @@ __all__ = [
     # OAuth
     "OAuthProvider",
     "OAuthToken",
+    "MCPCatalogRevision",
     # Integrations
     "Integration",
     "IntegrationConfigSchema",
@@ -142,6 +184,9 @@ __all__ = [
     "KnowledgeStore",
     # Knowledge Namespace Roles
     "KnowledgeNamespaceRole",
+    # Memory
+    "MemoryStore",
+    "MemoryEntry",
     # Audit
     "AuditLog",
     # MFA
@@ -165,6 +210,9 @@ __all__ = [
     # Worker Metrics
     "WorkerMetric",
     "WorkspaceRepoChangeset",
+    "WorkspacePromotionArtifact",
+    "WorkspacePromotionRelease",
+    "WorkspaceSourceRelease",
     # Events
     "EventSource",
     "WebhookSource",

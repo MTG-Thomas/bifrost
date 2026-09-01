@@ -137,7 +137,7 @@ services:
     command: ["python", "-m", "scripts.init_container"]
 
   # FastAPI Application (Test) - Only started for E2E tests
-  api:
+  api: &api-service
     image: bifrost-test-api-dev:latest
     build:
       context: .
@@ -150,7 +150,11 @@ services:
       BIFROST_REDIS_URL: redis://redis:6379/0
       BIFROST_SECRET_KEY: test-secret-key-for-e2e-testing-must-be-32-chars
       BIFROST_ENVIRONMENT: testing
+      BIFROST_PUBLIC_URL: http://api:8000
       COVERAGE_FILE: /coverage/.coverage
+      # The full E2E suite intentionally reuses session-scoped users. Keep its
+      # access tokens valid for the longest supported local/CI run.
+      BIFROST_ACCESS_TOKEN_EXPIRE_MINUTES: "120"
       # S3-compatible object storage
       BIFROST_S3_BUCKET: bifrost-test
       BIFROST_S3_ENDPOINT_URL: http://seaweedfs:8333
@@ -159,6 +163,7 @@ services:
       BIFROST_S3_REGION: us-east-1
       # Enable registration for E2E tests
       BIFROST_ALLOW_REGISTRATION: "true"
+      EMBEDDING_ALLOWED_HOSTS: scheduler-fixtures
     # No ports exposed - all access via Docker network (test-runner connects to api:8000)
     volumes:
       - ./api/src:/app/src
@@ -200,6 +205,12 @@ services:
     # Entrypoint handles permissions; run as root so it can fix volume ownership
     user: root
     command: ["coverage", "run", "--parallel-mode", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  # Independent API process sharing PostgreSQL/Redis with `api`. Keeping this
+  # replica addressable lets E2E tests prove stateless list/call routing and
+  # cross-process catalog invalidation without relying on service affinity.
+  api-replica:
+    <<: *api-service
 
   # Background Worker (Test) - Only started for E2E tests
   # Note: Discovery service has been removed - workflow/form extraction
@@ -257,8 +268,8 @@ services:
     profiles:
       - e2e  # Only start in E2E mode
 
-  # Scheduler (Test) - Only started for E2E tests
-  # Handles background jobs like GitHub sync via Redis pubsub
+  # Scheduler (Test) - Only started for E2E tests. Every replica is a durable
+  # platform-job runner; the trigger leader is elected in PostgreSQL.
   scheduler:
     image: bifrost-test-api-dev:latest
     build:
@@ -272,6 +283,7 @@ services:
       BIFROST_REDIS_URL: redis://redis:6379/0
       BIFROST_SECRET_KEY: test-secret-key-for-e2e-testing-must-be-32-chars
       BIFROST_ENVIRONMENT: testing
+      BIFROST_DEFERRED_EXECUTION_PROMOTER_INTERVAL_SECONDS: "2"
       # S3-compatible object storage
       BIFROST_S3_BUCKET: bifrost-test
       BIFROST_S3_ENDPOINT_URL: http://seaweedfs:8333
@@ -304,11 +316,30 @@ services:
         condition: service_started
       api:
         condition: service_healthy
+      scheduler-fixtures:
+        condition: service_healthy
+    mem_limit: 1g
     # Entrypoint handles permissions; run as root so it can fix volume ownership
     user: root
     command: ["coverage", "run", "--parallel-mode", "-m", "src.scheduler.main"]
     profiles:
       - e2e  # Only start in E2E mode
+
+  scheduler-fixtures:
+    image: bifrost-test-api-dev:latest
+    build:
+      context: .
+      dockerfile: api/Dockerfile.dev
+    command: ["python", "/app/scripts/scheduler_fixture_server.py"]
+    volumes:
+      - ./api/scripts:/app/scripts:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    profiles:
+      - e2e
 
   # Test Runner - Executes pytest inside container with all dependencies
   test-runner:
@@ -333,9 +364,11 @@ services:
       BIFROST_S3_REGION: us-east-1
       # For E2E tests, point to the API container
       TEST_API_URL: http://api:8000
+      TEST_API_REPLICA_URL: http://api-replica:8000
       PYTHONPATH: /app
-      # Coverage data stored on shared volume for cross-phase accumulation
-      COVERAGE_FILE: /coverage/.coverage
+      # The hardened uid-1000 runner cannot write a root-owned named volume.
+      # Keep coverage data beside the already-permissioned per-worktree results.
+      COVERAGE_FILE: /tmp/bifrost/.coverage
       # GitHub E2E test configuration (optional - tests skip if not set)
       # Pass from host: GITHUB_TEST_PAT=ghp_xxx ./test.sh e2e
       # Or set in .env.test file
@@ -363,6 +396,7 @@ services:
       - ./api/fuzz:/app/fuzz:ro
       - ./api/scripts:/app/scripts:ro  # Scripts for migration utilities
       - ./api/tests:/app/tests:ro
+      - ./docs/architecture/execution-operations.md:/app/docs/architecture/execution-operations.md:ro
       - ./scripts:/repo/scripts:ro
       - ./api/alembic:/app/alembic:ro
       - ./api/alembic.ini:/app/alembic.ini:ro
@@ -370,30 +404,46 @@ services:
       - ./api/pytest.ini:/app/pytest.ini:ro
       - ./api/pyproject.toml:/app/pyproject.toml:ro
       - ./api/pyrightconfig.json:/app/pyrightconfig.json:ro
+      - ./api/pyrightconfig.docker.json:/app/pyrightconfig.docker.json:ro
       - ./api/Dockerfile.dev:/app/api/Dockerfile.dev:ro
+      - ./.github/workflows:/app/.github/workflows:ro  # CI topology contract tests
       - ./test.sh:/app/test.sh:ro
       - ./docker-compose.yml:/app/docker-compose.yml:ro
       - ./docker-compose.test.yml:/app/docker-compose.test.yml:ro
       - ./.github:/app/.github:ro
+      - ./.snyk:/app/.snyk:ro
       - ./.claude:/app/.claude:ro
       - ./.env.debug:/app/.env.debug:ro
       - ./debug.sh:/app/debug.sh:ro
       - ./docker-compose.debug.yml:/app/docker-compose.debug.yml:ro
       - ./docker-compose.debug.port.yml:/app/docker-compose.debug.port.yml:ro
+      - ./client/playwright.config.ts:/app/client/playwright.config.ts:ro
+      - ./client/e2e:/app/client/e2e:ro
       - ./client/src:/client/src:ro  # Read-only — the drift test in
                                       # tests/unit/test_platform_names_match_runtime.py
                                       # parses app-code-runtime.ts to detect new platform exports.
+      - ./client/e2e:/app/client/e2e:ro  # Browser smoke selection is part of
+                                      # the repository-controlled CI safety contract.
+      - ./client/playwright.config.ts:/app/client/playwright.config.ts:ro
+      - ./client/nginx.conf:/app/client/nginx.conf:ro  # Production routing contract.
+      - ./client/Dockerfile:/app/client/Dockerfile:ro  # Production asset-mode contract.
       - ./.claude/skills:/.claude/skills:ro  # Read-only — the drift test in
                                       # tests/unit/test_platform_api_docs.py reads
                                       # bifrost-build/platform-api.md to enforce docs
                                       # cover every PLATFORM_EXPORT_NAMES entry.
-      - test-coverage:/coverage  # Shared coverage data across phases
       # Host-mounted for test results (junitxml) — per-worktree, driven by
       # LOG_DIR (set by test.sh to /tmp/bifrost-$COMPOSE_PROJECT_NAME) so two
       # worktrees running in parallel don't clobber each other's results.
       - ${LOG_DIR:-/tmp/bifrost}:/tmp/bifrost
+      # Reliability evidence uses a non-public container path so static analysis
+      # and the harness agree that callers cannot redirect the report.
+      - ${LOG_DIR:-/tmp/bifrost}:/bifrost-results
     working_dir: /app
     depends_on:
+      api:
+        condition: service_healthy
+      api-replica:
+        condition: service_healthy
       pgbouncer:
         condition: service_healthy
       rabbitmq:
@@ -412,37 +462,85 @@ services:
     profiles:
       - test  # Only start when running tests
 
-  # =============================================================================
-  # Client E2E Testing Services (started with --profile client)
-  # =============================================================================
-
-  # Client frontend (Vite dev server)
-  # Serves the React app for Playwright browser tests
-  client:
-    image: bifrost-test-client-dev:latest
-    build:
-      context: ./client
-      dockerfile: Dockerfile.dev
+  # Test-network-only transport adapter for the official runner, which has no
+  # CLI option for an Authorization header. It mints a resource-bound test JWT
+  # and transparently forwards to the real authenticated /mcp endpoint.
+  mcp-conformance-adapter:
+    image: bifrost-test-api-dev:latest
     environment:
-      # API_URL and WS_URL are used by Vite's proxy config (server-side)
-      API_URL: http://api:8000
-      WS_URL: ws://api:8000
+      PYTHONPATH: /app
     volumes:
-      - ./client/src:/app/src:ro
-      - ./client/public:/app/public:ro
-      - ./client/index.html:/app/index.html:ro
-      - ./client/vite.config.ts:/app/vite.config.ts:ro
-      - ./client/tailwind.config.ts:/app/tailwind.config.ts:ro
-      - ./client/tsconfig.json:/app/tsconfig.json:ro
-      - ./client/tsconfig.app.json:/app/tsconfig.app.json:ro
-      - ./client/tsconfig.node.json:/app/tsconfig.node.json:ro
-      - ./client/components.json:/app/components.json:ro
-      - ./client/postcss.config.js:/app/postcss.config.js:ro
+      - ./api/tests:/app/tests:ro
+    command:
+      - python
+      - -m
+      - tests.conformance.auth_adapter
     depends_on:
       api:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:80/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    security_opt: ["no-new-privileges:true"]
+    profiles:
+      - test
+
+  # Official MCP conformance CLI. Its npm dependency graph is isolated from
+  # the application and exact-pinned by api/tests/conformance/package-lock.json.
+  mcp-conformance:
+    image: bifrost-test-mcp-conformance:0.2.0-alpha.11
+    build:
+      context: ./api/tests/conformance
+      dockerfile: Dockerfile
+    volumes:
+      - ${LOG_DIR:-/tmp/bifrost}/mcp-conformance:/results
+    depends_on:
+      mcp-conformance-adapter:
+        condition: service_healthy
+    profiles:
+      - test
+
+  client-check-runner:
+    image: bifrost-test-client-check:latest
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+      target: ci
+      args:
+        VITE_BIFROST_VERSION: test
+    security_opt: ["no-new-privileges:true"]
+    profiles:
+      - client-check
+
+  # =============================================================================
+  # Client E2E Testing Services (started with --profile client)
+  # =============================================================================
+
+  # Production client frontend used by Playwright.
+  #
+  # Browser tests exercise the same compiled assets and nginx routing shipped
+  # in the real client image. A Vite dev server made full-suite timing depend
+  # on cold, on-demand module transforms and never tested the production build.
+  client:
+    image: bifrost-test-client-e2e:latest
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+      target: production
+      args:
+        VITE_BIFROST_VERSION: test
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      default:
+        aliases:
+          - allowed-origin
+          - blocked-origin
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/"]
       interval: 5s
       timeout: 5s
       retries: 30
@@ -452,11 +550,16 @@ services:
   # Playwright E2E test runner
   # Runs browser tests against the client service
   playwright-runner:
+    image: bifrost-test-playwright-runner:latest
     build:
       context: ./client
       dockerfile: Dockerfile.playwright
     environment:
-      TEST_BASE_URL: http://client:80
+      # Chromium grants WebCrypto to localhost HTTP just as it does to deployed
+      # HTTPS. The runner proxies these loopback origins to the client service.
+      TEST_BASE_URL: http://localhost:3000
+      TEST_ALLOWED_ORIGIN: http://localhost:3001
+      TEST_BLOCKED_ORIGIN: http://localhost:3002
       TEST_API_URL: http://api:8000
       CI: "true"
       PLAYWRIGHT_WORKERS: ${PLAYWRIGHT_WORKERS:-2}
@@ -467,7 +570,9 @@ services:
       - ./client/tsconfig.json:/app/tsconfig.json:ro
       - ./client/tsconfig.app.json:/app/tsconfig.app.json:ro
       - ./client/tsconfig.node.json:/app/tsconfig.node.json:ro
-      - playwright-results:/app/playwright-results
+      - ${PLAYWRIGHT_RESULTS_MOUNT:-playwright-results}:/app/playwright-results
+    tmpfs:
+      - /app/e2e/.auth:uid=1000,gid=1000,mode=0700
     depends_on:
       client:
         condition: service_healthy

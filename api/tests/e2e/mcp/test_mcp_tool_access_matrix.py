@@ -43,8 +43,30 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tests.e2e.conftest import E2E_API_URL
+from tests.fixtures.auth import create_test_jwt
+
 
 logger = logging.getLogger(__name__)
+
+
+def _mcp_headers(user: Any) -> dict[str, str]:
+    """Mint the resource-bound token required by the protected MCP endpoint."""
+    token = create_test_jwt(
+        user_id=str(user.user_id),
+        email=user.email,
+        name=user.name,
+        is_superuser=user.is_superuser,
+        organization_id=(
+            str(user.organization_id) if user.organization_id is not None else None
+        ),
+        mcp_resource=f"{E2E_API_URL}/mcp",
+    )
+    return {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
 
 
 # =============================================================================
@@ -189,9 +211,7 @@ def _candidate_tool_names_for_workflow(workflow: dict) -> set[str]:
 
     The registration table (``_WORKFLOW_ID_TO_TOOL_NAME``) lives in the API
     process, not the test-runner process, so we can't read it directly.
-    Recreate the normalization rule from
-    ``src.services.mcp_server.server._normalize_tool_name`` and accept either
-    the raw name or the normalized one.
+    Recreate the stable normalization + complete entity suffix used by the API.
     """
     import re as _re
 
@@ -201,7 +221,8 @@ def _candidate_tool_names_for_workflow(workflow: dict) -> set[str]:
         "",
         _re.sub(r"[\s\-]+", "_", name.lower()),
     ).strip("_")
-    return {normalized, name}
+    identity_suffix = uuid.UUID(workflow["id"]).hex
+    return {f"{normalized or 'workflow'}__{identity_suffix}"}
 
 
 def _set_workflow_access_level(
@@ -415,7 +436,12 @@ class TestMcpToolAccessMatrix:
 
     @pytest.mark.parametrize(
         "variant_key",
-        [k for (caller, _agent_org, k) in ADMIN_EXPECTED_VISIBLE if caller == "platform_admin"],
+        [
+            key
+            for (caller, _agent_org, key), expected_visible
+            in ADMIN_EXPECTED_VISIBLE.items()
+            if caller == "platform_admin" and expected_visible
+        ],
         ids=lambda k: f"admin__org_a_agent__{k}",
     )
     async def test_platform_admin_sees_attached_tool(
@@ -502,12 +528,7 @@ class TestMcpToolAccessMatrix:
         ]
 
         # JSON-RPC envelope for tools/list against the agent-scoped MCP endpoint.
-        # The Bifrost JWT access token is accepted by the MCP auth provider.
-        mcp_headers = {
-            "Authorization": f"Bearer {platform_admin.access_token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-        }
+        mcp_headers = _mcp_headers(platform_admin)
 
         # MCP requires an initialize handshake before tools/list in stateful
         # sessions. FastMCP runs stateless_http=True (see routers/mcp.py:177),
@@ -584,11 +605,7 @@ class TestMcpToolAccessMatrix:
             # tight: rows here are exclusively "admin sees AND must execute".
             pytest.skip(f"variant {variant_key} not visible to admin — covered by list test")
 
-        mcp_headers = {
-            "Authorization": f"Bearer {platform_admin.access_token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-        }
+        mcp_headers = _mcp_headers(platform_admin)
 
         # Find the actual tool name FastMCP registered the workflow under by
         # asking the server. Avoids guessing wrong when normalization rules
@@ -704,11 +721,7 @@ class TestMcpToolAccessMatrix:
             ("org_a_user_with_role_x", "A", variant_key)
         ]
 
-        mcp_headers = {
-            "Authorization": f"Bearer {org_a_user_with_role_x.access_token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-        }
+        mcp_headers = _mcp_headers(org_a_user_with_role_x)
 
         resp = e2e_client.post(
             f"/mcp/{agent['id']}",
@@ -772,11 +785,7 @@ class TestMcpToolAccessMatrix:
         agent = seeded_agent_with_tools["agent"]
         workflow = seeded_agent_with_tools["workflows_by_key"][variant_key]
 
-        mcp_headers = {
-            "Authorization": f"Bearer {org_a_user_with_role_x.access_token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-        }
+        mcp_headers = _mcp_headers(org_a_user_with_role_x)
 
         # Look up registered name via tools/list; same approach as admin test.
         list_resp = e2e_client.post(
@@ -892,11 +901,7 @@ class TestMcpToolAccessMatrix:
 
         # Use admin to learn the real registered name. Admin sees everything,
         # so this is the ground-truth tool name FastMCP exposes.
-        admin_headers = {
-            "Authorization": f"Bearer {platform_admin.access_token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-        }
+        admin_headers = _mcp_headers(platform_admin)
         admin_list = e2e_client.post(
             f"/mcp/{agent['id']}",
             headers=admin_headers,
@@ -915,11 +920,7 @@ class TestMcpToolAccessMatrix:
             f"Candidates: {candidate_names}"
         )
 
-        user_headers = {
-            "Authorization": f"Bearer {org_a_user_with_role_x.access_token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-        }
+        user_headers = _mcp_headers(org_a_user_with_role_x)
 
         # First layer of defense: the user's tools/list must not even expose
         # the name. Listing leaks workflow names/descriptions/parameter

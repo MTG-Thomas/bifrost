@@ -19,12 +19,7 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@/components/ui/select";
-import {
-	AlertTriangle,
-	CheckCircle2,
-	Upload,
-	Loader2,
-} from "lucide-react";
+import { AlertTriangle, CheckCircle2, Upload, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import {
 	importEntities,
@@ -59,27 +54,20 @@ function orgScope(orgId: unknown): string {
 }
 
 /** Format org scope for display. Prefers org name, falls back to truncated UUID. */
-function formatOrgScope(
-	orgId: unknown,
-	orgName: unknown,
-): string | undefined {
+function formatOrgScope(orgId: unknown, orgName: unknown): string | undefined {
 	if (orgName) return orgName as string;
 	const id = orgId as string | null | undefined;
 	if (!id) return undefined;
 	return `org: ${id.slice(0, 8)}`;
 }
 
-function parseEntityJson(
-	data: Record<string, unknown>,
-): PreviewSection | null {
+function parseEntityJson(data: Record<string, unknown>): PreviewSection | null {
 	const entityType = data.entity_type as string | undefined;
 	if (!entityType) return null;
 	const items = (data.items ?? []) as Record<string, unknown>[];
 
 	// Check if items span multiple orgs - only show scope qualifier if they do
-	const orgIds = new Set(
-		items.map((item) => orgScope(item.organization_id)),
-	);
+	const orgIds = new Set(items.map((item) => orgScope(item.organization_id)));
 	const multiOrg = orgIds.size > 1;
 
 	const previewItems: PreviewItem[] = [];
@@ -126,9 +114,7 @@ function parseEntityJson(
 			).length;
 			const parts: string[] = [];
 			if (docCount) {
-				parts.push(
-					`${docCount} row${docCount !== 1 ? "s" : ""}`,
-				);
+				parts.push(`${docCount} row${docCount !== 1 ? "s" : ""}`);
 			}
 			if (multiOrg) {
 				const orgLabel = formatOrgScope(
@@ -147,8 +133,7 @@ function parseEntityJson(
 		for (const item of items) {
 			const scope = orgScope(item.organization_id);
 			const parts: string[] = [];
-			if (item.config_type)
-				parts.push(item.config_type as string);
+			if (item.config_type) parts.push(item.config_type as string);
 			if (multiOrg) {
 				const orgLabel = formatOrgScope(
 					item.organization_id,
@@ -200,16 +185,12 @@ function filterEntityData(
 	} else if (section.entityType === "tables") {
 		filtered = items.filter((item) => {
 			const scope = orgScope(item.organization_id);
-			return selectedIds.has(
-				`tables/${item.name as string}\0${scope}`,
-			);
+			return selectedIds.has(`tables/${item.name as string}\0${scope}`);
 		});
 	} else if (section.entityType === "configs") {
 		filtered = items.filter((item) => {
 			const scope = orgScope(item.organization_id);
-			return selectedIds.has(
-				`configs/${item.key as string}\0${scope}`,
-			);
+			return selectedIds.has(`configs/${item.key as string}\0${scope}`);
 		});
 	} else if (section.entityType === "integrations") {
 		filtered = items.filter((item) =>
@@ -236,22 +217,21 @@ export function ImportDialog({
 	const [sourceSecretKey, setSourceSecretKey] = useState("");
 	const [showSecretFields, setShowSecretFields] = useState(false);
 	const [isImporting, setIsImporting] = useState(false);
-	const [result, setResult] = useState<
-		ImportResult | ImportResult[] | null
-	>(null);
+	const [result, setResult] = useState<ImportResult | ImportResult[] | null>(
+		null,
+	);
 
 	// Preview state (JSON only - ZIP files pass through as-is)
-	const [previewSection, setPreviewSection] =
-		useState<PreviewSection | null>(null);
-	const [selectedItems, setSelectedItems] = useState<Set<string>>(
-		new Set(),
+	const [previewSection, setPreviewSection] = useState<PreviewSection | null>(
+		null,
 	);
+	const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
 	const [parseError, setParseError] = useState<string | null>(null);
 
 	// Target org override: undefined=from file, null=Global, string=org UUID
-	const [targetOrgId, setTargetOrgId] = useState<
-		string | null | undefined
-	>(undefined);
+	const [targetOrgId, setTargetOrgId] = useState<string | null | undefined>(
+		undefined,
+	);
 	const [hasOrgScopedItems, setHasOrgScopedItems] = useState(false);
 	const { data: orgsData } = useOrganizations({
 		enabled: hasOrgScopedItems,
@@ -268,17 +248,10 @@ export function ImportDialog({
 				return;
 			}
 			setPreviewSection(section);
-			setSelectedItems(
-				new Set(section.items.map((item) => item.id)),
-			);
+			setSelectedItems(new Set(section.items.map((item) => item.id)));
 			// Detect org-scoped items for target org selector
-			const rawItems = (data.items ?? []) as Record<
-				string,
-				unknown
-			>[];
-			const hasOrg = rawItems.some(
-				(item) => item.organization_id,
-			);
+			const rawItems = (data.items ?? []) as Record<string, unknown>[];
+			const hasOrg = rawItems.some((item) => item.organization_id);
 			setHasOrgScopedItems(hasOrg);
 		} catch {
 			setParseError("Failed to parse JSON file");
@@ -299,22 +272,19 @@ export function ImportDialog({
 		}
 	};
 
-	const handleFilePicked = useCallback(
-		(f: File) => {
-			setFile(f);
-			setPreviewSection(null);
-			setSelectedItems(new Set());
-			setParseError(null);
-			setTargetOrgId(undefined);
-			setHasOrgScopedItems(false);
-			detectEncryptedValues(f);
-			// Only parse JSON files for preview; ZIP files pass through
-			if (!f.name.endsWith(".zip")) {
-				parseJsonFile(f);
-			}
-		},
-		[],
-	);
+	const handleFilePicked = useCallback((f: File) => {
+		setFile(f);
+		setPreviewSection(null);
+		setSelectedItems(new Set());
+		setParseError(null);
+		setTargetOrgId(undefined);
+		setHasOrgScopedItems(false);
+		detectEncryptedValues(f);
+		// Only parse JSON files for preview; ZIP files pass through
+		if (!f.name.endsWith(".zip")) {
+			parseJsonFile(f);
+		}
+	}, []);
 
 	const handleDrop = useCallback(
 		(e: React.DragEvent) => {
@@ -384,11 +354,7 @@ export function ImportDialog({
 				);
 			} else {
 				// Fallback - send original file
-				importResult = await importEntities(
-					entityType,
-					file,
-					options,
-				);
+				importResult = await importEntities(entityType, file, options);
 			}
 			setResult(importResult);
 			toast.success("Import completed");
@@ -426,8 +392,7 @@ export function ImportDialog({
 				<DialogHeader>
 					<DialogTitle>Import {label}</DialogTitle>
 					<DialogDescription>
-						Upload a previously exported file to import
-						entities.
+						Upload a previously exported file to import entities.
 					</DialogDescription>
 				</DialogHeader>
 
@@ -451,6 +416,19 @@ export function ImportDialog({
 									.getElementById("import-file-input")
 									?.click()
 							}
+							onKeyDown={(event) => {
+								if (
+									event.key === "Enter" ||
+									event.key === " "
+								) {
+									event.preventDefault();
+									document
+										.getElementById("import-file-input")
+										?.click();
+								}
+							}}
+							role="button"
+							tabIndex={0}
 						>
 							<input
 								id="import-file-input"
@@ -507,8 +485,7 @@ export function ImportDialog({
 										Contents
 									</button>
 									<p className="text-xs text-muted-foreground">
-										{selectedCount} of {totalCount}{" "}
-										selected
+										{selectedCount} of {totalCount} selected
 									</p>
 								</div>
 								<div className="max-h-60 overflow-y-auto rounded-md border divide-y">
@@ -568,8 +545,7 @@ export function ImportDialog({
 									</SelectTrigger>
 									<SelectContent>
 										<SelectItem value="__from_file__">
-											From file (resolve by
-											name/ID)
+											From file (resolve by name/ID)
 										</SelectItem>
 										<SelectItem value="__global__">
 											Global (no organization)
@@ -585,8 +561,8 @@ export function ImportDialog({
 									</SelectContent>
 								</Select>
 								<p className="text-xs text-muted-foreground">
-									Override which organization imported
-									items belong to.
+									Override which organization imported items
+									belong to.
 								</p>
 							</div>
 						)}
@@ -598,9 +574,8 @@ export function ImportDialog({
 									<AlertTriangle className="h-4 w-4 text-amber-600 mt-0.5 flex-shrink-0" />
 									<p className="text-xs text-amber-800 dark:text-amber-200">
 										This file contains encrypted values.
-										Provide the source instance's secret
-										key to re-encrypt them for this
-										instance.
+										Provide the source instance's secret key
+										to re-encrypt them for this instance.
 									</p>
 								</div>
 								<div className="space-y-2">
@@ -612,9 +587,7 @@ export function ImportDialog({
 										type="password"
 										value={sourceSecretKey}
 										onChange={(e) =>
-											setSourceSecretKey(
-												e.target.value,
-											)
+											setSourceSecretKey(e.target.value)
 										}
 										placeholder="BIFROST_SECRET_KEY from source instance"
 									/>

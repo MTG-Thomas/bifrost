@@ -54,7 +54,7 @@ Use this whenever you need a running Bifrost instance to exercise — clicking a
    ./debug.sh up
    ./debug.sh status
    ```
-   Capture the URL from `./debug.sh status`. Under netbird mode (default when `NETBIRD_SETUP_KEY` is set), the host-reachable URL is the full `http://bifrost-debug-<name>-<n>-<n>.netbird.cloud` form — the short `http://bifrost-debug-<name>` form is only resolvable from inside the mesh. Under port mode, the URL is `http://localhost:<port>`.
+   Capture the `Open:` URL from `./debug.sh status`. Under netbird mode (default when `NETBIRD_SETUP_KEY` is set), this is an ephemeral public HTTPS URL issued by `netbird expose`; `Private:` shows the peer's mesh-only URL. Under port mode, `Open:` is `http://localhost:<port>`.
 
 2. **Connect via the CLI** from an isolated scratch directory outside the repo (not the worktree, not `~`). This keeps `.env`/credentials out of the source tree and lets you install the API-matched CLI without disturbing the user's global `bifrost` install:
    ```bash
@@ -62,15 +62,15 @@ Use this whenever you need a running Bifrost instance to exercise — clicking a
    cd /tmp/bifrost-cli-<name>
    python3 -m venv .venv
    .venv/bin/pip install --quiet --upgrade pip
-   .venv/bin/pip install --quiet "<API_URL>/api/cli/download"
+   .venv/bin/pip install --quiet "<API_URL>/api/cli/download/bifrost-cli.tar.gz"
    ```
    The download endpoint serves the build matching the running API; installing this version avoids the version-mismatch warning that otherwise short-circuits subcommand output.
 
 3. **Log in** inside the scratch directory using password-grant. This writes `.env` (with `BIFROST_API_URL`, `BIFROST_ACCESS_TOKEN`, `BIFROST_REFRESH_TOKEN`) so subsequent commands in this directory pick the tokens up automatically:
    ```bash
-   ./.venv/bin/bifrost login --url <API_URL> --email dev@gobifrost.com --password password
+   ./.venv/bin/bifrost login --url <API_URL> --email dev@gobifrost.com --password <PASSWORD_FROM_DEBUG_STATUS>
    ```
-   Default credentials are `dev@gobifrost.com` / `password` (MFA off) — password-grant works only because the dev stack has MFA disabled.
+   The default email is `dev@gobifrost.com`; use the password printed by `./debug.sh status`. Netbird-mode stacks generate a strong per-worktree password because they are publicly reachable. Port-mode stacks retain `password`. MFA is disabled for the seeded debug user.
 
 4. **Drive the API** with `./.venv/bin/bifrost <entity> <command> ...`. Use `--help` on any subcommand. Browser testing goes against the URL from step 1.
 
@@ -100,9 +100,9 @@ Start the development stack (per-worktree isolated):
 ./debug.sh logs api    # Follow logs for one service
 ```
 
-`./debug.sh` derives its Compose project name from the worktree path, so multiple worktrees can run debug stacks in parallel. URL and login are printed at the end of `up` (default: `dev@gobifrost.com` / `password`, MFA off).
+`./debug.sh` derives its Compose project name from the worktree path, so multiple worktrees can run debug stacks in parallel. URL and login are printed at the end of `up`. Port mode uses `dev@gobifrost.com` / `password`; Netbird mode uses the same email with a strong generated per-worktree password. MFA is off.
 
-The default mode allocates a free local port for the client (deterministic per worktree, in 30000-39999). If `NETBIRD_SETUP_KEY` is set in `~/.config/bifrost/debug.env`, the stack boots with a Netbird sidecar instead and is reachable at `http://<bifrost-debug-WORKTREE>` over the Netbird mesh — no host ports.
+The default mode allocates a free local port for the client (deterministic per worktree, in 30000-39999). If `NETBIRD_SETUP_KEY` is set in `~/.config/bifrost/debug.env`, the stack boots with a NetBird sidecar that provides both private mesh access and an ephemeral public HTTPS proxy through `netbird expose` — no host ports, durable Admin proxy mapping, or NetBird API key.
 
 **Forcing port mode for browser/Playwright work:** Chrome/Playwright cannot drive netbird stacks (Vite HMR websocket hangs). If your `~/.config/bifrost/debug.env` has `NETBIRD_SETUP_KEY`, run `BIFROST_FORCE_PORT=1 ./debug.sh up` to force port mode for that boot without editing the global config. `env -u NETBIRD_SETUP_KEY ./debug.sh up` does **not** work — `debug.sh` re-sources the global `debug.env` under `set -a`, re-introducing the key.
 
@@ -208,7 +208,7 @@ Entity mutations have three parallel surfaces: **CLI** (`bifrost <entity> ...`),
 1. Run the DTO-parity test: `./test.sh tests/unit/test_dto_flags.py`. If it fails, either add the new field to the appropriate CLI command / MCP tool, or add it to `DTO_EXCLUDES` in `api/bifrost/dto_flags.py` with a one-line comment explaining why (UI-managed, out-of-scope, etc.).
 2. If the field should round-trip in portable exports, update `api/bifrost/manifest.py` (`ManifestXxx` pydantic models) and the scrub rules in `api/bifrost/portable.py`.
 3. If the field changes a command or tool, regenerate the skill appendices via `python api/scripts/skill-truth/generate.py` (CI enforces freshness).
-4. **Run the contract-version tripwire: `./test.sh tests/unit/test_contract_version.py`.** It fingerprints every CLI/SDK-consumed DTO (command DTOs + all `src.models.contracts.cli` SDK DTOs, pulled in programmatically). If one changed, the test fails and forces a decision: if the change is **breaking** (field removed/renamed/retyped, a response shape the CLI parses), bump `CONTRACT_VERSION` in **both** `api/shared/contract_version.py` and `api/bifrost/contract_version.py`, then refresh `EXPECTED_CONTRACT_FINGERPRINT`. If it's **cosmetic/additive**, just refresh the fingerprint. This keeps a missed bump from shipping a CLI that silently breaks against the server — the CLI's runtime gate hard-blocks on a contract mismatch. (Pure route renames aren't gated — they 404 loudly rather than corrupt; the DTO layer catches the silent breakages.)
+4. **Run the CLI-contract tripwire: `./test.sh tests/unit/test_contract_version.py`.** It fingerprints every CLI/SDK-consumed DTO (command DTOs + all `src.models.contracts.cli` SDK DTOs, pulled in programmatically). If one changed, the test forces a decision: for a **breaking** change (field removed/renamed/retyped, a response shape the CLI parses), bump `CONTRACT_VERSION` in both `api/shared/contract_version.py` and `api/bifrost/contract_version.py`, then refresh `EXPECTED_CONTRACT_FINGERPRINT`; for a **compatible additive/cosmetic** change, refresh only the fingerprint. The runtime hard gate compares the server and CLI contract versions; ordinary build drift only warns. `LEGACY_MIN_CLI_VERSION` is a frozen bridge for already-shipped minimum-gate CLIs and must never name an unpublished build. (Pure route renames aren't fingerprinted — they 404 loudly rather than corrupt; the DTO layer catches silent shape breakages.)
 
 **When renaming or reassigning an entity (workflow, table, config):** grep the codebase before committing. Workflows are referenced by `path::func` in forms; tables are referenced by name in workflow SDK calls (`sdk.tables.get("...")`); configs are referenced by key. `bifrost tables update --name` warns on renames but does not block — the author is responsible for a full-workspace search (`rg -n '\b<old-name>\b' apps/ workflows/`) before pushing.
 
@@ -288,6 +288,10 @@ export async function getDataProviders() {
 
 -   **Tests**: All work requires tests. Backend logic → unit tests in `api/tests/unit/`. Endpoint/workflow/integration changes → e2e tests in `api/tests/e2e/`. React components → sibling `*.test.tsx` (vitest). User-facing features → happy-path spec in `client/e2e/` (Playwright).
     -   **Functional frontend modules require vitest coverage.** New or modified `.ts` files under `client/src/lib/**` and `client/src/services/**` that export functions (auth helpers, storage adapters, API wrappers, formatters, etc.) need a sibling `*.test.ts` covering the public API. Pure type/constant re-export files and files that only import and re-configure third-party SDKs are exempt. If the module has a cross-tab, cross-window, or storage-boundary concern (like `auth-token.ts`), the test MUST exercise that boundary — a regression that only reproduces with two tabs open is one a future refactor will silently re-introduce otherwise.
+    -   **Scoped verification is the development-loop default.** Run the tests that directly exercise the changed behavior, its known consumers, and any affected contract boundaries while iterating. Before opening or queueing a PR, commit the exact candidate and run `./test.sh pre-pr`; this broad local gate is mandatory even when the change itself is narrowly scoped. Rerun it after any commit, rebase, or merge. Report exact targeted commands and the pre-PR candidate SHA.
+    -   **A known failure must receive a durable disposition.** If a broader local or CI run finds a failure outside the scoped set, determine whether it is a regression, product race, leaked state, harness defect, overcomplicated test, or obsolete coverage. Fix the cause, simplify the test, or delete genuinely redundant coverage with a documented replacement. "Unrelated" or "flaky" alone is not a disposition.
+    -   **Never rerun until green or mask instability.** Do not add retries, longer timeouts, `skip`, or `xfail`. Reproduce the exposing condition, fix the hypothesized cause, then use repetition only to validate the fix. See `.claude/skills/bifrost-testing/SKILL.md` for the full protocol.
+    -   **Prefer simple, durable tests.** Keep one observable contract per test, minimal fixtures, deterministic state, explicit cleanup, and only one useful end-to-end happy path. Move edge cases down to unit/component tests; complexity is not evidence of rigor.
     -   **IMPORTANT**: Always use `./test.sh` — it manages the Dockerized test stack (PostgreSQL, Redis, RabbitMQ, SeaweedFS, API, worker). Running pytest directly on the host will FAIL for anything touching DB/queue/cache.
     -   **Stack lifecycle is separate from test execution.** Boot once per worktree, run tests many times. See the Commands section below.
     -   **Test results**: `./test.sh` writes JUnit XML to `/tmp/bifrost/test-results.xml` — parse this for pass/fail details instead of grepping stdout.
@@ -314,7 +318,7 @@ export async function getDataProviders() {
 ./test.sh                                          # Unit tests only (fast default)
 ./test.sh unit                                     # Same
 ./test.sh e2e                                      # Backend e2e
-./test.sh all                                      # Unit + e2e (mirrors CI)
+./test.sh all                                      # All backend tests, including slow tests
 ./test.sh tests/unit/test_foo.py::test_bar -v      # Passthrough to pytest
 
 # Client tests
@@ -324,6 +328,7 @@ export async function getDataProviders() {
 ./test.sh client e2e e2e/auth.unauth.spec.ts       # Passthrough to Playwright
 
 # CI (one-shot: boot → all tests → tear down)
+./test.sh pre-pr                         # Required clean-commit gate before opening/queueing a PR
 ./test.sh ci
 
 # Type Generation (requires dev stack running via ./debug.sh)
@@ -376,33 +381,26 @@ export async function getDataProviders() {
 
 ## Pre-Completion Verification (REQUIRED)
 
-Before marking any significant work complete, run this verification sequence:
+Before marking work complete, select verification from the actual change surface. The examples below are choices, not a command list to run wholesale:
 
 ```bash
-# 1. Ensure debug stack is running for THIS worktree
+# Backend source changed
+./test.sh quality api
+./test.sh tests/unit/test_relevant_behavior.py -v
+./test.sh tests/e2e/path/test_relevant_boundary.py -v  # when a live boundary changed
+
+# Client source changed
+(cd client && npm run tsc && npm run lint)
+./test.sh client unit src/path/RelevantComponent.test.tsx
+./test.sh client e2e e2e/relevant-flow.admin.spec.ts  # when a user journey changed
+
+# API contract changed: regenerate types against this worktree's running debug stack
 ./debug.sh status | grep -q "Status:   UP" || ./debug.sh up
-
-# 2. Backend checks
-./test.sh quality api       # Dockerized pyright + ruff; must pass with 0 errors
-
-# 3. Regenerate frontend types (from client/ directory)
-cd client
-npm run generate:types     # Requires debug stack up. If client is bound to a non-default port,
-                           # set OPENAPI_URL=http://localhost:<port>/openapi.json (see ./debug.sh status).
-
-# 4. Frontend checks
-npm run tsc                # Type checking - must pass
-npm run lint               # Linting - must pass
-
-# 5. Run tests
-cd ..
-./test.sh stack up         # boot if not already up (per-worktree)
-./test.sh all              # backend unit + e2e
-./test.sh client unit      # vitest component tests
-./test.sh client e2e       # Playwright E2E (skip if no UI changes)
+(cd client && npm run generate:types)
 ```
 
-**This is mandatory for any changes that touch:**
-- Backend API endpoints or models
-- Frontend components or hooks
-- Database schema or migrations
+The selected tests must cover the changed behavior, known consumers, and contract tripwires. During iteration, do not run `./test.sh all`, the full Vitest suite, or the full Playwright suite by default; use targeted coverage to get fast, relevant feedback.
+
+Before opening or queueing a PR, the worktree must be clean and based on current `origin/main`, and `./test.sh pre-pr` must pass for the exact `HEAD`. This is separate from scoped completion verification: it runs every locally reproducible required PR/merge-queue check, including the full backend E2E and critical browser-smoke suites. GitHub still owns non-local boundaries such as the synthetic merge ref, registry publication, signing, and attestation.
+
+In the final handoff, list the exact checks and tests run, state which broader suites were not run, and disclose any known failure. A known out-of-scope failure must be permanently fixed in the current change or split into a dedicated blocking repair change; it cannot be waived as flaky or left as an unowned follow-up.

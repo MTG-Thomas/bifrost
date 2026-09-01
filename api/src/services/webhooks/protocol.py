@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from uuid import UUID
 
 from starlette.requests import Request
 
@@ -133,6 +134,9 @@ class Deliver:
 
     raw_headers: dict[str, str] | None = None
     """Original request headers (for logging)."""
+
+    event_id: UUID | None = None
+    """Persisted event ID, populated by the event processor after ingestion."""
 
 
 @dataclass

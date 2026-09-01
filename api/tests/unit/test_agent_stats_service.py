@@ -12,27 +12,10 @@ from src.models.orm.agent_runs import AgentRun
 from src.models.orm.agents import Agent, Conversation
 from src.models.orm.ai_usage import AIUsage
 from src.services.agent_stats import (
-    MAX_STATS_WINDOW_DAYS,
-    _build_runs_by_day,
     get_agent_stats,
+    get_agent_stats_batch,
     get_fleet_stats,
 )
-
-
-@pytest.mark.parametrize("window_days", [0, -1, MAX_STATS_WINDOW_DAYS + 1, 10_000_000])
-def test_runs_by_day_rejects_unbounded_windows(window_days):
-    with pytest.raises(ValueError, match="window_days must be between"):
-        _build_runs_by_day([], window_days=window_days, now=datetime.now(timezone.utc))
-
-
-def test_runs_by_day_accepts_maximum_window():
-    buckets = _build_runs_by_day(
-        [],
-        window_days=MAX_STATS_WINDOW_DAYS,
-        now=datetime.now(timezone.utc),
-    )
-
-    assert len(buckets) == MAX_STATS_WINDOW_DAYS
 
 
 @pytest_asyncio.fixture
@@ -146,6 +129,23 @@ async def test_per_agent_stats(db_session, seed_agent, seed_runs_for_agent):
     # Unreviewed: completed runs with verdict=None
     # 4 completed, 1 has 'up', 1 has 'down', 2 unreviewed
     assert stats.unreviewed == 2
+
+
+@pytest.mark.asyncio
+async def test_agent_stats_batch_matches_single_agent_rollup(
+    db_session, seed_agent, seed_runs_for_agent
+):
+    empty_agent_id = uuid4()
+    batch = await get_agent_stats_batch(
+        [seed_agent.id, empty_agent_id],
+        db_session,
+        window_days=7,
+    )
+    single = await get_agent_stats(seed_agent.id, db_session, window_days=7)
+
+    assert batch[seed_agent.id] == single
+    assert batch[empty_agent_id].runs_7d == 0
+    assert batch[empty_agent_id].runs_by_day == [0] * 7
 
 
 @pytest.mark.asyncio

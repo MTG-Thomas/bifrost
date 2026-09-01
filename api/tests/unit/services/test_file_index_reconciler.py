@@ -15,14 +15,6 @@ class _RowsResult:
         return self._rows
 
 
-class _ScalarResult:
-    def __init__(self, value):
-        self._value = value
-
-    def scalar_one_or_none(self):
-        return self._value
-
-
 @pytest.fixture
 def db_session():
     db = AsyncMock()
@@ -40,7 +32,9 @@ async def test_reconcile_adds_text_files_missing_from_index(
         read=AsyncMock(return_value=b"print('hello')"),
     )
     db_session.execute.return_value = _RowsResult([])
-    monkeypatch.setattr(file_index_reconciler, "_is_text_file", lambda path: path.endswith(".py"))
+    monkeypatch.setattr(
+        file_index_reconciler, "_is_text_file", lambda path: path.endswith(".py")
+    )
 
     stats = await reconcile_file_index(db_session, repo)
 
@@ -49,7 +43,6 @@ async def test_reconcile_adds_text_files_missing_from_index(
         "removed": 0,
         "updated": 0,
         "unchanged": 0,
-        "reverse_synced": 0,
     }
     repo.read.assert_awaited_once_with("workflows/a.py")
     assert db_session.execute.await_count == 2
@@ -57,21 +50,20 @@ async def test_reconcile_adds_text_files_missing_from_index(
 
 
 @pytest.mark.asyncio
-async def test_reconcile_reverse_syncs_db_rows_missing_from_repo(db_session) -> None:
+async def test_reconcile_removes_db_rows_missing_from_durable_repo(db_session) -> None:
     repo = SimpleNamespace(
         list=AsyncMock(return_value=[]),
         write=AsyncMock(return_value="hash"),
     )
     db_session.execute.side_effect = [
-        _RowsResult([("workflows/a.py",)]),
-        _ScalarResult("print('hello')"),
+        _RowsResult([("workflows/a.py", "stale-hash")]),
+        MagicMock(),
     ]
 
     stats = await reconcile_file_index(db_session, repo)
 
-    assert stats["reverse_synced"] == 1
-    assert stats["removed"] == 0
-    repo.write.assert_awaited_once_with("workflows/a.py", b"print('hello')")
+    assert stats["removed"] == 1
+    repo.write.assert_not_awaited()
     db_session.commit.assert_awaited_once()
 
 
@@ -82,21 +74,19 @@ async def test_reconcile_removes_orphaned_row_without_content(db_session) -> Non
         write=AsyncMock(),
     )
     db_session.execute.side_effect = [
-        _RowsResult([("workflows/missing.py",)]),
-        _ScalarResult(None),
+        _RowsResult([("workflows/missing.py", None)]),
         MagicMock(),
     ]
 
     stats = await reconcile_file_index(db_session, repo)
 
     assert stats["removed"] == 1
-    assert stats["reverse_synced"] == 0
     repo.write.assert_not_awaited()
-    assert db_session.execute.await_count == 3
+    assert db_session.execute.await_count == 2
 
 
 @pytest.mark.asyncio
-async def test_reconcile_continues_when_read_or_reverse_sync_fails(
+async def test_reconcile_continues_when_durable_read_fails(
     db_session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -106,8 +96,8 @@ async def test_reconcile_continues_when_read_or_reverse_sync_fails(
         write=AsyncMock(side_effect=RuntimeError("storage offline")),
     )
     db_session.execute.side_effect = [
-        _RowsResult([("old.py",)]),
-        _ScalarResult("old content"),
+        _RowsResult([("old.py", "old-hash")]),
+        MagicMock(),
     ]
     monkeypatch.setattr(file_index_reconciler, "_is_text_file", lambda path: True)
 
@@ -115,11 +105,32 @@ async def test_reconcile_continues_when_read_or_reverse_sync_fails(
 
     assert stats == {
         "added": 0,
-        "removed": 0,
+        "removed": 1,
         "updated": 0,
         "unchanged": 0,
-        "reverse_synced": 0,
     }
     repo.read.assert_awaited_once_with("new.py")
-    repo.write.assert_awaited_once_with("old.py", b"old content")
+    repo.write.assert_not_awaited()
     db_session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_replaces_stale_index_content_from_durable_repo(
+    db_session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = SimpleNamespace(
+        list=AsyncMock(return_value=["modules/halopsa.py"]),
+        read=AsyncMock(return_value=b"reviewed source\n"),
+        write=AsyncMock(),
+    )
+    db_session.execute.side_effect = [
+        _RowsResult([("modules/halopsa.py", "stale-hash")]),
+        MagicMock(),
+    ]
+    monkeypatch.setattr(file_index_reconciler, "_is_text_file", lambda path: True)
+
+    stats = await reconcile_file_index(db_session, repo)
+
+    assert stats == {"added": 0, "removed": 0, "updated": 1, "unchanged": 0}
+    repo.write.assert_not_awaited()

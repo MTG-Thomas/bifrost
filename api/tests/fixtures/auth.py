@@ -28,6 +28,7 @@ def create_test_jwt(
     is_superuser: bool = False,
     organization_id: str | None = None,
     is_provider_org: bool = False,
+    mcp_resource: str | None = None,
 ) -> str:
     """
     Create test JWT token for authentication.
@@ -42,6 +43,7 @@ def create_test_jwt(
         is_superuser: Whether user should have superuser/platform admin privileges
         organization_id: Organization ID for ORG users (auto-generated if not provided for non-superusers)
         is_provider_org: Whether the user belongs to a provider org (bypass half — grants cross-org / global scope like a superuser)
+        mcp_resource: MCP endpoint URL for a resource-bound MCP access token
 
     Returns:
         str: JWT token signed with test secret
@@ -72,9 +74,15 @@ def create_test_jwt(
         "exp": now + timedelta(hours=2),
         "iat": now,
         "iss": TEST_JWT_ISSUER,
-        "aud": TEST_JWT_AUDIENCE,
+        "aud": mcp_resource or TEST_JWT_AUDIENCE,
         "type": "access",
     }
+    if mcp_resource is not None:
+        payload.update(
+            mcp=True,
+            scope="mcp:access",
+            resource=mcp_resource,
+        )
     return jwt.encode(payload, TEST_SECRET_KEY, algorithm=TEST_ALGORITHM)
 
 

@@ -1,18 +1,17 @@
-"""Contract-version gate tripwire.
+"""CLI compatibility contract tripwire.
 
 Two jobs:
 
-1. **Sync check** — the CLI-baked ``CONTRACT_VERSION`` must equal the
-   server-side ``CONTRACT_VERSION``. They are two hand-maintained integers
-   (one shipped in the CLI wheel, one in the server) and the runtime gate
-   compares them across the wire, so they must agree at the source.
+1. **Runtime gate sync** — the CLI and server copies of the contract version
+   must agree while ``GET /api/version`` exposes it for compatibility checks.
 
 2. **Tripwire** — a fingerprint over the contract surface the CLI actually
    depends on (the request/response DTOs it sends + the routes it calls). Any
    change to that surface flips the fingerprint, failing this test until the
-   author makes an explicit decision: bump ``CONTRACT_VERSION`` (breaking) or
-   just refresh the fingerprint (cosmetic/additive). This is what makes a
-   missed bump a red test instead of a production incident.
+   author makes an explicit decision: bump ``CONTRACT_VERSION`` for a breaking
+   change, or just refresh the fingerprint for a compatible additive/cosmetic
+   change. This makes a missed compatibility decision a red test instead of a
+   production incident.
 
 The fingerprint is computed live, in-process, and only ever compared to a
 constant committed in THIS file — never shipped or compared across machines —
@@ -66,6 +65,7 @@ from src.models.contracts.organizations import (  # noqa: E402
     OrganizationUpdate,
 )
 from src.models.contracts.solutions import (  # noqa: E402
+    SolutionCandidateDeployEnqueued,
     SolutionDeployEnqueued,
     SolutionDeployJobStatus,
 )
@@ -73,6 +73,17 @@ from src.models.contracts.policy_rule import PolicyRuleCreate, PolicyRuleUpdate 
 from src.models.contracts.tables import TableCreate, TableUpdate  # noqa: E402
 from src.models.contracts.users import RoleCreate, RoleUpdate  # noqa: E402
 from src.models.contracts.workflows import WorkflowUpdateRequest  # noqa: E402
+from src.models.contracts.workspace_promotions import (  # noqa: E402
+    WorkspacePromotionCanaryAccepted,
+    WorkspacePromotionCanaryRequest,
+    WorkspacePromotionArtifactResponse,
+    WorkspacePromotionPreviewRequest,
+    WorkspacePromotionPreviewResponse,
+    WorkspaceReleaseActivateRequest,
+    WorkspaceReleasePrepareRequest,
+    WorkspaceReleaseStatusResponse,
+    WorkspaceLiveStatusResponse,
+)
 
 import inspect  # noqa: E402
 
@@ -116,9 +127,19 @@ _COMMAND_DTOS: list[type] = [
     EventSubscriptionCreate,
     EventSubscriptionUpdate,
     SolutionDeployEnqueued,
+    SolutionCandidateDeployEnqueued,
     SolutionDeployJobStatus,
     PolicyRuleCreate,
     PolicyRuleUpdate,
+    WorkspacePromotionPreviewRequest,
+    WorkspacePromotionPreviewResponse,
+    WorkspacePromotionArtifactResponse,
+    WorkspacePromotionCanaryRequest,
+    WorkspacePromotionCanaryAccepted,
+    WorkspaceReleasePrepareRequest,
+    WorkspaceReleaseActivateRequest,
+    WorkspaceReleaseStatusResponse,
+    WorkspaceLiveStatusResponse,
 ]
 
 #: Every request/response DTO the in-workflow SDK sends/parses against
@@ -150,8 +171,8 @@ CONTRACT_FINGERPRINT_MODELS: list[type] = _COMMAND_DTOS + _SDK_DTOS
 CLI_ROUTES: tuple[str, ...] = ("/api/version",)
 
 #: Committed fingerprint of the contract surface above. If a code change flips
-#: the live fingerprint, this test fails — update this value, and bump
-#: CONTRACT_VERSION (both sides) IF the change is breaking. See module docstring.
+#: the live fingerprint, this test fails — update this value, and bump both
+#: contract-version mirrors if the change breaks older CLIs. See module docstring.
 EXPECTED_CONTRACT_FINGERPRINT = (
     # ApplicationCreate.app_model default flipped inline_v1 → standalone_v2
     # (2026-06-13). CONTRACT_VERSION bumped to 3: an old CLI would default a new
@@ -188,7 +209,57 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Application publish now returns 202 + a standardized platform job instead
     # of ApplicationPublic, and the CLI polls PlatformJobPublic for durable
     # progress/result/error (2026-07-28). CONTRACT_VERSION bumped to 8.
-    "fa30c2a79e86fe1a737e2f730f0afb391d028959b549f0de1a027b026295fda9"
+    #
+    # Forms gained optional confirmation_markdown (2026-08-04). ADDITIVE: old
+    # clients omit it and continue receiving the prior default confirmation.
+    #
+    # RoleCreate/RoleUpdate gained additive scopes fields (2026-07-30).
+    # Old CLIs omit them and retain empty-scope custom-role behavior.
+    # Forms also gained optional confirmation_markdown (2026-08-04). All are
+    # additive; fingerprint refreshed after merging the contract surfaces.
+    #
+    # CLI/SDK file write and delete requests gained optional guarded-mutation
+    # fields (2026-08-08). ADDITIVE: old clients omit them and retain the prior
+    # unconditional behavior; new clients can reject stale writes and deletes.
+    #
+    # PlatformJobStatus gained `waiting` for durable parent jobs (2026-08-07).
+    # CONTRACT_VERSION bumped to 9 because an older CLI cannot parse the new
+    # enum value while polling PlatformJobPublic.
+    # Fingerprint refreshed against the combined MTG fork and upstream v9
+    # contract surfaces; the additional fork fields were already shipped.
+    #
+    # Solution deploy enqueue now requires candidate_id (2026-08-12), binding
+    # an accepted asynchronous job to the exact reviewed bundle. CONTRACT_VERSION
+    # bumped to 10 because a stale CLI cannot verify that invariant.
+    #
+    # Workspace promotion preview moved to immutable artifact v2 (2026-08-19):
+    # reviewed production source is named by protected Git commit/tree, closure
+    # bytes are server-fetched, and the response binds content, candidate,
+    # release, effective file, and registration identities. CONTRACT_VERSION
+    # bumped to 11 because v1 clients cannot safely interpret or activate v2.
+    # The same unreleased v11 contract includes reviewed-artifact-only canary
+    # request/acceptance DTOs, immutable preparation proof, and tagged
+    # canary/risk-acknowledgement activation authorization; local draft uploads
+    # are not executable.
+    # Workspace release history status gained optional deadline, overdue, and
+    # runtime/history verification fields (2026-08-24). ADDITIVE: v11 clients
+    # ignore them and retain their existing pending/locked state handling.
+    # Agent create/update replaced llm_model with llm_profile_id and the SDK AI
+    # surface adopted reusable model profiles (2026-08-24). BREAKING: the
+    # compatible CLI ships behind the unreleased 1.2.3 minimum-version floor.
+    # Event subscriptions replaced the inert filter_expression string with the
+    # structured criteria v1 contract (2026-08-26). BREAKING: the matching CLI
+    # implementation ships in that same unreleased 1.2.3-gated release.
+    # Additive attachment, artifact, model-profile, logo, usage-cache, and
+    # platform-job memory fields are included in the same fingerprint refresh.
+    # Reviewed promotion gained an optional declared multi-root cohort and
+    # additive source-release evidence (2026-08-24). Single-root v11 clients
+    # retain their existing request and response behavior.
+    # Promotion responses gained optional risk_paths (2026-08-29). ADDITIVE:
+    # old clients ignore it and retain their existing risk-class handling.
+    # Promotion responses gained optional diagnostic delta/decision evidence
+    # (2026-08-31). ADDITIVE: old clients ignore the extra response fields.
+    "7be790668fda1514867b67b863933f25fbbc51625b7568e1914c78d31ce68d2b"
 )
 
 
@@ -204,12 +275,12 @@ def _fingerprint(models: list[type], routes: tuple[str, ...]) -> str:
 
 
 def test_cli_and_server_contract_version_agree() -> None:
-    """The two hand-maintained integers must match at the source."""
+    """The two copies of the frozen transition marker must match."""
     assert CLI_CONTRACT_VERSION == SERVER_CONTRACT_VERSION, (
         f"CONTRACT_VERSION drift: CLI={CLI_CONTRACT_VERSION} "
         f"(api/bifrost/contract_version.py) vs "
         f"server={SERVER_CONTRACT_VERSION} (api/shared/contract_version.py). "
-        f"When you bump one, bump the other."
+        "The runtime compatibility marker must remain synchronized."
     )
 
 
@@ -219,12 +290,12 @@ def test_contract_fingerprint_tripwire() -> None:
     assert current == EXPECTED_CONTRACT_FINGERPRINT, (
         "A CLI-consumed contract (DTO schema) changed.\n"
         f"  current fingerprint: {current}\n"
-        "  - BREAKING change (field removed/renamed/retyped, "
-        "response shape the CLI parses changed): bump CONTRACT_VERSION in BOTH "
-        "api/shared/contract_version.py AND api/bifrost/contract_version.py, "
+        "  - CLI-IMPACTING/BREAKING change (field removed/renamed/retyped, "
+        "response shape the CLI parses changed): bump CONTRACT_VERSION in "
+        "api/shared/contract_version.py and api/bifrost/contract_version.py, "
         "then update EXPECTED_CONTRACT_FINGERPRINT below.\n"
         "  - COSMETIC/ADDITIVE (description tweak, new optional field the CLI "
-        "ignores): just update EXPECTED_CONTRACT_FINGERPRINT, leave "
-        "CONTRACT_VERSION.\n"
+        "ignores): just update EXPECTED_CONTRACT_FINGERPRINT; leave "
+        "CONTRACT_VERSION unchanged.\n"
         "See test_contract_version.py module docstring."
     )

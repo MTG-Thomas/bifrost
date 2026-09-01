@@ -182,6 +182,9 @@ class NotificationService:
         if "result" in update.model_fields_set:
             notification_dict["result"] = update.result
 
+        if "metadata" in update.model_fields_set:
+            notification_dict["metadata"] = update.metadata
+
         notification_dict["updated_at"] = now.isoformat()
 
         # Determine TTL based on status

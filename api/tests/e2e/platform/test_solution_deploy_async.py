@@ -6,16 +6,16 @@ the job reaches a terminal status. This decouples the (sometimes >100s) deploy
 from the HTTP request, which previously timed out client-side while the server
 completed successfully (Task 7 bug).
 """
+
 from __future__ import annotations
 
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
 
 from src.models.orm.solution_deploy_jobs import SolutionDeployJob
-from src.routers.solutions import DEPLOY_JOB_TIMEOUT
 
 pytestmark = pytest.mark.e2e
 
@@ -31,7 +31,9 @@ def _create_solution(e2e_client, headers, *, slug: str) -> str:
             "global_repo_access": False,
         },
     )
-    assert resp.status_code in (200, 201), f"create failed: {resp.status_code} {resp.text}"
+    assert resp.status_code in (200, 201), (
+        f"create failed: {resp.status_code} {resp.text}"
+    )
     return resp.json()["id"]
 
 
@@ -67,6 +69,13 @@ def test_async_deploy_completes(e2e_client, platform_admin):
     assert resp.status_code == 202, f"expected 202, got {resp.status_code}: {resp.text}"
     job_id = resp.json()["deploy_job_id"]
     assert job_id
+
+    public = e2e_client.get(f"/api/platform-jobs/{job_id}", headers=headers)
+    assert public.status_code == 200, (
+        f"platform job fetch failed: {public.status_code} {public.text}"
+    )
+    public_body = public.json()
+    assert public_body["memory_required_bytes"] >= 512 * 1024 * 1024
 
     status = None
     for _ in range(60):
@@ -140,16 +149,17 @@ def test_async_deploy_reports_failure(e2e_client, platform_admin):
 
 
 @pytest.mark.asyncio
-async def test_polling_expires_abandoned_deploy_job(
+async def test_polling_does_not_mutate_deploy_job_state(
     e2e_client, platform_admin, db_session
 ):
+    """Status reads are projections; central lease recovery owns failure state."""
     now = datetime.now(timezone.utc)
     job = SolutionDeployJob(
         install_id=None,
         status="running",
         result={"phase": "building app dist"},
-        created_at=now - DEPLOY_JOB_TIMEOUT - timedelta(seconds=1),
-        updated_at=now - DEPLOY_JOB_TIMEOUT - timedelta(seconds=1),
+        created_at=now,
+        updated_at=now,
     )
     db_session.add(job)
     await db_session.commit()
@@ -160,6 +170,6 @@ async def test_polling_expires_abandoned_deploy_job(
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "failed"
-    assert body["result"] is None
-    assert "15-minute" in body["error"]
+    assert body["status"] == "running"
+    assert body["result"] == {"phase": "building app dist"}
+    assert body["error"] is None
