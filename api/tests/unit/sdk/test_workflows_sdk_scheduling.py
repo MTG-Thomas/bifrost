@@ -1,6 +1,7 @@
 """SDK-level validation for scheduled execute and cancel."""
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 import pytest
 
@@ -33,6 +34,8 @@ async def test_execute_with_scheduled_at_includes_field():
     assert eid == "e1"
     payload = fake.post.await_args.kwargs["json"]
     assert payload["scheduled_at"] == run_at.isoformat()
+    assert fake.post.await_args.kwargs["retry_safe"] is True
+    UUID(fake.post.await_args.kwargs["headers"]["X-Bifrost-Execution-ID"])
 
 
 @pytest.mark.asyncio
@@ -78,6 +81,7 @@ async def test_cancel_calls_endpoint():
     fake.post.assert_awaited_once()
     url = fake.post.await_args.args[0]
     assert url == "/api/workflows/executions/exec-1/cancel"
+    assert "retry_safe" not in fake.post.await_args.kwargs
 
 
 @pytest.mark.asyncio

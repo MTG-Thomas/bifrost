@@ -43,6 +43,7 @@ import json
 from pathlib import Path
 import sys
 from typing import Any
+from uuid import uuid4
 
 import click
 
@@ -286,7 +287,13 @@ async def execute_workflow(
     if org_ref:
         body["org_id"] = await resolver.resolve("org", org_ref)
 
-    post_response = await client.post("/api/workflows/execute", json=body)
+    execution_id = str(uuid4())
+    post_response = await client.post(
+        "/api/workflows/execute",
+        json=body,
+        headers={"X-Bifrost-Execution-ID": execution_id},
+        retry_safe=True,
+    )
     post_response.raise_for_status()
     initial = post_response.json()
     execution_id = initial.get("execution_id")
