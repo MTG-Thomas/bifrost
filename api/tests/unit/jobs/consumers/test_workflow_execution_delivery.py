@@ -4,7 +4,7 @@ import sys
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
@@ -841,19 +841,68 @@ async def test_release_execution_claim_preserves_concurrent_terminal_state(
     row = SimpleNamespace(status=ExecutionStatus(status))
     db = AsyncMock()
     db.get.return_value = row
+    attempt_token = uuid4()
+    finalize_attempt = AsyncMock(return_value=True)
 
     @asynccontextmanager
     async def db_context():
         yield db
 
-    with patch("src.core.database.get_db_context", side_effect=db_context):
-        await consumer._release_durable_execution_claim(str(uuid4()))
+    execution_id = str(uuid4())
+    with (
+        patch("src.core.database.get_db_context", side_effect=db_context),
+        patch(
+            "src.services.execution.attempts.finalize_attempt",
+            new=finalize_attempt,
+        ),
+    ):
+        await consumer._release_durable_execution_claim(
+            execution_id,
+            attempt_token=str(attempt_token),
+        )
 
     assert row.status == ExecutionStatus(expected_status)
     if committed:
         db.commit.assert_awaited_once()
+        finalize_attempt.assert_awaited_once()
+        assert finalize_attempt.await_args.args[:3] == (
+            db,
+            UUID(execution_id),
+            attempt_token,
+        )
     else:
         db.commit.assert_not_awaited()
+        finalize_attempt.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_release_execution_claim_rejects_stale_attempt_token() -> None:
+    from src.models.enums import ExecutionStatus
+
+    consumer = make_consumer()
+    del consumer._release_durable_execution_claim
+    row = SimpleNamespace(status=ExecutionStatus.RUNNING)
+    db = AsyncMock()
+    db.get.return_value = row
+
+    @asynccontextmanager
+    async def db_context():
+        yield db
+
+    with (
+        patch("src.core.database.get_db_context", side_effect=db_context),
+        patch(
+            "src.services.execution.attempts.finalize_attempt",
+            new=AsyncMock(return_value=False),
+        ),
+    ):
+        await consumer._release_durable_execution_claim(
+            str(uuid4()),
+            attempt_token=str(uuid4()),
+        )
+
+    assert row.status == ExecutionStatus.RUNNING
+    db.commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio

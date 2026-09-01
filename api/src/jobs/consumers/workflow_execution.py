@@ -58,6 +58,18 @@ QUEUE_NAME = "workflow-executions"
 # grace lets sibling authoritative result commits finish before shared daily
 # and ROI aggregate rows are updated.
 _SYNC_DERIVED_WORK_GRACE_SECONDS = 0.025
+_CANCELLED_BEFORE_START_MESSAGE = "Execution was cancelled before it could start"
+
+
+def _attempt_failure_phase(attempt_status: str, failure_code: str | None) -> str:
+    """Map a terminal attempt outcome to its bounded failure phase."""
+    if attempt_status == "worker_lost":
+        return "worker"
+    if attempt_status == "cancelled":
+        return "cancellation"
+    if failure_code == "result_persist_failed":
+        return "result"
+    return "execution"
 
 
 def workflow_prefetch_count(settings: Any) -> int:
@@ -610,18 +622,8 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     status=attempt_status,
                     phase="terminal",
                     failure_code=failure_code,
-                    failure_phase=(
-                        "worker"
-                        if attempt_status == "worker_lost"
-                        else (
-                            "cancellation"
-                            if attempt_status == "cancelled"
-                            else (
-                                "result"
-                                if failure_code == "result_persist_failed"
-                                else "execution"
-                            )
-                        )
+                    failure_phase=_attempt_failure_phase(
+                        attempt_status, failure_code
                     ),
                     duration_ms=duration_ms,
                     peak_memory_bytes=metrics_data.get("peak_memory_bytes"),
@@ -947,9 +949,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                         await update_execution(
                             execution_id=execution_id,
                             status=ExecutionStatus.CANCELLED,
-                            error_message=(
-                                "Execution was cancelled before it could start"
-                            ),
+                            error_message=_CANCELLED_BEFORE_START_MESSAGE,
                             duration_ms=0,
                             session=db,
                         )
@@ -972,9 +972,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     await update_execution(
                         execution_id=execution_id,
                         status=ExecutionStatus.CANCELLED,
-                        error_message=(
-                            "Execution was cancelled before it could start"
-                        ),
+                        error_message=_CANCELLED_BEFORE_START_MESSAGE,
                         duration_ms=0,
                     )
                 await publish_execution_update(execution_id, "Cancelled")
@@ -991,7 +989,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     await self._redis_client.push_result(
                         execution_id=execution_id,
                         status="Cancelled",
-                        error="Execution was cancelled before it could start",
+                        error=_CANCELLED_BEFORE_START_MESSAGE,
                         duration_ms=0,
                     )
                 return
@@ -1559,13 +1557,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
             ) from exc
 
         async with get_db_context() as db:
-            await db.execute(
-                text(
-                    "SELECT pg_advisory_xact_lock("
-                    "hashtext('bifrost:workflow-execution:' || :execution_id))"
-                ),
-                {"execution_id": execution_id},
-            )
+            await self._lock_execution(db, execution_id)
             execution = await db.get(Execution, execution_uuid)
             if execution is None:
                 return None
@@ -1618,13 +1610,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
             ) from exc
 
         async with get_db_context() as db:
-            await db.execute(
-                text(
-                    "SELECT pg_advisory_xact_lock("
-                    "hashtext('bifrost:workflow-execution:' || :execution_id))"
-                ),
-                {"execution_id": execution_id},
-            )
+            await self._lock_execution(db, execution_id)
             execution = await db.get(Execution, execution_uuid)
             if execution is None:
                 return ""
@@ -1657,13 +1643,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
         from src.models.orm.executions import Execution
 
         async with get_db_context() as db:
-            await db.execute(
-                text(
-                    "SELECT pg_advisory_xact_lock("
-                    "hashtext('bifrost:workflow-execution:' || :execution_id))"
-                ),
-                {"execution_id": execution_id},
-            )
+            await self._lock_execution(db, execution_id)
             execution = await db.get(Execution, UUID(execution_id))
             if execution is not None and execution.status in {
                 ExecutionStatus.RUNNING,
