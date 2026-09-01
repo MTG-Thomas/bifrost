@@ -221,6 +221,7 @@ def _is_restart_orphan(
     *,
     now: datetime,
     heartbeat_state: dict[str, Any],
+    active_attempt: ExecutionAttempt | None = None,
 ) -> bool:
     if not execution.started_at:
         return False
@@ -229,6 +230,24 @@ def _is_restart_orphan(
     if str(execution.id) in heartbeat_state.get("active_execution_ids", set()):
         return False
 
+    owner_incarnation_id = (
+        getattr(active_attempt, "worker_incarnation_id", None)
+        if active_attempt is not None
+        else None
+    )
+    if owner_incarnation_id is not None:
+        if str(owner_incarnation_id) in heartbeat_state.get(
+            "live_worker_incarnation_ids", set()
+        ):
+            return False
+        heartbeat_at = getattr(active_attempt, "heartbeat_at", None)
+        grace_anchor = heartbeat_at or execution.started_at
+        if grace_anchor.tzinfo is None:
+            grace_anchor = grace_anchor.replace(tzinfo=timezone.utc)
+        return (now - grace_anchor).total_seconds() >= _restart_orphan_grace_seconds()
+
+    # Legacy attempts have no owner-incarnation evidence. Preserve the
+    # fleet-restart heuristic for those executions.
     oldest_worker_started_at = heartbeat_state.get("oldest_worker_started_at")
     if oldest_worker_started_at is None:
         return False
@@ -304,15 +323,32 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
             # Use workflow timeout + 5 min grace (process pool should kill first).
             # Fallback to RUNNING_TIMEOUT_MINUTES if no workflow found.
             running_result = await db.execute(
-                select(ExecutionModel, Workflow.timeout_seconds).where(
+                select(
+                    ExecutionModel,
+                    Workflow.timeout_seconds,
+                    ExecutionAttempt,
+                ).where(
                     and_(
                         ExecutionModel.status == ExecutionStatus.RUNNING.value,
                     )
-                ).outerjoin(Workflow, ExecutionModel.workflow_id == Workflow.id)
+                )
+                .outerjoin(Workflow, ExecutionModel.workflow_id == Workflow.id)
+                .outerjoin(
+                    ExecutionAttempt,
+                    and_(
+                        ExecutionAttempt.execution_id == ExecutionModel.id,
+                        ExecutionAttempt.completed_at.is_(None),
+                    ),
+                )
             )
             running_stuck = []
-            for execution, wf_timeout in running_result.all():
-                if _is_restart_orphan(execution, now=now, heartbeat_state=heartbeat_state):
+            for execution, wf_timeout, active_attempt in running_result.all():
+                if _is_restart_orphan(
+                    execution,
+                    now=now,
+                    heartbeat_state=heartbeat_state,
+                    active_attempt=active_attempt,
+                ):
                     running_stuck.append(execution)
                     continue
                 age_anchor = _execution_age_anchor(execution)
@@ -400,10 +436,19 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
                     ):
                         continue
                     if execution.status == ExecutionStatus.RUNNING.value:
+                        active_attempt = await db.scalar(
+                            select(ExecutionAttempt)
+                            .where(
+                                ExecutionAttempt.execution_id == execution.id,
+                                ExecutionAttempt.completed_at.is_(None),
+                            )
+                            .with_for_update()
+                        )
                         restart_orphan = _is_restart_orphan(
                             execution,
                             now=now,
                             heartbeat_state=heartbeat_state,
+                            active_attempt=active_attempt,
                         )
                         if not restart_orphan:
                             workflow_timeout = await db.scalar(
@@ -444,7 +489,7 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
 
                     elif execution.status == ExecutionStatus.RUNNING.value:
                         elapsed_min = int((now - age_anchor).total_seconds() / 60)
-                        if _is_restart_orphan(execution, now=now, heartbeat_state=heartbeat_state):
+                        if restart_orphan:
                             timeout_reason = (
                                 f"Stuck in RUNNING status for {elapsed_min}+ minutes. "
                                 "Execution predates all current worker heartbeats and is not claimed by any live worker."
@@ -492,14 +537,15 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
                     # Revoke the current attempt before changing the logical
                     # projection. A delayed child callback carrying this
                     # attempt's token will then be rejected as stale.
-                    active_attempt = await db.scalar(
-                        select(ExecutionAttempt)
-                        .where(
-                            ExecutionAttempt.execution_id == execution.id,
-                            ExecutionAttempt.completed_at.is_(None),
+                    if original_status != ExecutionStatus.RUNNING:
+                        active_attempt = await db.scalar(
+                            select(ExecutionAttempt)
+                            .where(
+                                ExecutionAttempt.execution_id == execution.id,
+                                ExecutionAttempt.completed_at.is_(None),
+                            )
+                            .with_for_update()
                         )
-                        .with_for_update()
-                    )
                     if active_attempt is not None:
                         owner_incarnation_lost = bool(
                             active_attempt.worker_incarnation_id
@@ -527,11 +573,7 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
                             original_status == ExecutionStatus.RUNNING
                             and (
                                 owner_incarnation_lost
-                                or _is_restart_orphan(
-                                    execution,
-                                    now=now,
-                                    heartbeat_state=heartbeat_state,
-                                )
+                                or restart_orphan
                             )
                         ):
                             active_attempt.status = "worker_lost"

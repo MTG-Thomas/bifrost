@@ -82,6 +82,57 @@ def test_is_restart_orphan_waits_for_worker_grace_period():
     assert not _is_restart_orphan(execution, now=now, heartbeat_state=heartbeat_state)
 
 
+def test_is_restart_orphan_when_attempt_owner_disappears_among_older_live_workers():
+    now = datetime.now(timezone.utc)
+    execution = SimpleNamespace(
+        id=uuid4(),
+        started_at=now - timedelta(minutes=15),
+    )
+    active_attempt = SimpleNamespace(
+        worker_incarnation_id=uuid4(),
+        heartbeat_at=now - timedelta(minutes=3),
+    )
+    heartbeat_state = {
+        "active_execution_ids": set(),
+        "live_worker_incarnation_ids": {str(uuid4()), str(uuid4())},
+        "oldest_worker_started_at": now - timedelta(hours=1),
+        "heartbeat_count": 2,
+    }
+
+    assert _is_restart_orphan(
+        execution,
+        now=now,
+        heartbeat_state=heartbeat_state,
+        active_attempt=active_attempt,
+    )
+
+
+def test_is_restart_orphan_keeps_attempt_with_live_owner_incarnation():
+    now = datetime.now(timezone.utc)
+    owner_incarnation_id = uuid4()
+    execution = SimpleNamespace(
+        id=uuid4(),
+        started_at=now - timedelta(minutes=15),
+    )
+    active_attempt = SimpleNamespace(
+        worker_incarnation_id=owner_incarnation_id,
+        heartbeat_at=now - timedelta(minutes=3),
+    )
+    heartbeat_state = {
+        "active_execution_ids": set(),
+        "live_worker_incarnation_ids": {str(owner_incarnation_id), str(uuid4())},
+        "oldest_worker_started_at": now - timedelta(hours=1),
+        "heartbeat_count": 2,
+    }
+
+    assert not _is_restart_orphan(
+        execution,
+        now=now,
+        heartbeat_state=heartbeat_state,
+        active_attempt=active_attempt,
+    )
+
+
 def test_runner_loss_attempt_limit_is_fail_closed(monkeypatch):
     monkeypatch.delenv("BIFROST_WORKFLOW_RUNNER_LOSS_MAX_ATTEMPTS", raising=False)
     assert execution_cleanup._runner_loss_max_attempts() == 1
@@ -519,7 +570,7 @@ async def test_cleanup_sweeps_overdue_scheduled_and_null_start_running_rows() ->
     session = _CleanupSession(
         [
             _QueryResult([scheduled]),
-            _QueryResult([(running, 1800)], tuple_rows=True),
+            _QueryResult([(running, 1800, None)], tuple_rows=True),
             _QueryResult([]),
             _QueryResult([]),
         ]
