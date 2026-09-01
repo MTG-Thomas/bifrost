@@ -82,6 +82,122 @@ def test_is_restart_orphan_waits_for_worker_grace_period():
     assert not _is_restart_orphan(execution, now=now, heartbeat_state=heartbeat_state)
 
 
+def test_runner_loss_attempt_limit_is_fail_closed(monkeypatch):
+    monkeypatch.delenv("BIFROST_WORKFLOW_RUNNER_LOSS_MAX_ATTEMPTS", raising=False)
+    assert execution_cleanup._runner_loss_max_attempts() == 1
+
+    monkeypatch.setenv("BIFROST_WORKFLOW_RUNNER_LOSS_MAX_ATTEMPTS", "2")
+    assert execution_cleanup._runner_loss_max_attempts() == 2
+
+    monkeypatch.setenv("BIFROST_WORKFLOW_RUNNER_LOSS_MAX_ATTEMPTS", "invalid")
+    assert execution_cleanup._runner_loss_max_attempts() == 1
+
+
+def test_restart_orphan_grace_is_overridable_for_chaos_stacks(monkeypatch):
+    monkeypatch.delenv(
+        "BIFROST_WORKFLOW_RESTART_ORPHAN_GRACE_SECONDS", raising=False
+    )
+    assert execution_cleanup._restart_orphan_grace_seconds() == 120
+
+    monkeypatch.setenv("BIFROST_WORKFLOW_RESTART_ORPHAN_GRACE_SECONDS", "1")
+    assert execution_cleanup._restart_orphan_grace_seconds() == 1
+
+
+@pytest.mark.asyncio
+async def test_recover_restart_orphan_fences_attempt_and_republishes(monkeypatch):
+    execution_id = uuid4()
+    claim_token = uuid4()
+    execution = SimpleNamespace(
+        id=execution_id,
+        status="Running",
+        started_at=datetime.now(timezone.utc),
+        completed_at=None,
+        duration_ms=100,
+        error_message="old",
+    )
+    attempt = SimpleNamespace(claim_token=claim_token)
+    db = SimpleNamespace(scalar=AsyncMock(side_effect=[1, attempt]))
+    finalize = AsyncMock(return_value=True)
+    republish = AsyncMock()
+    transition = AsyncMock()
+    monkeypatch.setenv("BIFROST_WORKFLOW_RUNNER_LOSS_MAX_ATTEMPTS", "2")
+
+    with (
+        patch(
+            "src.services.execution.attempts.finalize_attempt",
+            finalize,
+        ),
+        patch(
+            "src.services.execution.async_executor.republish_execution_from_dispatch",
+            republish,
+        ),
+        patch.object(execution_cleanup, "transition_execution_attempt", transition),
+    ):
+        recovered = await execution_cleanup._recover_restart_orphan(db, execution)
+
+    assert recovered is True
+    finalize.assert_awaited_once_with(
+        db,
+        execution_id,
+        claim_token,
+        status="worker_lost",
+        phase="terminal",
+        failure_code="worker_lost",
+        failure_phase="worker",
+    )
+    transition.assert_awaited_once()
+    republish.assert_awaited_once_with(execution)
+    assert execution.status == "Pending"
+    assert execution.started_at is None
+    assert execution.error_message is None
+
+
+@pytest.mark.asyncio
+async def test_recover_restart_orphan_stops_at_attempt_limit(monkeypatch):
+    execution = SimpleNamespace(id=uuid4())
+    db = SimpleNamespace(scalar=AsyncMock(return_value=2))
+    monkeypatch.setenv("BIFROST_WORKFLOW_RUNNER_LOSS_MAX_ATTEMPTS", "2")
+
+    assert not await execution_cleanup._recover_restart_orphan(db, execution)
+
+
+@pytest.mark.asyncio
+async def test_recover_restart_orphan_publish_failure_preserves_state(monkeypatch):
+    execution_id = uuid4()
+    claim_token = uuid4()
+    started_at = datetime.now(timezone.utc)
+    execution = SimpleNamespace(
+        id=execution_id,
+        status="Running",
+        started_at=started_at,
+        completed_at=None,
+        duration_ms=100,
+        error_message=None,
+    )
+    attempt = SimpleNamespace(claim_token=claim_token)
+    db = SimpleNamespace(scalar=AsyncMock(side_effect=[1, attempt]))
+    finalize = AsyncMock(return_value=True)
+    republish = AsyncMock(side_effect=ConnectionError("broker unavailable"))
+    transition = AsyncMock()
+    monkeypatch.setenv("BIFROST_WORKFLOW_RUNNER_LOSS_MAX_ATTEMPTS", "2")
+
+    with (
+        patch("src.services.execution.attempts.finalize_attempt", finalize),
+        patch(
+            "src.services.execution.async_executor.republish_execution_from_dispatch",
+            republish,
+        ),
+        patch.object(execution_cleanup, "transition_execution_attempt", transition),
+        pytest.raises(ConnectionError, match="broker unavailable"),
+    ):
+        await execution_cleanup._recover_restart_orphan(db, execution)
+
+    finalize.assert_not_awaited()
+    transition.assert_not_awaited()
+    assert execution.status == "Running"
+    assert execution.started_at == started_at
+
+
 def test_parse_heartbeat_time_normalizes_zulu_and_naive_values():
     assert _parse_heartbeat_time("2026-07-05T10:30:00Z") == datetime(
         2026, 7, 5, 10, 30, tzinfo=timezone.utc

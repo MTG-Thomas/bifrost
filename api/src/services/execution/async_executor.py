@@ -174,6 +174,22 @@ def _validated_pending_dispatch(
     return dict(publish)
 
 
+def validated_recovery_dispatch(execution: Any) -> dict[str, Any]:
+    """Return a pinned publish payload after validating durable evidence."""
+    envelope = execution.dispatch_evidence
+    if not isinstance(envelope, dict):
+        raise ValueError("execution has no durable dispatch evidence")
+    request = envelope.get("request")
+    if not isinstance(request, dict):
+        raise ValueError("execution dispatch request is invalid")
+    return _validated_pending_dispatch(execution, request)
+
+
+async def republish_execution_from_dispatch(execution: Any) -> None:
+    """Restore ephemeral context and republish one pinned workflow execution."""
+    await _publish_pending(**validated_recovery_dispatch(execution))
+
+
 async def _persist_execution_pin(
     context: ExecutionContext,
     execution_id: str,

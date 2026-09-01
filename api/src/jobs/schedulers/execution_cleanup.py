@@ -9,6 +9,7 @@ Runs every 5 minutes to find and timeout stuck executions.
 
 import json
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -37,6 +38,94 @@ CANCELLING_TIMEOUT_MINUTES = 3  # If CANCELLING for 3+ minutes, worker failed to
 RESTART_ORPHAN_GRACE_SECONDS = 120
 DEFAULT_AGENT_RUN_TIMEOUT_SECONDS = 30 * 60
 AGENT_RUN_TIMEOUT_GRACE_SECONDS = 5 * 60
+
+
+def _runner_loss_max_attempts() -> int:
+    """Return the opt-in workflow runner-loss attempt limit."""
+    try:
+        return max(
+            1,
+            min(
+                10,
+                int(os.environ.get("BIFROST_WORKFLOW_RUNNER_LOSS_MAX_ATTEMPTS", "1")),
+            ),
+        )
+    except ValueError:
+        return 1
+
+
+def _restart_orphan_grace_seconds() -> int:
+    try:
+        return max(
+            1,
+            int(
+                os.environ.get(
+                    "BIFROST_WORKFLOW_RESTART_ORPHAN_GRACE_SECONDS",
+                    str(RESTART_ORPHAN_GRACE_SECONDS),
+                )
+            ),
+        )
+    except ValueError:
+        return RESTART_ORPHAN_GRACE_SECONDS
+
+
+async def _recover_restart_orphan(db, execution: ExecutionModel) -> bool:
+    """Republish a fenced RUNNING execution after its worker disappears."""
+    attempt_count = await db.scalar(
+        select(func.count(ExecutionAttempt.id)).where(
+            ExecutionAttempt.execution_id == execution.id
+        )
+    )
+    if int(attempt_count or 0) >= _runner_loss_max_attempts():
+        return False
+
+    from src.services.execution.async_executor import (
+        republish_execution_from_dispatch,
+    )
+    from src.services.execution.attempts import finalize_attempt
+
+    active_attempt = await db.scalar(
+        select(ExecutionAttempt)
+        .where(
+            ExecutionAttempt.execution_id == execution.id,
+            ExecutionAttempt.completed_at.is_(None),
+        )
+        .with_for_update()
+    )
+    if active_attempt is None or active_attempt.claim_token is None:
+        return False
+
+    # Publish while the current database projection is still untouched. The
+    # execution advisory lock prevents the consumer from claiming this message
+    # until the caller commits PENDING. If publication fails, no attempt or
+    # execution state has been changed and a later sweep can retry safely.
+    await republish_execution_from_dispatch(execution)
+    accepted = await finalize_attempt(
+        db,
+        execution.id,
+        active_attempt.claim_token,
+        status="worker_lost",
+        phase="terminal",
+        failure_code="worker_lost",
+        failure_phase="worker",
+    )
+    if not accepted:
+        return False
+
+    await transition_execution_attempt(
+        db,
+        logical_job_type="workflow_execution",
+        logical_job_id=execution.id,
+        status="worker_lost",
+        failure_code="worker_lost",
+        failure_message="Worker heartbeat disappeared before completion.",
+    )
+    execution.status = "Pending"
+    execution.started_at = None
+    execution.completed_at = None
+    execution.duration_ms = None
+    execution.error_message = None
+    return True
 
 
 def _execution_age_anchor(execution: ExecutionModel) -> datetime:
@@ -150,7 +239,7 @@ def _is_restart_orphan(
 
     if started_at >= oldest_worker_started_at:
         return False
-    return (now - oldest_worker_started_at).total_seconds() >= RESTART_ORPHAN_GRACE_SECONDS
+    return (now - oldest_worker_started_at).total_seconds() >= _restart_orphan_grace_seconds()
 
 
 async def cleanup_stuck_executions() -> dict[str, Any]:
@@ -172,6 +261,7 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
         "scheduled_timeouts": 0,
         "pending_timeouts": 0,
         "running_timeouts": 0,
+        "runner_loss_recoveries": 0,
         "cancelling_timeouts": 0,
         "total_cleaned": 0,
         "errors": [],
@@ -332,6 +422,13 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
                                 now - locked_anchor
                             ).total_seconds() <= effective_timeout_s:
                                 continue
+
+                        if restart_orphan and await _recover_restart_orphan(
+                            db, execution
+                        ):
+                            results["runner_loss_recoveries"] += 1
+                            await db.commit()
+                            continue
 
                     # Determine timeout reason and final status
                     original_status = ExecutionStatus(execution.status)
