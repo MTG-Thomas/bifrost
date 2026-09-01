@@ -128,6 +128,7 @@ def _wait_for_failed_delivery(e2e_client, headers, source: dict, predicate):
     last_observation: dict = {}
 
     def find_delivery():
+        last_observation.clear()
         events_resp = e2e_client.get(
             f"/api/events/sources/{source['id']}/events",
             headers=headers,
