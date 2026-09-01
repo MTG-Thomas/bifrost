@@ -579,6 +579,11 @@ async def _wait_for_persisted_workflow_result(
                     status=execution.status,
                     result=execution.result,
                     error=execution.error_message,
+                    error_type=(
+                        "TimeoutError"
+                        if execution.status == ExecutionStatus.TIMEOUT
+                        else None
+                    ),
                     duration_ms=execution.duration_ms,
                 )
         await asyncio.sleep(0.1)

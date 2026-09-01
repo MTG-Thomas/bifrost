@@ -287,13 +287,18 @@ class Worker:
                         retry_number,
                     )
                 except Exception as error:
-                    logger.error(
+                    logger.exception(
                         "Error retrying consumer %s shutdown (%d/2): %s",
                         consumer.queue_name,
                         retry_number,
                         error,
                     )
                     failed_consumers.append((consumer, error))
+            if failed_consumers and retry_number < 2:
+                # Give transient database/transport failures a bounded window
+                # to recover while the exact attempt tokens and shared
+                # resources are still retained by this process.
+                await asyncio.sleep(min(1.0, 0.25 * (2 ** (retry_number - 1))))
 
         if failed_consumers:
             names = ", ".join(str(consumer.queue_name) for consumer, _ in failed_consumers)

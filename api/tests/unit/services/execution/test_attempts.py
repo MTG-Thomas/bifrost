@@ -1,5 +1,6 @@
 """Unit contracts for token-fenced workflow execution attempts."""
 
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -17,9 +18,44 @@ from src.services.execution.attempts import (
     ensure_dispatch_attempt,
     failure_attempt_status,
     finalize_attempt,
+    heartbeat_attempt_tokens,
     mark_attempt_running,
     mark_attempt_published,
 )
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_accepts_claimed_and_running_dispatch_phases(monkeypatch) -> None:
+    claimed_token = uuid4()
+    running_token = uuid4()
+    observed_statement = None
+
+    class _Result:
+        def all(self):
+            return [(claimed_token,), (running_token,)]
+
+    session = SimpleNamespace(commit=AsyncMock())
+
+    async def execute(statement):
+        nonlocal observed_statement
+        observed_statement = statement
+        return _Result()
+
+    session.execute = execute
+
+    @asynccontextmanager
+    async def db_context():
+        yield session
+
+    monkeypatch.setattr("src.core.database.get_db_context", db_context)
+
+    accepted = await heartbeat_attempt_tokens([claimed_token, running_token])
+
+    assert accepted == {claimed_token, running_token}
+    assert observed_statement is not None
+    statuses = observed_statement.compile().params["status_1"]
+    assert set(statuses) == {"claimed", "running"}
+    session.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio

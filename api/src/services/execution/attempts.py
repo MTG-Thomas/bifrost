@@ -293,7 +293,11 @@ async def heartbeat_attempt_tokens(claim_tokens: list[UUID]) -> set[UUID]:
             .where(
                 ExecutionAttempt.claim_token.in_(claim_tokens),
                 ExecutionAttempt.completed_at.is_(None),
-                ExecutionAttempt.status == "running",
+                # A handle becomes locally visible immediately before its
+                # claimed -> running transition is committed. Accept both
+                # active phases so the heartbeat loop cannot misclassify that
+                # narrow dispatch window as a revoked lease and kill the child.
+                ExecutionAttempt.status.in_({"claimed", "running"}),
             )
             .values(heartbeat_at=now)
             .returning(ExecutionAttempt.claim_token)

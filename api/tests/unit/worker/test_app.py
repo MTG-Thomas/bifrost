@@ -299,6 +299,8 @@ async def test_stop_retries_a_failed_drain_before_closing_resources(
     rabbit_close = AsyncMock()
     monkeypatch.setattr(worker_app, "close_db", close_db)
     monkeypatch.setattr(worker_app.rabbitmq, "close", rabbit_close)
+    sleep = AsyncMock()
+    monkeypatch.setattr(worker_app.asyncio, "sleep", sleep)
     worker = worker_app.Worker()
     worker._consumers = [FakeConsumer("broken")]
 
@@ -317,6 +319,7 @@ async def test_stop_retries_a_failed_drain_before_closing_resources(
     await worker.stop()
 
     assert attempts == 1
+    sleep.assert_not_awaited()
     rabbit_close.assert_awaited_once()
     close_db.assert_awaited_once()
     assert worker._shutdown_event.is_set()
@@ -332,6 +335,10 @@ async def test_stop_fails_closed_when_durable_consumer_surrender_keeps_failing(
     rabbit_close = AsyncMock()
     monkeypatch.setattr(worker_app, "close_db", close_db)
     monkeypatch.setattr(worker_app.rabbitmq, "close", rabbit_close)
+    sleep = AsyncMock()
+    log_exception = Mock()
+    monkeypatch.setattr(worker_app.asyncio, "sleep", sleep)
+    monkeypatch.setattr(worker_app.logger, "exception", log_exception)
     consumer = FakeConsumer("workflow")
     worker = worker_app.Worker()
     worker._consumers = [consumer]
@@ -352,6 +359,8 @@ async def test_stop_fails_closed_when_durable_consumer_surrender_keeps_failing(
     close_db.assert_not_awaited()
     assert worker._shutdown_event.is_set()
     assert worker._stopping is False
+    sleep.assert_awaited_once_with(0.25)
+    assert log_exception.call_count == 2
 
 
 @pytest.mark.asyncio

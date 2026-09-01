@@ -1,10 +1,45 @@
 """Tests for execution service functions."""
 
 import base64
-import pytest
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
+
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_persisted_timeout_preserves_timeout_error_type(monkeypatch):
+    from src.models.enums import ExecutionStatus
+    from src.services.execution import service
+
+    execution_id = uuid4()
+    execution = SimpleNamespace(
+        status=ExecutionStatus.TIMEOUT,
+        workflow_name="timed-out-workflow",
+        result=None,
+        error_message="Execution exceeded its runtime limit",
+        duration_ms=1234,
+    )
+    db = SimpleNamespace(get=AsyncMock(return_value=execution))
+
+    @asynccontextmanager
+    async def db_context():
+        yield db
+
+    monkeypatch.setattr("src.core.database.get_db_context", db_context)
+
+    response = await service._wait_for_persisted_workflow_result(
+        execution_id=str(execution_id),
+        workflow_id=str(uuid4()),
+        workflow_name="fallback-name",
+        timeout_seconds=5,
+    )
+
+    assert response.status is ExecutionStatus.TIMEOUT
+    assert response.error_type == "TimeoutError"
+    assert response.error == "Execution exceeded its runtime limit"
 
 
 class _Context:
