@@ -350,6 +350,7 @@ async def run_workflow(
     transient: bool = False,
     sync: bool = False,
     dispatch_metadata: dict[str, Any] | None = None,
+    org_id_override: str | None = None,
 ) -> WorkflowExecutionResponse:
     """
     Execute a workflow by ID.
@@ -407,6 +408,7 @@ async def run_workflow(
         sync=sync,
         timeout_seconds=timeout_seconds,
         dispatch_metadata=dispatch_metadata,
+        org_id_override=org_id_override,
     )
 
 
@@ -451,6 +453,7 @@ async def _enqueue_workflow_async(
     sync: bool = False,
     timeout_seconds: int | None = None,
     dispatch_metadata: dict[str, Any] | None = None,
+    org_id_override: str | None = None,
 ) -> WorkflowExecutionResponse:
     """
     Enqueue workflow for execution via RabbitMQ.
@@ -469,6 +472,7 @@ async def _enqueue_workflow_async(
         execution_id=context.execution_id,  # Pass through for log streaming
         sync=sync,
         dispatch_metadata=dispatch_metadata,
+        org_id_override=org_id_override,
     )
 
     if not sync:

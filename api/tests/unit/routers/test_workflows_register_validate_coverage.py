@@ -593,6 +593,48 @@ async def test_execute_workflow_schedules_workflow_with_delay() -> None:
 
 
 @pytest.mark.asyncio
+async def test_execute_workflow_preserves_explicit_org_override_for_dispatch() -> None:
+    user = _exec_user(is_superuser=True)
+    workflow = _workflow(organization_id=uuid4())
+    target_org_id = uuid4()
+    service_result = WorkflowExecutionResponse(
+        execution_id=str(uuid4()),
+        workflow_id=str(workflow.id),
+        workflow_name=workflow.name,
+        status=ExecutionStatus.PENDING,
+    )
+
+    with (
+        patch(
+            "src.repositories.WorkflowRepository",
+            return_value=_WorkflowRepo(workflow=workflow),
+        ),
+        patch(
+            "src.services.execution.service.get_workflow_for_execution",
+            AsyncMock(return_value=_dispatch_metadata(workflow)),
+        ),
+        patch(
+            "src.services.execution.service.run_workflow",
+            AsyncMock(return_value=service_result),
+        ) as run_workflow,
+        patch.object(workflows, "publish_execution_update", AsyncMock()),
+        patch.object(workflows, "publish_history_update", AsyncMock()),
+    ):
+        await workflows.execute_workflow(
+            WorkflowExecutionRequest(
+                workflow_id=str(workflow.id),
+                org_id=str(target_org_id),
+            ),
+            _ctx(user),
+            _Db(),
+            user,
+        )
+
+    assert run_workflow.await_args.kwargs["org_id_override"] == str(target_org_id)
+    assert run_workflow.await_args.kwargs["context"].org_id == str(target_org_id)
+
+
+@pytest.mark.asyncio
 async def test_execute_workflow_returns_existing_matching_submission() -> None:
     user = _exec_user()
     workflow = _workflow()

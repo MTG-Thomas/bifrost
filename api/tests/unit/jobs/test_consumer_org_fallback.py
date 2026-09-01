@@ -7,6 +7,8 @@ Tests the org resolution logic where:
 3. GLOBAL scope is used when both are None
 """
 
+from src.jobs.consumers.workflow_execution import _resolve_execution_org_id
+
 
 
 class TestOrgIdFallbackLogic:
@@ -149,3 +151,25 @@ class TestOrgResolutionBehavior:
         # SDK operations will be scoped to customer's org
         assert org_id == "customer-org-123"
         # This prevents the workflow from accessing data from other orgs
+
+    def test_explicit_org_override_survives_org_scoped_workflow(self):
+        pending = {
+            "org_id": "customer-org-123",
+            "org_id_overridden": True,
+        }
+
+        assert (
+            _resolve_execution_org_id(pending, "provider-workflow-org")
+            == "customer-org-123"
+        )
+
+    def test_org_scoped_workflow_wins_without_explicit_override(self):
+        pending = {
+            "org_id": "caller-org-123",
+            "org_id_overridden": False,
+        }
+
+        assert (
+            _resolve_execution_org_id(pending, "workflow-org-456")
+            == "workflow-org-456"
+        )
