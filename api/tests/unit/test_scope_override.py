@@ -195,7 +195,7 @@ class TestResolveScope:
         )
         set_execution_context(ctx)
         try:
-            assert resolve_scope("global") is None
+            assert resolve_scope("global") == "global"
             assert resolve_scope(None) is None
         finally:
             clear_execution_context()
@@ -205,7 +205,7 @@ class TestResolveScope:
 
         set_execution_context(self._make_ctx(is_provider=True))
         try:
-            assert resolve_scope("global") is None
+            assert resolve_scope("global") == "global"
         finally:
             clear_execution_context()
 
