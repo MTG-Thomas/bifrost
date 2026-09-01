@@ -10,6 +10,7 @@ COMPOSE_PROJECT_NAME="$(compute_project_name .)"
 COMPOSE_FILE="docker-compose.test.yml"
 LOG_DIR="/tmp/bifrost-$COMPOSE_PROJECT_NAME"
 READY_PATH="$LOG_DIR/active-execution-chaos-ready.json"
+ENABLED_PATH="$LOG_DIR/active-execution-chaos-enabled"
 
 case "$COMPOSE_PROJECT_NAME" in
     bifrost-test-*) ;;
@@ -17,12 +18,13 @@ case "$COMPOSE_PROJECT_NAME" in
 esac
 
 rm -f "$READY_PATH"
-export BIFROST_RUN_ACTIVE_EXECUTION_CHAOS=1
+touch "$ENABLED_PATH"
 ./test.sh tests/e2e/chaos/test_active_execution_recovery.py -v &
 pytest_pid=$!
 
 cleanup() {
     rm -f "$READY_PATH"
+    rm -f "$ENABLED_PATH"
     if kill -0 "$pytest_pid" 2>/dev/null; then
         kill "$pytest_pid" 2>/dev/null || true
     fi
@@ -65,4 +67,5 @@ docker compose -f "$COMPOSE_FILE" exec -T \
 wait "$pytest_pid"
 trap - EXIT INT TERM
 rm -f "$READY_PATH"
+rm -f "$ENABLED_PATH"
 echo "Active execution chaos scenario passed for $execution_id"

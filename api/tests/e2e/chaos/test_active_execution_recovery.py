@@ -2,7 +2,6 @@
 
 import base64
 import json
-import os
 import uuid
 from pathlib import Path
 
@@ -13,6 +12,7 @@ from tests.e2e.conftest import poll_until, write_and_register
 
 
 READY_PATH = Path("/bifrost-results/active-execution-chaos-ready.json")
+ENABLED_PATH = Path("/bifrost-results/active-execution-chaos-enabled")
 
 
 def _read_workspace_json(client, headers, path):
@@ -29,7 +29,7 @@ def _read_workspace_json(client, headers, path):
 @pytest.mark.e2e
 @pytest.mark.timeout(240)
 @pytest.mark.skipif(
-    os.getenv("BIFROST_RUN_ACTIVE_EXECUTION_CHAOS") != "1",
+    not ENABLED_PATH.exists(),
     reason="requires the dedicated worker-kill chaos driver",
 )
 def test_worker_container_loss_replays_meraki_delta_without_duplicate_artifacts(
