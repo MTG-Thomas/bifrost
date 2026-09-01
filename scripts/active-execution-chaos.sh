@@ -17,6 +17,7 @@ case "$COMPOSE_PROJECT_NAME" in
 esac
 
 rm -f "$READY_PATH"
+export BIFROST_RUN_ACTIVE_EXECUTION_CHAOS=1
 ./test.sh tests/e2e/chaos/test_active_execution_recovery.py -v &
 pytest_pid=$!
 

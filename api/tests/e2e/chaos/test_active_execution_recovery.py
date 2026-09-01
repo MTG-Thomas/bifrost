@@ -2,6 +2,7 @@
 
 import base64
 import json
+import os
 import uuid
 from pathlib import Path
 
@@ -27,6 +28,10 @@ def _read_workspace_json(client, headers, path):
 
 @pytest.mark.e2e
 @pytest.mark.timeout(240)
+@pytest.mark.skipif(
+    os.getenv("BIFROST_RUN_ACTIVE_EXECUTION_CHAOS") != "1",
+    reason="requires the dedicated worker-kill chaos driver",
+)
 def test_worker_container_loss_replays_meraki_delta_without_duplicate_artifacts(
     e2e_client, platform_admin
 ):
