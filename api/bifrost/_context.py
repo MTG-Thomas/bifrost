@@ -142,7 +142,7 @@ def resolve_scope(scope: str | None) -> str | None:
         ctx = _execution_context.get()
         if ctx is None:
             return "global"  # CLI mode — preserve explicit global scope token
-        scope = None
+        scope = "global"
     default = get_default_scope()
     if scope is None and not explicit_global:
         return default
