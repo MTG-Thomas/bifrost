@@ -7,7 +7,7 @@ ephemeral context, live logs, cancellation signals, and synchronous results.
 
 ## Architecture Overview
 
-```
+```text
                           API Request
                                |
                                v
@@ -91,7 +91,7 @@ ephemeral context, live logs, cancellation signals, and synchronous results.
 
 | File | Responsibility |
 |------|----------------|
-| `service.py` | High-level orchestration. Workflow lookup by ID, metadata caching (Redis-first), sync/async dispatch routing. Entry point for `run_workflow()` and `run_code()`. |
+| `service.py` | High-level orchestration. Workflow lookup by ID, metadata caching, sync/async dispatch routing, and PostgreSQL fallback when a synchronous Redis wait expires. Entry point for `run_workflow()` and `run_code()`. |
 | `engine.py` | Unified execution engine. Handles workflows, inline scripts, and data providers. Sets up SDK context, captures variables via `sys.settrace()`, streams logs to Redis, handles data provider caching. |
 | `async_executor.py` | Dispatch management. Pins immutable execution/runtime evidence in PostgreSQL, stores ephemeral context in Redis, publishes a minimal RabbitMQ message, and returns the execution ID. |
 | `process_pool.py` | One-shot child lifecycle management. Forks on demand up to `max_workers`, handles timeouts (SIGTERM -> SIGKILL), detects crashes, and publishes heartbeats. |
@@ -100,7 +100,7 @@ ephemeral context, live logs, cancellation signals, and synchronous results.
 
 ## Execution States
 
-```
+```text
 SCHEDULED   Durable execution exists; publication is unconfirmed or deferred
     |
     v
@@ -161,7 +161,10 @@ Transient editor execution is intentionally not durable.
 1. Steps 1-8 same as async
 2. Consumer pushes result to Redis list: `bifrost:result:{execution_id}`
 3. API waits on `BLPOP` for result (up to timeout)
-4. API returns complete result to caller
+4. If that Redis wait expires, API checks the authoritative PostgreSQL execution
+   projection for a terminal result
+5. API returns the durable terminal result when present, otherwise the polling
+   timeout response
 
 ```python
 # Sync execution with BLPOP

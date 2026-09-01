@@ -17,6 +17,7 @@ For sync execution (sync=True):
 import logging
 import uuid
 import dataclasses
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi.encoders import jsonable_encoder
@@ -314,8 +315,19 @@ async def _publish_scheduled_once(
             ),
             {"execution_id": execution_id},
         )
-        execution = await db.get(Execution, uuid.UUID(execution_id))
-        if execution is None or execution.status != ExecutionStatus.SCHEDULED:
+        execution = await db.get(
+            Execution,
+            uuid.UUID(execution_id),
+            with_for_update=True,
+        )
+        if (
+            execution is None
+            or execution.status != ExecutionStatus.SCHEDULED
+            or (
+                execution.scheduled_at is not None
+                and execution.scheduled_at > datetime.now(timezone.utc)
+            )
+        ):
             return False
 
         # Hold the transaction-scoped claim through broker confirmation. A
