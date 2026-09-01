@@ -2,13 +2,14 @@
 Unit tests for workflow execution consumer org_id fallback behavior.
 
 Tests the org resolution logic where:
-1. User's org_id takes precedence when present
-2. Workflow's organization_id is used as fallback when user org is None
-3. GLOBAL scope is used when both are None
+1. Explicit admin organization targets take precedence
+2. Org-scoped workflows use their registered organization
+3. Global workflows use the caller organization
 """
 
-from src.jobs.consumers.workflow_execution import _resolve_execution_org_id
+import pytest
 
+from src.jobs.consumers.workflow_execution import _resolve_execution_org_id
 
 
 class TestOrgIdFallbackLogic:
@@ -107,27 +108,31 @@ class TestOrgResolutionBehavior:
     def test_resolution_priority_documented(self):
         """
         Document the org resolution priority:
-        1. User's org_id (from pending execution) - highest priority
-        2. Workflow's organization_id (from database) - fallback
-        3. GLOBAL (None) - when both are None
+        1. Explicit target org_id - highest priority
+        2. Workflow's organization_id - normal org-scoped behavior
+        3. Caller's org_id - global-workflow fallback
+        4. GLOBAL (None) - when neither is available
         """
         scenarios = [
-            # (user_org, workflow_org, expected_result)
-            ("user-org", "workflow-org", "user-org"),       # User takes priority
-            ("user-org", None, "user-org"),                 # User with global workflow
-            (None, "workflow-org", "workflow-org"),         # Fallback to workflow
-            (None, None, None),                             # GLOBAL scope
+            # (caller_org, workflow_org, overridden, expected_result)
+            ("target-org", "workflow-org", True, "target-org"),
+            ("caller-org", "workflow-org", False, "workflow-org"),
+            ("caller-org", None, False, "caller-org"),
+            (None, None, False, None),
         ]
 
-        for user_org, workflow_org, expected in scenarios:
-            org_id = user_org
-            workflow_data = {"organization_id": workflow_org}
+        for caller_org, workflow_org, overridden, expected in scenarios:
+            pending = {
+                "org_id": caller_org,
+                "org_id_overridden": overridden,
+            }
+            assert _resolve_execution_org_id(pending, workflow_org) == expected
 
-            workflow_org_id = workflow_data.get("organization_id")
-            if org_id is None and workflow_org_id:
-                org_id = workflow_org_id
-
-            assert org_id == expected, f"Failed for user_org={user_org}, workflow_org={workflow_org}"
+    def test_explicit_org_override_without_org_id_fails_closed(self):
+        with pytest.raises(
+            ValueError, match="Explicit organization override requires org_id"
+        ):
+            _resolve_execution_org_id({"org_id_overridden": True}, "workflow-org")
 
     def test_fallback_prevents_data_leakage(self):
         """

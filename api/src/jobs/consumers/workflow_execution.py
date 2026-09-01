@@ -81,7 +81,10 @@ def _resolve_execution_org_id(
     pending: dict[str, Any], workflow_org_id: str | None
 ) -> str | None:
     if pending.get("org_id_overridden"):
-        return pending.get("org_id")
+        org_id = pending.get("org_id")
+        if org_id is None:
+            raise ValueError("Explicit organization override requires org_id")
+        return org_id
     return workflow_org_id or pending.get("org_id")
 
 
