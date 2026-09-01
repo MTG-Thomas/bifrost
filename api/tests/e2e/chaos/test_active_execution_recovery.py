@@ -26,6 +26,7 @@ def _read_workspace_json(client, headers, path):
 
 
 @pytest.mark.e2e
+@pytest.mark.timeout(240)
 def test_worker_container_loss_replays_meraki_delta_without_duplicate_artifacts(
     e2e_client, platform_admin
 ):
