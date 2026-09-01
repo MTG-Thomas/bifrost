@@ -77,7 +77,7 @@ test.describe("Chat attachments and model profiles", () => {
 
 		let resolveChat!: (payload: Record<string, unknown>) => void;
 		let finishChat!: () => void;
-		let advanceChat!: () => void;
+		let advanceChat!: () => Promise<void>;
 		let advanceArtifact!: () => void;
 		const chatPayload = new Promise<Record<string, unknown>>((resolve) => {
 			resolveChat = resolve;
@@ -91,7 +91,7 @@ test.describe("Chat attachments and model profiles", () => {
 				if (payload.type === "chat") {
 					resolveChat(payload);
 					const conversationId = String(payload.conversation_id);
-					advanceChat = () => {
+					advanceChat = async () => {
 						socket.send(
 							JSON.stringify({
 								type: "message_start",
@@ -124,6 +124,7 @@ test.describe("Chat attachments and model profiles", () => {
 								message_id: "assistant-progress",
 							}),
 						);
+						await new Promise((resolve) => setTimeout(resolve, 0));
 						socket.send(
 							JSON.stringify({
 								type: "tool_call",
@@ -223,7 +224,7 @@ test.describe("Chat attachments and model profiles", () => {
 			path: "playwright-results/screenshots/chat-thinking.png",
 			fullPage: true,
 		});
-		advanceChat();
+		await advanceChat();
 		await expect(page.getByText("Generating Markdown…")).toBeVisible({
 			timeout: 15_000,
 		});
