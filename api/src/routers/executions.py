@@ -1255,17 +1255,18 @@ async def trigger_cleanup(
         *( (execution, ExecutionStatus.CANCELLED) for execution in cancelling_executions ),
     ]
     for candidate, final_status in candidates:
+        candidate_id = candidate.id
         try:
             await ctx.db.execute(
                 text(
                     "SELECT pg_advisory_xact_lock("
                     "hashtext('bifrost:workflow-execution:' || :execution_id))"
                 ),
-                {"execution_id": str(candidate.id)},
+                {"execution_id": str(candidate_id)},
             )
             execution = await ctx.db.scalar(
                 select(ExecutionModel)
-                .where(ExecutionModel.id == candidate.id)
+                .where(ExecutionModel.id == candidate_id)
                 .execution_options(populate_existing=True)
                 .with_for_update()
             )
@@ -1332,9 +1333,12 @@ async def trigger_cleanup(
             execution.completed_at = now
             await ctx.db.commit()
             cleaned_count += 1
-        except Exception as e:
+        except Exception:
             await ctx.db.rollback()
-            logger.error(f"Failed to cleanup execution {candidate.id}: {e}")
+            logger.exception(
+                "Failed to cleanup execution",
+                extra={"execution_id": str(candidate_id)},
+            )
             failed_count += 1
 
     total_cleaned = cleaned_count

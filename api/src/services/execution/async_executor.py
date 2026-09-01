@@ -258,40 +258,36 @@ async def _persist_execution_pin(
             runtime_evidence=runtime_evidence,
             runtime_mode=runtime_mode,
         )
-        db.add(
-            Execution(
-                id=uuid.UUID(execution_id),
-                workflow_name=pinned_runtime.name if pinned_runtime else "pending",
-                workflow_id=uuid.UUID(workflow_id),
-                solution_deployment_id=(
-                    getattr(pinned_runtime, "deployment_id", None)
-                    if pinned_runtime
-                    else None
-                ),
-                runtime_mode=runtime_mode,
-                runtime_evidence=runtime_evidence,
-                runtime_evidence_hash=evidence_hash,
-                dispatch_evidence=dispatch,
-                dispatch_evidence_hash=sha256_digest(canonical_json(dispatch)),
-                attempt_tracking_version="v1",
-                # SCHEDULED is the durable, retryable pre-publication state.
-                # The queue claimant atomically advances it to PENDING only
-                # after RabbitMQ confirms publication.
-                status=ExecutionStatus.SCHEDULED,
-                parameters=parameters,
-                form_id=uuid.UUID(form_id) if form_id else None,
-                api_key_id=uuid.UUID(api_key_id) if api_key_id else None,
-                executed_by=uuid.UUID(context.user_id),
-                executed_by_name=context.name,
-                organization_id=(uuid.UUID(org_value) if org_value else None),
-            )
+        pinned_execution = Execution(
+            id=uuid.UUID(execution_id),
+            workflow_name=pinned_runtime.name if pinned_runtime else "pending",
+            workflow_id=uuid.UUID(workflow_id),
+            solution_deployment_id=(
+                getattr(pinned_runtime, "deployment_id", None)
+                if pinned_runtime
+                else None
+            ),
+            runtime_mode=runtime_mode,
+            runtime_evidence=runtime_evidence,
+            runtime_evidence_hash=evidence_hash,
+            dispatch_evidence=dispatch,
+            dispatch_evidence_hash=sha256_digest(canonical_json(dispatch)),
+            attempt_tracking_version="v1",
+            # SCHEDULED is the durable, retryable pre-publication state.
+            # The queue claimant atomically advances it to PENDING only
+            # after RabbitMQ confirms publication.
+            status=ExecutionStatus.SCHEDULED,
+            parameters=parameters,
+            form_id=uuid.UUID(form_id) if form_id else None,
+            api_key_id=uuid.UUID(api_key_id) if api_key_id else None,
+            executed_by=uuid.UUID(context.user_id),
+            executed_by_name=context.name,
+            organization_id=(uuid.UUID(org_value) if org_value else None),
         )
+        db.add(pinned_execution)
         await db.flush()
         from src.services.execution.attempts import ensure_dispatch_attempt
 
-        pinned_execution = await db.get(Execution, uuid.UUID(execution_id))
-        if pinned_execution is None:  # pragma: no cover - flush invariant
-            raise RuntimeError("durable execution pin disappeared before commit")
         await ensure_dispatch_attempt(db, pinned_execution)
         await db.commit()
         return dict(dispatch["publish"]), True
