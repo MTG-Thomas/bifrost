@@ -657,6 +657,8 @@ class ExecutionRepository:
             ExecutionStatus.SCHEDULED.value,
             ExecutionStatus.PENDING.value,
         }:
+            completed_at = datetime.now(timezone.utc)
+            execution.completed_at = completed_at
             attempt = await self.db.scalar(
                 select(ExecutionAttempt)
                 .where(
@@ -666,14 +668,12 @@ class ExecutionRepository:
                 .with_for_update()
             )
             if attempt is not None:
-                completed_at = datetime.now(timezone.utc)
                 attempt.status = "cancelled"
                 attempt.phase = "terminal"
                 attempt.failure_phase = "cancellation"
                 attempt.failure_code = "cancelled_before_claim"
                 attempt.completed_at = completed_at
                 attempt.heartbeat_at = completed_at
-                execution.completed_at = completed_at
 
         await self.db.commit()
         await self.db.refresh(execution)

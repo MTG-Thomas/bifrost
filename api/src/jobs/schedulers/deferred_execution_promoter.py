@@ -108,11 +108,13 @@ async def promote_due_executions() -> tuple[int, int]:
                     row = await row_db.get(Execution, execution_id)
                     if row is None:
                         continue
-                execution_failure_checkpoint(FailurePoint.SCHEDULE_PUBLISH)
-                published = await _publish_scheduled_once(
-                    execution_id=str(row.id),
-                    publish_kwargs={
-                        "execution_id": str(row.id),
+                    # Copy every value needed for publication while the ORM row
+                    # is attached. The context manager may roll back/expire the
+                    # session on exit; detached attributes are not a safe retry
+                    # boundary.
+                    publish_execution_id = str(row.id)
+                    publish_kwargs = {
+                        "execution_id": publish_execution_id,
                         "workflow_id": str(row.workflow_id) if row.workflow_id else None,
                         "parameters": row.parameters or {},
                         "org_id": str(row.organization_id) if row.organization_id else None,
@@ -126,14 +128,10 @@ async def promote_due_executions() -> tuple[int, int]:
                         "api_key_id": str(row.api_key_id) if row.api_key_id else None,
                         "sync": False,
                         "is_platform_admin": bool(
-                            (row.execution_context or {}).get(
-                                "is_platform_admin", False
-                            )
+                            (row.execution_context or {}).get("is_platform_admin", False)
                         ),
                         "is_provider_org": bool(
-                            (row.execution_context or {}).get(
-                                "is_provider_org", False
-                            )
+                            (row.execution_context or {}).get("is_provider_org", False)
                         ),
                         "is_external": bool(
                             (row.execution_context or {}).get("is_external", False)
@@ -147,7 +145,11 @@ async def promote_due_executions() -> tuple[int, int]:
                         "runtime_evidence": row.runtime_evidence,
                         "runtime_mode": row.runtime_mode,
                         "execution_record_exists": True,
-                    },
+                    }
+                execution_failure_checkpoint(FailurePoint.SCHEDULE_PUBLISH)
+                published = await _publish_scheduled_once(
+                    execution_id=publish_execution_id,
+                    publish_kwargs=publish_kwargs,
                 )
                 promoted += int(published)
             except Exception:

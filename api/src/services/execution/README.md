@@ -13,10 +13,12 @@ ephemeral context, live logs, cancellation signals, and synchronous results.
                                v
 +---------------------------+  |  +---------------------------+
 |        service.py         |  |  |      async_executor.py    |
-|  - Workflow lookup        |<-+->|  - Store pending in Redis |
-|  - Metadata resolution    |     |  - Publish to RabbitMQ    |
-|  - Sync/async dispatch    |     |  - Return execution_id    |
+|  - Workflow lookup        |<-+->|  - Pin PostgreSQL run     |
+|  - Metadata resolution    |     |  - Store Redis context    |
+|  - Sync/async dispatch    |     |  - Confirm Rabbit publish |
 +---------------------------+     +---------------------------+
+                                              |
+                         execution-ID advisory transaction fence
                                               |
                                               v
                                      +----------------+
