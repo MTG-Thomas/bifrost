@@ -99,8 +99,8 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ghcr.io/mtg-thomas/bifrost-doc-renderer:main
-            ghcr.io/mtg-thomas/bifrost-doc-renderer:sha-${{ github.sha }}
+            ghcr.io/midtown-technology-group/bifrost-doc-renderer:main
+            ghcr.io/midtown-technology-group/bifrost-doc-renderer:sha-${{ github.sha }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}

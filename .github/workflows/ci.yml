@@ -28,12 +28,12 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  API_IMAGE: mtg-thomas/bifrost-api
-  CLIENT_IMAGE: mtg-thomas/bifrost-client
-  WORKER_IMAGE: mtg-thomas/bifrost-worker
-  CI_API_TEST_IMAGE: mtg-thomas/bifrost-ci-api-dev
-  CI_CLIENT_TEST_IMAGE: mtg-thomas/bifrost-ci-client-dev
-  CI_PLAYWRIGHT_TEST_IMAGE: mtg-thomas/bifrost-ci-playwright
+  API_IMAGE: midtown-technology-group/bifrost-api
+  CLIENT_IMAGE: midtown-technology-group/bifrost-client
+  WORKER_IMAGE: midtown-technology-group/bifrost-worker
+  CI_API_TEST_IMAGE: midtown-technology-group/bifrost-ci-api-dev
+  CI_CLIENT_TEST_IMAGE: midtown-technology-group/bifrost-ci-client-dev
+  CI_PLAYWRIGHT_TEST_IMAGE: midtown-technology-group/bifrost-ci-playwright
   # Every test lane consumes the immutable image published from its exact tree.
   CI_TEST_IMAGE_TAG: ${{ format('sha-{0}', github.sha) }}
 
@@ -130,21 +130,21 @@ jobs:
       matrix:
         include:
           - component: api
-            image: mtg-thomas/bifrost-api
+            image: midtown-technology-group/bifrost-api
             context: .
             dockerfile: ./api/Dockerfile
             target: runtime
             version_arg: BIFROST_VERSION
             cache_scope: dev-api
           - component: worker
-            image: mtg-thomas/bifrost-worker
+            image: midtown-technology-group/bifrost-worker
             context: .
             dockerfile: ./api/Dockerfile
             target: runtime
             version_arg: BIFROST_VERSION
             cache_scope: dev-worker
           - component: client
-            image: mtg-thomas/bifrost-client
+            image: midtown-technology-group/bifrost-client
             context: ./client
             dockerfile: ./client/Dockerfile
             target: production
