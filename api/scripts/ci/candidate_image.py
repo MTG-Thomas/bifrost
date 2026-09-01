@@ -19,8 +19,10 @@ SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+-dev\.\d+$", re.ASCII)
 IMAGE_RE = re.compile(r"^ghcr\.io/[a-z0-9_.-]+/[a-z0-9_.-]+$")
 TAG_RE = re.compile(r"^\w[\w.-]{0,127}$", re.ASCII)
+REPOSITORIES = ("MTG-Thomas/bifrost", "Midtown-Technology-Group/bifrost")
 WORKFLOW_IDENTITY_RE = (
-    r"^https://github\.com/MTG-Thomas/bifrost/\.github/workflows/ci\.yml@refs/.*$"
+    r"^https://github\.com/(?:MTG-Thomas|Midtown-Technology-Group)/bifrost/"
+    r"\.github/workflows/ci\.yml@refs/.*$"
 )
 OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 ALLOWED_EXECUTABLES = frozenset({"cosign", "docker"})
@@ -38,6 +40,7 @@ class CandidateImage:
     tree_sha: str
     source_sha: str
     version: str
+    repository: str
 
 
 def _run(command: Sequence[str]) -> str:
@@ -135,8 +138,14 @@ def verify_candidate(
     if not isinstance(labels, dict):
         raise CandidateImageError(f"{ref} has no inspectable image labels")
 
+    source = labels.get("org.opencontainers.image.source")
+    repository = str(source).removeprefix("https://github.com/")
+    if repository not in REPOSITORIES:
+        raise CandidateImageError(
+            f"{ref} source repository is not an allowed Bifrost fork"
+        )
+
     expected = {
-        "org.opencontainers.image.source": "https://github.com/MTG-Thomas/bifrost",
         "org.opencontainers.image.version": version,
         "com.midtowntg.bifrost.source-tree": tree_sha,
         "com.midtowntg.bifrost.candidate": "true",
@@ -174,6 +183,7 @@ def verify_candidate(
         tree_sha=tree_sha,
         source_sha=candidate_source_sha,
         version=version,
+        repository=repository,
     )
 
 
@@ -227,7 +237,7 @@ def promote_candidate(
     predicate = {
         "schema_version": "bifrost.image-promotion/v1",
         "component": component,
-        "repository": "MTG-Thomas/bifrost",
+        "repository": candidate.repository,
         "protected_main_source_sha": main_source_sha,
         "source_tree_sha": candidate.tree_sha,
         "candidate_source_sha": candidate.source_sha,

@@ -49,6 +49,7 @@ def test_mtg_candidate_images_are_promoted_without_rebuild() -> None:
 
     assert "github.event_name == 'pull_request'" in candidates["if"]
     assert "MTG-Thomas/bifrost" in candidates["if"]
+    assert "Midtown-Technology-Group/bifrost" in candidates["if"]
     assert "inputs.queue_post_merge" in promotion["if"]
 
     source = "\n".join(step.get("run", "") for step in promotion["steps"])

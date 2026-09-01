@@ -15,6 +15,10 @@ MAIN_SHA = "c" * 40
 DIGEST = "sha256:" + "d" * 64
 IMAGE = "ghcr.io/mtg-thomas/bifrost-api"
 VERSION = "1.1.1-dev.456"
+TRANSFER_REPOSITORIES = (
+    "MTG-Thomas/bifrost",
+    "Midtown-Technology-Group/bifrost",
+)
 
 
 def _labels(*, tree_sha: str = TREE_SHA) -> dict[str, str]:
@@ -25,6 +29,41 @@ def _labels(*, tree_sha: str = TREE_SHA) -> dict[str, str]:
         "com.midtowntg.bifrost.source-tree": tree_sha,
         "com.midtowntg.bifrost.candidate": "true",
     }
+
+
+@pytest.mark.parametrize("repository", TRANSFER_REPOSITORIES)
+def test_verify_candidate_accepts_transfer_repository_identities(
+    monkeypatch, repository: str
+) -> None:
+    assert candidate_image.REPOSITORIES == TRANSFER_REPOSITORIES
+    fake = FakeCommands()
+    fake.labels["org.opencontainers.image.source"] = f"https://github.com/{repository}"
+    monkeypatch.setattr(candidate_image.subprocess, "run", fake)
+
+    candidate = candidate_image.verify_candidate(
+        image=IMAGE,
+        tree_sha=TREE_SHA,
+        version=VERSION,
+        source_sha=SOURCE_SHA,
+        expected_digest=DIGEST,
+    )
+
+    assert candidate.repository == repository
+
+
+def test_verify_candidate_rejects_untrusted_repository_identity(monkeypatch) -> None:
+    fake = FakeCommands()
+    fake.labels["org.opencontainers.image.source"] = "https://github.com/example/bifrost"
+    monkeypatch.setattr(candidate_image.subprocess, "run", fake)
+
+    with pytest.raises(candidate_image.CandidateImageError, match="not an allowed"):
+        candidate_image.verify_candidate(
+            image=IMAGE,
+            tree_sha=TREE_SHA,
+            version=VERSION,
+            source_sha=SOURCE_SHA,
+            expected_digest=DIGEST,
+        )
 
 
 class FakeCommands:
