@@ -1141,6 +1141,7 @@ async def execute_workflow(
                 transient=request.transient,
                 sync=True,
                 dispatch_metadata=dispatch_metadata,
+                org_id_override=request.org_id,
             )
             return WorkflowExecutionResponse(
                 execution_id=result.execution_id,
@@ -1164,6 +1165,7 @@ async def execute_workflow(
                 transient=request.transient,
                 sync=request.sync or False,
                 dispatch_metadata=dispatch_metadata,
+                org_id_override=request.org_id,
             )
         else:
             # This shouldn't happen due to earlier validation

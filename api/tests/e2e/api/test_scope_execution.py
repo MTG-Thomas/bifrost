@@ -1527,3 +1527,20 @@ async def {workflow_name}():
         )
         assert data["status"] == "Success", f"Execution failed: {data}"
         assert data.get("result", {}).get("org_id") == org2["id"]
+
+    def test_superuser_explicit_org_override_wins_for_org_scoped_workflow(
+        self,
+        e2e_client,
+        platform_admin,
+        org2,
+        org1_authenticated_workflow,
+    ):
+        data = execute_workflow_sync(
+            e2e_client,
+            platform_admin.headers,
+            org1_authenticated_workflow["id"],
+            org_id=org2["id"],
+        )
+
+        assert data["status"] == "Success", f"Execution failed: {data}"
+        assert data.get("result", {}).get("org_id") == org2["id"]

@@ -77,6 +77,17 @@ def workflow_prefetch_count(settings: Any) -> int:
     return max(1, min(settings.max_concurrency, settings.max_workers))
 
 
+def _resolve_execution_org_id(
+    pending: dict[str, Any], workflow_org_id: str | None
+) -> str | None:
+    if pending.get("org_id_overridden"):
+        org_id = pending.get("org_id")
+        if org_id is None:
+            raise ValueError("Explicit organization override requires org_id")
+        return org_id
+    return workflow_org_id or pending.get("org_id")
+
+
 class WorkflowExecutionConsumer(BaseConsumer):
     """
     Consumer for workflow execution queue.
@@ -1183,15 +1194,22 @@ class WorkflowExecutionConsumer(BaseConsumer):
                         "can_access_global_repo", False
                     )
 
-                    # Scope resolution: org-scoped workflows use workflow's org,
-                    # global workflows use caller's org
+                    # Explicit admin targets win; otherwise org-scoped workflows
+                    # use their own org and global workflows use the caller's org.
                     workflow_org_id = workflow_data.get("organization_id")
-                    if workflow_org_id:
+                    resolved_org_id = _resolve_execution_org_id(
+                        pending, workflow_org_id
+                    )
+                    if pending.get("org_id_overridden"):
+                        org_id = resolved_org_id
+                        logger.info(f"Scope: explicit caller org {org_id}")
+                    elif workflow_org_id:
                         # Org-scoped workflow: always use workflow's org
-                        org_id = workflow_org_id
+                        org_id = resolved_org_id
                         logger.info(f"Scope: workflow org {org_id} (org-scoped workflow)")
                     else:
                         # Global workflow: use caller's org (already set from pending["org_id"])
+                        org_id = resolved_org_id
                         logger.info(f"Scope: caller org {org_id or 'GLOBAL'} (global workflow)")
                 except WorkflowNotFoundError:
                     logger.error(f"Workflow not found: {workflow_id}")

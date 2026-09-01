@@ -76,6 +76,8 @@ def _dispatch_request_identity(
     }
     if dispatch_metadata is not None:
         identity["dispatch_metadata"] = dispatch_metadata
+    if org_id_override is not None:
+        identity["org_id_overridden"] = True
     artifact_workspace_id = getattr(context, "artifact_workspace_id", None)
     if artifact_workspace_id is not None:
         identity["artifact_workspace_id"] = artifact_workspace_id
@@ -360,6 +362,7 @@ async def _publish_pending(
     sync: bool,
     is_platform_admin: bool,
     file_path: str | None,
+    org_id_overridden: bool = False,
     is_provider_org: bool = False,
     is_external: bool = False,
     event: dict[str, Any] | None = None,
@@ -405,6 +408,7 @@ async def _publish_pending(
                 workflow_id=workflow_id,
                 parameters=parameters,
                 org_id=org_id,
+                org_id_overridden=org_id_overridden,
                 user_id=user_id,
                 user_name=user_name,
                 user_email=user_email,
