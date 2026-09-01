@@ -2,11 +2,11 @@
 Async Workflow Execution
 Handles queueing of workflows via Redis + RabbitMQ
 
-Flow:
-1. API stores pending execution in Redis
-2. API publishes message to RabbitMQ
-3. API returns execution_id immediately (<100ms)
-4. Worker reads from Redis, writes to PostgreSQL, executes
+Flow for durable workflows:
+1. API pins the logical execution and dispatching attempt in PostgreSQL
+2. API stores ephemeral context in Redis and publishes to RabbitMQ
+3. Broker confirmation advances the execution/attempt to Pending/published
+4. Worker claims the published attempt and executes in an isolated child
 
 For sync execution (sync=True):
 - Caller provides execution_id (already stored in Redis)
@@ -17,6 +17,7 @@ For sync execution (sync=True):
 import logging
 import uuid
 import dataclasses
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi.encoders import jsonable_encoder
@@ -75,6 +76,8 @@ def _dispatch_request_identity(
     }
     if dispatch_metadata is not None:
         identity["dispatch_metadata"] = dispatch_metadata
+    if org_id_override is not None:
+        identity["org_id_overridden"] = True
     artifact_workspace_id = getattr(context, "artifact_workspace_id", None)
     if artifact_workspace_id is not None:
         identity["artifact_workspace_id"] = artifact_workspace_id
@@ -257,33 +260,37 @@ async def _persist_execution_pin(
             runtime_evidence=runtime_evidence,
             runtime_mode=runtime_mode,
         )
-        db.add(
-            Execution(
-                id=uuid.UUID(execution_id),
-                workflow_name=pinned_runtime.name if pinned_runtime else "pending",
-                workflow_id=uuid.UUID(workflow_id),
-                solution_deployment_id=(
-                    getattr(pinned_runtime, "deployment_id", None)
-                    if pinned_runtime
-                    else None
-                ),
-                runtime_mode=runtime_mode,
-                runtime_evidence=runtime_evidence,
-                runtime_evidence_hash=evidence_hash,
-                dispatch_evidence=dispatch,
-                dispatch_evidence_hash=sha256_digest(canonical_json(dispatch)),
-                # SCHEDULED is the durable, retryable pre-publication state.
-                # The queue claimant atomically advances it to PENDING only
-                # after RabbitMQ confirms publication.
-                status=ExecutionStatus.SCHEDULED,
-                parameters=parameters,
-                form_id=uuid.UUID(form_id) if form_id else None,
-                api_key_id=uuid.UUID(api_key_id) if api_key_id else None,
-                executed_by=uuid.UUID(context.user_id),
-                executed_by_name=context.name,
-                organization_id=(uuid.UUID(org_value) if org_value else None),
-            )
+        pinned_execution = Execution(
+            id=uuid.UUID(execution_id),
+            workflow_name=pinned_runtime.name if pinned_runtime else "pending",
+            workflow_id=uuid.UUID(workflow_id),
+            solution_deployment_id=(
+                getattr(pinned_runtime, "deployment_id", None)
+                if pinned_runtime
+                else None
+            ),
+            runtime_mode=runtime_mode,
+            runtime_evidence=runtime_evidence,
+            runtime_evidence_hash=evidence_hash,
+            dispatch_evidence=dispatch,
+            dispatch_evidence_hash=sha256_digest(canonical_json(dispatch)),
+            attempt_tracking_version="v1",
+            # SCHEDULED is the durable, retryable pre-publication state.
+            # The queue claimant atomically advances it to PENDING only
+            # after RabbitMQ confirms publication.
+            status=ExecutionStatus.SCHEDULED,
+            parameters=parameters,
+            form_id=uuid.UUID(form_id) if form_id else None,
+            api_key_id=uuid.UUID(api_key_id) if api_key_id else None,
+            executed_by=uuid.UUID(context.user_id),
+            executed_by_name=context.name,
+            organization_id=(uuid.UUID(org_value) if org_value else None),
         )
+        db.add(pinned_execution)
+        await db.flush()
+        from src.services.execution.attempts import ensure_dispatch_attempt
+
+        await ensure_dispatch_attempt(db, pinned_execution)
         await db.commit()
         return dict(dispatch["publish"]), True
 
@@ -306,13 +313,27 @@ async def _publish_scheduled_once(
             ),
             {"execution_id": execution_id},
         )
-        execution = await db.get(Execution, uuid.UUID(execution_id))
-        if execution is None or execution.status != ExecutionStatus.SCHEDULED:
+        execution = await db.get(
+            Execution,
+            uuid.UUID(execution_id),
+            with_for_update=True,
+        )
+        if (
+            execution is None
+            or execution.status != ExecutionStatus.SCHEDULED
+            or (
+                execution.scheduled_at is not None
+                and execution.scheduled_at > datetime.now(timezone.utc)
+            )
+        ):
             return False
 
         # Hold the transaction-scoped claim through broker confirmation. A
         # failure rolls the transaction back, so a retry can claim SCHEDULED.
         await _publish_pending(**publish_kwargs)
+        from src.services.execution.attempts import mark_attempt_published
+
+        await mark_attempt_published(db, execution)
         await db.execute(
             update(Execution)
             .where(
@@ -341,6 +362,7 @@ async def _publish_pending(
     sync: bool,
     is_platform_admin: bool,
     file_path: str | None,
+    org_id_overridden: bool = False,
     is_provider_org: bool = False,
     is_external: bool = False,
     event: dict[str, Any] | None = None,
@@ -386,6 +408,7 @@ async def _publish_pending(
                 workflow_id=workflow_id,
                 parameters=parameters,
                 org_id=org_id,
+                org_id_overridden=org_id_overridden,
                 user_id=user_id,
                 user_name=user_name,
                 user_email=user_email,

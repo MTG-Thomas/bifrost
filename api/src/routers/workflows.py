@@ -755,32 +755,37 @@ async def _insert_scheduled_execution(
     }
     if runtime_evidence is not None:
         execution_context["runtime_evidence"] = runtime_evidence
-    db.add(
-        Execution(
-            id=exec_id,
-            workflow_id=workflow_id,
-            workflow_name=workflow_name,
-            status=ExecutionStatus.SCHEDULED,
-            parameters=parameters,
-            scheduled_at=scheduled_at,
-            organization_id=organization_id,
-            executed_by=executed_by,
-            executed_by_name=executed_by_name,
-            form_id=form_id,
-            api_key_id=None,
-            solution_deployment_id=(
-                getattr(pinned_runtime, "deployment_id", None)
-                if pinned_runtime
-                else None
-            ),
-            runtime_mode=runtime_mode,
-            runtime_evidence=runtime_evidence,
-            runtime_evidence_hash=(
-                sha256_digest(canonical_json(runtime_evidence)) if runtime_evidence else None
-            ),
-            execution_context=execution_context,
-        )
+    execution = Execution(
+        id=exec_id,
+        workflow_id=workflow_id,
+        workflow_name=workflow_name,
+        status=ExecutionStatus.SCHEDULED,
+        parameters=parameters,
+        scheduled_at=scheduled_at,
+        organization_id=organization_id,
+        executed_by=executed_by,
+        executed_by_name=executed_by_name,
+        form_id=form_id,
+        api_key_id=None,
+        solution_deployment_id=(
+            getattr(pinned_runtime, "deployment_id", None)
+            if pinned_runtime
+            else None
+        ),
+        runtime_mode=runtime_mode,
+        runtime_evidence=runtime_evidence,
+        runtime_evidence_hash=(
+            sha256_digest(canonical_json(runtime_evidence))
+            if runtime_evidence
+            else None
+        ),
+        execution_context=execution_context,
     )
+    db.add(execution)
+    await db.flush()
+    from src.services.execution.attempts import ensure_dispatch_attempt
+
+    await ensure_dispatch_attempt(db, execution)
     await db.commit()
     return exec_id
 
@@ -1136,6 +1141,7 @@ async def execute_workflow(
                 transient=request.transient,
                 sync=True,
                 dispatch_metadata=dispatch_metadata,
+                org_id_override=request.org_id,
             )
             return WorkflowExecutionResponse(
                 execution_id=result.execution_id,
@@ -1159,6 +1165,7 @@ async def execute_workflow(
                 transient=request.transient,
                 sync=request.sync or False,
                 dispatch_metadata=dispatch_metadata,
+                org_id_override=request.org_id,
             )
         else:
             # This shouldn't happen due to earlier validation

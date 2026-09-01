@@ -4,7 +4,9 @@ Validates that the consumer uses short-lived sessions (no persistent session).
 """
 
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 
 class TestConsumerSessionLifecycle:
@@ -116,6 +118,7 @@ class TestSuccessfulExecutionCompletionOrder:
 
         call_order: list[str] = []
         durable_session = AsyncMock()
+        durable_session.scalar.return_value = SimpleNamespace(status="Running")
         durable_session.commit.side_effect = lambda: call_order.append(
             "durable_commit"
         )
@@ -176,6 +179,11 @@ class TestSuccessfulExecutionCompletionOrder:
                     new_callable=AsyncMock,
                 ),
                 patch(
+                    "src.services.execution.attempts.finalize_attempt",
+                    new_callable=AsyncMock,
+                    return_value=True,
+                ),
+                patch(
                     "src.services.events.processor.update_delivery_from_execution",
                     new=update_delivery,
                 ),
@@ -221,6 +229,7 @@ class TestSuccessfulExecutionCompletionOrder:
                         "status": "Success",
                         "result": {"rows": [{"value": "x" * 1000}]},
                         "duration_ms": 123,
+                        "attempt_token": str(uuid4()),
                     },
                 )
 
@@ -248,6 +257,7 @@ class TestFailedExecutionCompletionOrder:
 
         call_order: list[str] = []
         durable_session = AsyncMock()
+        durable_session.scalar.return_value = SimpleNamespace(status="Running")
         durable_session.commit.side_effect = lambda: call_order.append(
             "durable_commit"
         )
@@ -294,6 +304,11 @@ class TestFailedExecutionCompletionOrder:
                 patch(
                     "src.repositories.executions.update_execution",
                     new_callable=AsyncMock,
+                ),
+                patch(
+                    "src.services.execution.attempts.finalize_attempt",
+                    new_callable=AsyncMock,
+                    return_value=True,
                 ),
                 patch(
                     "src.services.events.processor.update_delivery_from_execution",
@@ -353,6 +368,7 @@ class TestFailedExecutionCompletionOrder:
                         "error": "boom",
                         "error_type": "RuntimeError",
                         "duration_ms": 123,
+                        "attempt_token": str(uuid4()),
                     },
                 )
 
@@ -372,6 +388,7 @@ class TestFailedExecutionCompletionOrder:
         from src.jobs.consumers.workflow_execution import WorkflowExecutionConsumer
 
         session = AsyncMock()
+        session.scalar.return_value = SimpleNamespace(status="Running")
         context = MagicMock()
         context.__aenter__ = AsyncMock(return_value=session)
         context.__aexit__ = AsyncMock(return_value=None)
@@ -404,6 +421,11 @@ class TestFailedExecutionCompletionOrder:
                 patch(
                     "src.repositories.executions.update_execution",
                     new_callable=AsyncMock,
+                ),
+                patch(
+                    "src.services.execution.attempts.finalize_attempt",
+                    new_callable=AsyncMock,
+                    return_value=True,
                 ),
                 patch(
                     "src.services.events.processor.update_delivery_from_execution",
@@ -447,6 +469,7 @@ class TestFailedExecutionCompletionOrder:
                         "error_type": "RuntimeError",
                         "duration_ms": 123,
                         "logs": [{"message": "captured failure log"}],
+                        "attempt_token": str(uuid4()),
                     },
                 )
 

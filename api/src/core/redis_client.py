@@ -58,6 +58,7 @@ class PendingExecution(TypedDict):
     script_name: str | None  # Name for inline code execution
     parameters: dict[str, Any]
     org_id: str | None
+    org_id_overridden: bool
     user_id: str
     user_name: str
     user_email: str
@@ -113,6 +114,7 @@ class RedisClient:
         user_id: str,
         user_name: str,
         user_email: str,
+        org_id_overridden: bool = False,
         form_id: str | None = None,
         script_name: str | None = None,
         startup: Any | None = None,
@@ -161,6 +163,7 @@ class RedisClient:
             "script_name": script_name,
             "parameters": parameters,
             "org_id": org_id,
+            "org_id_overridden": org_id_overridden,
             "user_id": user_id,
             "user_name": user_name,
             "user_email": user_email,

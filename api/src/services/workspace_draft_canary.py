@@ -421,21 +421,24 @@ class WorkspaceDraftCanaryService:
         execution_id = uuid4()
         entry = evidence["entry"]
         evidence_hash = sha256_digest(canonical_json(evidence))
-        self.db.add(
-            Execution(
-                id=execution_id,
-                workflow_name=f"Draft canary: {entry['name']}",
-                workflow_id=None,
-                runtime_mode=DRAFT_RUNTIME_MODE,
-                runtime_evidence=evidence,
-                runtime_evidence_hash=evidence_hash,
-                status=ExecutionStatus.SCHEDULED,
-                parameters=parameters,
-                executed_by=user_id,
-                executed_by_name=user_name,
-                organization_id=self.organization_id,
-            )
+        execution = Execution(
+            id=execution_id,
+            workflow_name=f"Draft canary: {entry['name']}",
+            workflow_id=None,
+            runtime_mode=DRAFT_RUNTIME_MODE,
+            runtime_evidence=evidence,
+            runtime_evidence_hash=evidence_hash,
+            status=ExecutionStatus.SCHEDULED,
+            parameters=parameters,
+            executed_by=user_id,
+            executed_by_name=user_name,
+            organization_id=self.organization_id,
         )
+        self.db.add(execution)
+        await self.db.flush()
+        from src.services.execution.attempts import ensure_dispatch_attempt
+
+        await ensure_dispatch_attempt(self.db, execution)
         from src.services.audit import emit_audit
 
         await emit_audit(

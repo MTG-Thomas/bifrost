@@ -109,6 +109,7 @@ COPY client/src/lib/app-sdk/provider.tsx \
      client/src/lib/app-sdk/files.ts \
      client/src/lib/app-sdk/use-files.ts \
      client/src/lib/app-sdk/bifrost-header.tsx \
+     client/src/lib/app-sdk/webmcp.ts \
      /app/src/services/sdk_package/sdk_src/
 COPY client/src/lib/app-sdk/index.v2.ts /app/src/services/sdk_package/sdk_src/index.ts
 # Contract version stamp (read directly by Python, not bundled by esbuild) —

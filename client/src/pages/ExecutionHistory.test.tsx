@@ -6,9 +6,10 @@
  * scope so we can drive the component with deterministic data.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
 import { useLocation } from "react-router";
 import { renderWithProviders, screen, waitFor, within } from "@/test-utils";
+import type { WebMcpTool } from "@/lib/app-sdk/webmcp";
 
 // -----------------------------------------------------------------------------
 // Mocks
@@ -32,7 +33,11 @@ vi.mock("@/hooks/useOrganizations", () => ({
 vi.mock("@/stores/scopeStore", () => ({
 	useScopeStore: (
 		selector: (s: {
-			scope: { type: string; orgId: string | null; orgName: string | null };
+			scope: {
+				type: string;
+				orgId: string | null;
+				orgName: string | null;
+			};
 			isGlobalScope: boolean;
 		}) => unknown,
 	) =>
@@ -158,6 +163,10 @@ beforeEach(() => {
 	});
 });
 
+afterEach(() => {
+	delete (document as Document & { modelContext?: unknown }).modelContext;
+});
+
 /** Mirrors the router's current URL so tests can assert param round-trips. */
 function LocationProbe() {
 	const location = useLocation();
@@ -181,6 +190,65 @@ async function renderPage(initialEntries?: string[]) {
 // -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
+
+describe("ExecutionHistory — WebMCP context", () => {
+	it("summarizes the loaded page and updates the canonical status URL filter", async () => {
+		const registered: WebMcpTool[] = [];
+		Object.defineProperty(document, "modelContext", {
+			configurable: true,
+			value: {
+				registerTool: (tool: WebMcpTool) => registered.push(tool),
+			},
+		});
+		mockUseExecutions.mockReturnValue({
+			data: {
+				executions: [
+					makeRow(),
+					makeRow({
+						execution_id: "22222222-2222-2222-2222-222222222222",
+						status: "Failed",
+					}),
+				],
+				continuation_token: "next-page",
+			},
+			isFetching: false,
+			isError: false,
+			refetch: mockRefetch,
+		});
+		await renderPage(["/history"]);
+		await waitFor(() =>
+			expect(
+				registered.some(
+					(tool) => tool.name === "summarize-visible-executions",
+				),
+			).toBe(true),
+		);
+		const summary = [...registered]
+			.reverse()
+			.find((tool) => tool.name === "summarize-visible-executions")!;
+		await expect(
+			summary.execute({}, { signal: new AbortController().signal }),
+		).resolves.toMatchObject({
+			scope: "loaded_page",
+			count: 2,
+			byStatus: { Success: 1, Failed: 1 },
+			hasMore: true,
+		});
+
+		const filter = [...registered]
+			.reverse()
+			.find((tool) => tool.name === "set-execution-history-filters")!;
+		await filter.execute(
+			{ status: "Running" },
+			{ signal: new AbortController().signal },
+		);
+		await waitFor(() =>
+			expect(screen.getByTestId("location-probe")).toHaveTextContent(
+				"/history?status=Running",
+			),
+		);
+	});
+});
 
 describe("ExecutionHistory — status filter", () => {
 	it("exposes a Scheduled option in the status tabs", async () => {
@@ -335,7 +403,9 @@ describe("ExecutionHistory — cancel row action", () => {
 		const { user } = await renderPage();
 
 		// The Cancel row button is identified by its title attribute.
-		const cancelBtn = await screen.findByTitle(/Cancel scheduled execution/i);
+		const cancelBtn = await screen.findByTitle(
+			/Cancel scheduled execution/i,
+		);
 		await user.click(cancelBtn);
 
 		// Confirm dialog appears.
@@ -377,7 +447,9 @@ describe("ExecutionHistory — cancel row action", () => {
 
 		const { user } = await renderPage();
 
-		const cancelBtn = await screen.findByTitle(/Cancel scheduled execution/i);
+		const cancelBtn = await screen.findByTitle(
+			/Cancel scheduled execution/i,
+		);
 		await user.click(cancelBtn);
 
 		const dialog = await screen.findByRole("alertdialog");
@@ -396,7 +468,9 @@ describe("ExecutionHistory — summary rollup", () => {
 		mockUseExecutions.mockReturnValue({
 			data: {
 				executions: [
-					makeRow({ execution_id: "31111111-1111-1111-1111-111111111111" }),
+					makeRow({
+						execution_id: "31111111-1111-1111-1111-111111111111",
+					}),
 					makeRow({
 						execution_id: "32222222-2222-2222-2222-222222222222",
 						status: "Failed",
@@ -470,9 +544,7 @@ describe("ExecutionHistory — feed rendering", () => {
 
 		await renderPage();
 
-		expect(
-			screen.getByText("Graph API returned 403"),
-		).toBeInTheDocument();
+		expect(screen.getByText("Graph API returned 403")).toBeInTheDocument();
 	});
 });
 
