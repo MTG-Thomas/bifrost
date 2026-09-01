@@ -12,7 +12,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, select, text
 
 from src.core.database import get_session_factory
 from src.core.pubsub import (
@@ -24,6 +24,7 @@ from src.core.redis_client import get_redis_client
 from src.models.orm.agent_runs import AgentRun
 from src.models.orm.agents import Agent
 from src.models import Execution as ExecutionModel, ExecutionLog
+from src.models.orm.executions import WorkflowExecutionAttempt as ExecutionAttempt
 from src.models.orm.workflows import Workflow
 from src.services.execution_attempts import transition_execution_attempt
 
@@ -50,6 +51,7 @@ async def _load_worker_heartbeat_state(now: datetime) -> dict[str, Any]:
     """Read Redis worker heartbeats for restart-orphan detection."""
     state: dict[str, Any] = {
         "active_execution_ids": set(),
+        "live_worker_incarnation_ids": set(),
         "oldest_worker_started_at": None,
         "heartbeat_count": 0,
     }
@@ -74,6 +76,9 @@ async def _load_worker_heartbeat_state(now: datetime) -> dict[str, Any]:
                 except json.JSONDecodeError:
                     continue
                 state["heartbeat_count"] += 1
+                incarnation_id = heartbeat.get("worker_incarnation_id")
+                if incarnation_id:
+                    state["live_worker_incarnation_ids"].add(str(incarnation_id))
                 started_at = _parse_heartbeat_time(heartbeat.get("started_at"))
                 if started_at is not None:
                     oldest = state["oldest_worker_started_at"]
@@ -102,6 +107,7 @@ async def _load_worker_heartbeat_state(now: datetime) -> dict[str, Any]:
         )
         return {
             "active_execution_ids": set(),
+            "live_worker_incarnation_ids": set(),
             "oldest_worker_started_at": None,
             "heartbeat_count": 0,
         }
@@ -259,6 +265,74 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
 
             for execution in all_stuck:
                 try:
+                    # Candidate discovery is intentionally lock-free. Re-fence
+                    # and re-read before mutating so a result committed after
+                    # discovery cannot be overwritten by this sweep. Keep the
+                    # global order execution advisory lock -> execution row ->
+                    # attempt row, matching result and cancellation paths.
+                    await db.execute(
+                        text(
+                            "SELECT pg_advisory_xact_lock("
+                            "hashtext('bifrost:workflow-execution:' || :execution_id))"
+                        ),
+                        {"execution_id": str(execution.id)},
+                    )
+                    execution = await db.scalar(
+                        select(ExecutionModel)
+                        .where(ExecutionModel.id == execution.id)
+                        .execution_options(populate_existing=True)
+                        .with_for_update()
+                    )
+                    if execution is None or execution.status not in {
+                        ExecutionStatus.SCHEDULED.value,
+                        ExecutionStatus.PENDING.value,
+                        ExecutionStatus.RUNNING.value,
+                        ExecutionStatus.CANCELLING.value,
+                    }:
+                        continue
+
+                    # Status alone is insufficient: the claimant may have
+                    # refreshed the row after candidate discovery. Reapply the
+                    # status-specific age predicate while holding the fence.
+                    locked_anchor = _execution_age_anchor(execution)
+                    if (
+                        execution.status == ExecutionStatus.SCHEDULED.value
+                        and locked_anchor >= scheduled_cutoff
+                    ):
+                        continue
+                    # PENDING rows are not cleanup candidates in this sweep.
+                    # Reaching it here means publication won after discovery.
+                    if execution.status == ExecutionStatus.PENDING.value:
+                        continue
+                    if (
+                        execution.status == ExecutionStatus.CANCELLING.value
+                        and locked_anchor >= cancelling_cutoff
+                    ):
+                        continue
+                    if execution.status == ExecutionStatus.RUNNING.value:
+                        restart_orphan = _is_restart_orphan(
+                            execution,
+                            now=now,
+                            heartbeat_state=heartbeat_state,
+                        )
+                        if not restart_orphan:
+                            workflow_timeout = await db.scalar(
+                                select(Workflow.timeout_seconds).where(
+                                    Workflow.id == execution.workflow_id
+                                )
+                            )
+                            if workflow_timeout == 0:
+                                continue
+                            effective_timeout_s = (
+                                workflow_timeout + 300
+                                if workflow_timeout
+                                else RUNNING_TIMEOUT_MINUTES * 60
+                            )
+                            if (
+                                now - locked_anchor
+                            ).total_seconds() <= effective_timeout_s:
+                                continue
+
                     # Determine timeout reason and final status
                     original_status = ExecutionStatus(execution.status)
                     age_anchor = _execution_age_anchor(execution)
@@ -317,6 +391,62 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
                             "timeout_reason": timeout_reason,
                         },
                     )
+
+                    # Revoke the current attempt before changing the logical
+                    # projection. A delayed child callback carrying this
+                    # attempt's token will then be rejected as stale.
+                    active_attempt = await db.scalar(
+                        select(ExecutionAttempt)
+                        .where(
+                            ExecutionAttempt.execution_id == execution.id,
+                            ExecutionAttempt.completed_at.is_(None),
+                        )
+                        .with_for_update()
+                    )
+                    if active_attempt is not None:
+                        owner_incarnation_lost = bool(
+                            active_attempt.worker_incarnation_id
+                            and heartbeat_state.get("heartbeat_count", 0) > 0
+                            and str(active_attempt.worker_incarnation_id)
+                            not in heartbeat_state.get(
+                                "live_worker_incarnation_ids", set()
+                            )
+                        )
+                        if original_status == ExecutionStatus.CANCELLING:
+                            active_attempt.status = "cancelled"
+                            active_attempt.failure_code = "cancellation_timeout"
+                            active_attempt.failure_phase = "cancellation"
+                        elif original_status == ExecutionStatus.SCHEDULED:
+                            active_attempt.status = "failed"
+                            active_attempt.failure_code = (
+                                "dispatch_publication_timeout"
+                            )
+                            active_attempt.failure_phase = "dispatch"
+                        elif original_status == ExecutionStatus.PENDING:
+                            active_attempt.status = "timed_out"
+                            active_attempt.failure_code = "queue_timeout"
+                            active_attempt.failure_phase = "queue"
+                        elif (
+                            original_status == ExecutionStatus.RUNNING
+                            and (
+                                owner_incarnation_lost
+                                or _is_restart_orphan(
+                                    execution,
+                                    now=now,
+                                    heartbeat_state=heartbeat_state,
+                                )
+                            )
+                        ):
+                            active_attempt.status = "worker_lost"
+                            active_attempt.failure_code = "worker_incarnation_lost"
+                            active_attempt.failure_phase = "worker"
+                        else:
+                            active_attempt.status = "timed_out"
+                            active_attempt.failure_code = "stuck_execution_timeout"
+                            active_attempt.failure_phase = "execution"
+                        active_attempt.phase = "terminal"
+                        active_attempt.completed_at = now
+                        active_attempt.heartbeat_at = now
 
                     # Update execution
                     execution.status = final_status.value  # type: ignore[assignment]

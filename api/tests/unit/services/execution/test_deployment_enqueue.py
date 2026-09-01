@@ -21,10 +21,16 @@ async def test_queue_failure_leaves_committed_durable_deployment_pin(monkeypatch
         queue_evidence=lambda: evidence,
     )
     added = []
+
+    async def get_execution(_model, _execution_id):
+        return added[0] if added else None
+
     db = SimpleNamespace(
         execute=AsyncMock(),
-        get=AsyncMock(return_value=None),
+        get=AsyncMock(side_effect=get_execution),
+        scalar=AsyncMock(return_value=None),
         add=added.append,
+        flush=AsyncMock(),
         commit=AsyncMock(),
     )
 

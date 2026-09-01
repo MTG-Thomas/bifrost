@@ -1,10 +1,45 @@
 """Tests for execution service functions."""
 
 import base64
-import pytest
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
+
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_persisted_timeout_preserves_timeout_error_type(monkeypatch):
+    from src.models.enums import ExecutionStatus
+    from src.services.execution import service
+
+    execution_id = uuid4()
+    execution = SimpleNamespace(
+        status=ExecutionStatus.TIMEOUT,
+        workflow_name="timed-out-workflow",
+        result=None,
+        error_message="Execution exceeded its runtime limit",
+        duration_ms=1234,
+    )
+    db = SimpleNamespace(get=AsyncMock(return_value=execution))
+
+    @asynccontextmanager
+    async def db_context():
+        yield db
+
+    monkeypatch.setattr("src.core.database.get_db_context", db_context)
+
+    response = await service._wait_for_persisted_workflow_result(
+        execution_id=str(execution_id),
+        workflow_id=str(uuid4()),
+        workflow_name="fallback-name",
+        timeout_seconds=5,
+    )
+
+    assert response.status is ExecutionStatus.TIMEOUT
+    assert response.error_type == "TimeoutError"
+    assert response.error == "Execution exceeded its runtime limit"
 
 
 class _Context:
@@ -323,6 +358,15 @@ class TestEnqueueHelpers:
         redis = AsyncMock()
         redis.wait_for_result.return_value = None
         monkeypatch.setattr("src.core.redis_client.get_redis_client", lambda: redis)
+        persisted_wait = AsyncMock(
+            return_value=service.WorkflowExecutionResponse(
+                execution_id="exec-timeout",
+                workflow_id="wf-1",
+                workflow_name="Workflow",
+                status=ExecutionStatus.TIMEOUT,
+            )
+        )
+        monkeypatch.setattr(service, "_wait_for_persisted_workflow_result", persisted_wait)
 
         timeout_response = await service._enqueue_workflow_async(
             context=_Context(),
@@ -335,6 +379,12 @@ class TestEnqueueHelpers:
         assert timeout_response.status is ExecutionStatus.TIMEOUT
         assert timeout_response.error_type == "TimeoutError"
         redis.wait_for_result.assert_awaited_once_with("exec-timeout", timeout_seconds=86400)
+        persisted_wait.assert_awaited_once_with(
+            execution_id="exec-timeout",
+            workflow_id="wf-1",
+            workflow_name="Workflow",
+            timeout_seconds=1,
+        )
 
         redis.wait_for_result.reset_mock()
         redis.wait_for_result.return_value = {
@@ -354,6 +404,47 @@ class TestEnqueueHelpers:
         assert failed_response.status is ExecutionStatus.FAILED
         assert failed_response.error == "bad"
         assert failed_response.error_type == "RuntimeError"
+
+    @pytest.mark.asyncio
+    async def test_enqueue_workflow_sync_uses_terminal_database_projection_after_redis_timeout(
+        self, monkeypatch
+    ):
+        from src.models.enums import ExecutionStatus
+        from src.services.execution import service
+
+        monkeypatch.setattr(
+            "src.services.execution.async_executor.enqueue_workflow_execution_once",
+            AsyncMock(return_value=("exec-durable", False)),
+        )
+        redis = AsyncMock()
+        redis.wait_for_result.return_value = None
+        monkeypatch.setattr("src.core.redis_client.get_redis_client", lambda: redis)
+        durable = service.WorkflowExecutionResponse(
+            execution_id="exec-durable",
+            workflow_id="wf-1",
+            workflow_name="Workflow",
+            status=ExecutionStatus.SUCCESS,
+            result={"durable": True},
+        )
+        persisted_wait = AsyncMock(return_value=durable)
+        monkeypatch.setattr(service, "_wait_for_persisted_workflow_result", persisted_wait)
+
+        response = await service._enqueue_workflow_async(
+            context=_Context(),
+            workflow_id="wf-1",
+            workflow_name="Workflow",
+            parameters={},
+            sync=True,
+            timeout_seconds=5,
+        )
+
+        assert response is durable
+        persisted_wait.assert_awaited_once_with(
+            execution_id="exec-durable",
+            workflow_id="wf-1",
+            workflow_name="Workflow",
+            timeout_seconds=1,
+        )
 
     @pytest.mark.asyncio
     async def test_run_code_encodes_source_and_returns_pending(self, monkeypatch):

@@ -135,6 +135,7 @@ class Worker:
         self._consumers: list = []
         self._stopping = False
         self._stop_task: asyncio.Task[None] | None = None
+        self._stop_error: Exception | None = None
 
     async def start(self) -> None:
         """Start the worker.
@@ -182,6 +183,9 @@ class Worker:
 
         # Keep running until shutdown
         await self._shutdown_event.wait()
+        stop_error = self._stop_error
+        if stop_error is not None:
+            raise stop_error
 
     async def _cleanup_after_failed_start(self) -> None:
         """Best-effort teardown of any resources started before a failure.
@@ -256,11 +260,55 @@ class Worker:
             *(self._drain_consumer(consumer, drain_deadline) for consumer in self._consumers),
             return_exceptions=True,
         )
+        failed_consumers: list[tuple[object, Exception]] = []
         for consumer, result in zip(self._consumers, results):
             if isinstance(result, Exception):
                 logger.error(f"Error draining consumer {consumer.queue_name}: {result}")
+                failed_consumers.append((consumer, result))
             else:
                 logger.info(f"Drained consumer: {consumer.queue_name}")
+
+        # A workflow consumer can fail its drain after killing a child when
+        # PostgreSQL is temporarily unavailable and the attempt cannot be
+        # durably surrendered. Retry consumer teardown while the database is
+        # still open; closing shared resources and exiting here would discard
+        # the exact attempt token retained by the process pool.
+        for retry_number in range(1, 3):
+            if not failed_consumers:
+                break
+            retrying = failed_consumers
+            failed_consumers = []
+            for consumer, _previous_error in retrying:
+                try:
+                    await consumer.stop()
+                    logger.info(
+                        "Stopped consumer %s after drain retry %d",
+                        consumer.queue_name,
+                        retry_number,
+                    )
+                except Exception as error:
+                    logger.exception(
+                        "Error retrying consumer %s shutdown (%d/2): %s",
+                        consumer.queue_name,
+                        retry_number,
+                        error,
+                    )
+                    failed_consumers.append((consumer, error))
+            if failed_consumers and retry_number < 2:
+                # Give transient database/transport failures a bounded window
+                # to recover while the exact attempt tokens and shared
+                # resources are still retained by this process.
+                await asyncio.sleep(min(1.0, 0.25 * (2 ** (retry_number - 1))))
+
+        if failed_consumers:
+            names = ", ".join(str(consumer.queue_name) for consumer, _ in failed_consumers)
+            error = RuntimeError(
+                "Worker shutdown could not durably stop consumers: " + names
+            )
+            self._stop_error = error
+            self._stopping = False
+            self._shutdown_event.set()
+            raise error
 
         # Close RabbitMQ pools (idempotent if already closed).
         await rabbitmq.close()
@@ -286,7 +334,15 @@ class Worker:
     def handle_signal(self, signum: int, frame) -> None:
         """Handle shutdown signals."""
         logger.info(f"Received signal {signum}, initiating shutdown...")
-        self._stop_task = asyncio.create_task(self.stop())
+        self._stop_task = asyncio.create_task(self._stop_from_signal())
+
+    async def _stop_from_signal(self) -> None:
+        """Wake ``start`` with a shutdown failure without leaking task errors."""
+        try:
+            await self.stop()
+        except Exception as error:
+            self._stop_error = error
+            self._shutdown_event.set()
 
 
 async def main() -> None:
