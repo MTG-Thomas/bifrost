@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
+from uuid import uuid4
 
 from .client import get_client, raise_for_status_with_detail
 from .executions import WorkflowExecution, executions
@@ -144,7 +145,13 @@ class workflows:
             payload["scheduled_at"] = scheduled_at.isoformat()
         if delay_seconds is not None:
             payload["delay_seconds"] = delay_seconds
-        response = await client.post("/api/workflows/execute", json=payload)
+        execution_id = str(uuid4())
+        response = await client.post(
+            "/api/workflows/execute",
+            json=payload,
+            headers={"X-Bifrost-Execution-ID": execution_id},
+            retry_safe=True,
+        )
         raise_for_status_with_detail(response)
         return response.json()["execution_id"]
 
