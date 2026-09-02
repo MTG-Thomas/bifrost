@@ -88,8 +88,8 @@ jobs:
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.GHCR_TOKEN && 'MTG-Thomas' || github.actor }}
+          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Build and publish renderer image
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
@@ -99,8 +99,8 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ghcr.io/mtg-thomas/bifrost-doc-renderer:main
-            ghcr.io/mtg-thomas/bifrost-doc-renderer:sha-${{ github.sha }}
+            ghcr.io/midtown-technology-group/bifrost-doc-renderer:main
+            ghcr.io/midtown-technology-group/bifrost-doc-renderer:sha-${{ github.sha }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}

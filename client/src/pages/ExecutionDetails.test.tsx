@@ -62,6 +62,7 @@ vi.mock("@/components/execution", () => ({
 	ExecutionMetadataBar: ({ workflowName }: { workflowName: string }) => (
 		<div>{workflowName}</div>
 	),
+	ExecutionAttemptHistory: () => <div>Attempt history</div>,
 	RunStatusBadge: ({ status }: { status: string }) => (
 		<span>{status}</span>
 	),

@@ -28,6 +28,7 @@ export function MCPCallback() {
 	const [error, setError] = useState<string | null>(null);
 	const [success, setSuccess] = useState(false);
 	const [mcpClient, setMcpClient] = useState<McpClientInfo | null>(null);
+	const [redirectUrl, setRedirectUrl] = useState<string | null>(null);
 	const hasHandledRef = useRef(false);
 
 	useEffect(() => {
@@ -79,12 +80,7 @@ export function MCPCallback() {
 				if (data.redirect_url) {
 					// Show success state first
 					setSuccess(true);
-
-					// Custom-scheme callbacks (cursor://, claude://) hand off to the host app.
-					// HTTPS callbacks (claude.ai, cursor.com) still navigate so the host can finish.
-					setTimeout(() => {
-						window.location.replace(data.redirect_url);
-					}, 100);
+					setRedirectUrl(data.redirect_url);
 				} else {
 					setError("No redirect URL returned from server");
 				}
@@ -97,6 +93,18 @@ export function MCPCallback() {
 
 		handleCallback();
 	}, [searchParams]);
+
+	useEffect(() => {
+		if (!redirectUrl) return;
+		// Custom-scheme callbacks (cursor://, claude://) hand off to the host app.
+		// HTTPS callbacks (claude.ai, cursor.com) still navigate so the host can finish.
+		const redirectTimer = setTimeout(() => {
+			window.location.replace(redirectUrl);
+		}, 100);
+		return () => {
+			clearTimeout(redirectTimer);
+		};
+	}, [redirectUrl]);
 
 	if (error) {
 		return (

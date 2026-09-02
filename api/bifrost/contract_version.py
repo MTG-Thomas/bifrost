@@ -1,12 +1,10 @@
-"""CLI mirror of the frozen legacy contract bridge.
+"""CLI-side mirror of the server contract version.
 
-Version 10 makes CLIs released before server-controlled minimum gating upgrade
-once. CLIs containing this module no longer compare the value at runtime; they
-honor ``min_cli_version`` instead. Keep this mirror frozen and equal to
-``api/shared/contract_version.py`` while the server exposes the bridge field.
+Keep this equal to ``api/shared/contract_version.py``. The runtime gate compares
+the baked value with ``GET /api/version`` and blocks only on incompatibility.
 """
 
-#: Frozen legacy bridge; must equal shared.contract_version.CONTRACT_VERSION.
+#: Must equal shared.contract_version.CONTRACT_VERSION. See module docstring.
 # v2: claims organization_id widened to nullable for global/solution-managed claims (2026-06-13)
 # v4: unified --org standard — SolutionCreate/SolutionBase drop `scope` (install
 #     kind is derived from organization_id); SolutionRepoPreviewRequest gains
@@ -37,9 +35,9 @@ CONTRACT_VERSION: int = 11
 
 
 def get_contract_version() -> int:
-    """Return the CLI's frozen legacy bridge version.
+    """Return the CLI's baked contract version.
 
     Mirrors ``shared.contract_version.get_contract_version`` for packaging and
-    transition tests. New CLI runtime gating does not consume this value.
+    runtime compatibility checks.
     """
     return CONTRACT_VERSION

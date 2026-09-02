@@ -3,7 +3,7 @@ Execution contract models for Bifrost.
 """
 
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
@@ -110,6 +110,66 @@ class ExecutionSummary(BaseModel):
     value: float = 0  # Value generated
 
 
+class ExecutionAttemptPublic(BaseModel):
+    """Bounded lifecycle evidence for one workflow execution attempt."""
+
+    attempt_id: UUID
+    attempt_number: int
+    status: Literal[
+        "dispatching",
+        "published",
+        "claimed",
+        "running",
+        "succeeded",
+        "failed",
+        "timed_out",
+        "cancelled",
+        "worker_lost",
+        "admission_rejected",
+    ]
+    phase: Literal[
+        "dispatch", "queue", "claim", "admission", "execution", "result", "terminal"
+    ]
+    failure_phase: Literal[
+        "dispatch",
+        "queue",
+        "claim",
+        "admission",
+        "execution",
+        "result",
+        "worker",
+        "cancellation",
+    ] | None = None
+    failure_code: str | None = None
+    worker_id: str | None = None
+    worker_incarnation_id: UUID | None = None
+    process_id: str | None = None
+    runtime_mode: str | None = None
+    runtime_evidence_hash: str | None = None
+    dispatch_evidence_hash: str | None = None
+    policy_digest: str | None = None
+    policy_version: str
+    created_at: datetime
+    published_at: datetime | None = None
+    claimed_at: datetime | None = None
+    started_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+    completed_at: datetime | None = None
+    duration_ms: int | None = None
+    peak_memory_bytes: int | None = None
+    cpu_total_seconds: float | None = None
+
+
+class ExecutionAttemptHistory(BaseModel):
+    """Attempt coverage for a logical execution.
+
+    Historical rows intentionally do not receive fabricated attempt details.
+    """
+
+    coverage: Literal["recorded", "legacy_unavailable"] = "legacy_unavailable"
+    attempts: list[ExecutionAttemptPublic] = Field(default_factory=list)
+
+
 class WorkflowExecution(ExecutionSummary):
     """Workflow execution entity — summary fields plus full payloads."""
     input_data: dict[str, Any]
@@ -121,6 +181,11 @@ class WorkflowExecution(ExecutionSummary):
     ai_totals: AIUsageTotalsSimple | None = None
     # Persisted execution context (admin only)
     execution_context: dict[str, Any] | None = None
+    attempt_history: ExecutionAttemptHistory = Field(
+        default_factory=lambda: ExecutionAttemptHistory(
+            coverage="legacy_unavailable", attempts=[]
+        )
+    )
 
 
 class WorkflowExecutionRequest(BaseModel):
@@ -293,4 +358,3 @@ class ExecutionPublic(ExecutionBase):
     @field_serializer("created_at", "started_at", "completed_at")
     def serialize_dt(self, dt: datetime | None) -> str | None:
         return dt.isoformat() if dt else None
-

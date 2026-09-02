@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useIsFetching, useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import {
@@ -36,6 +36,7 @@ import {
 } from "@/services/schedulerDiagnostics";
 import { PlatformJobsPanel } from "./PlatformJobsPanel";
 import { SchedulerRunDrawer } from "./SchedulerRunDrawer";
+import { useWebMcpTool, type WebMcpTool } from "@/lib/app-sdk/webmcp";
 
 function formatBytes(value: number | null | undefined) {
 	if (value == null) return "Not limited";
@@ -142,6 +143,82 @@ export function schedulerRecommendations(
 	return recommendations;
 }
 
+function useSchedulerWebMcp(
+	data: SchedulerDiagnosticsResponse | undefined,
+	setSelectedTask: (task: SchedulerTaskStatus) => void,
+) {
+	const healthTool = useMemo<WebMcpTool | null>(
+		() =>
+			data
+				? {
+						name: "get-scheduler-health",
+						title: "Get scheduler health",
+						description:
+							"Returns a minimized live snapshot of the Bifrost scheduler capacity shown on this diagnostics page.",
+						inputSchema: {
+							type: "object",
+							properties: {},
+							additionalProperties: false,
+						},
+						annotations: { readOnlyHint: true },
+						execute: async () => ({
+							observedAt: new Date().toISOString(),
+							leaderHealthy: data.leader.healthy,
+							replicasOnline: data.capacity.replicas_online,
+							slots: {
+								running: data.capacity.slots_running,
+								total: data.capacity.slots_total,
+							},
+							jobsQueued: data.capacity.jobs_queued,
+							jobsWaitingForMemory:
+								data.capacity.jobs_waiting_for_memory,
+							maxMemoryUtilizationPercent:
+								data.capacity.max_memory_utilization_percent,
+							recommendations: schedulerRecommendations(data),
+							dataFreshness: "live_snapshot",
+						}),
+					}
+				: null,
+		[data],
+	);
+	const taskTool = useMemo<WebMcpTool<{ task: string }> | null>(
+		() =>
+			data
+				? {
+						name: "show-scheduler-task-history",
+						title: "Show scheduler task history",
+						description:
+							"Opens the existing run-history drawer for an exact scheduler task ID or name shown on this page.",
+						inputSchema: {
+							type: "object",
+							properties: { task: { type: "string" } },
+							required: ["task"],
+							additionalProperties: false,
+						},
+						annotations: { readOnlyHint: true },
+						execute: async ({ task }) => {
+							const matches = data.tasks.filter(
+								(item) =>
+									item.task_id === task || item.name === task,
+							);
+							if (matches.length !== 1) {
+								throw new Error(
+									matches.length === 0
+										? "Scheduler task is not present in this diagnostics snapshot"
+										: "Scheduler task name is ambiguous; use the exact task ID",
+								);
+							}
+							setSelectedTask(matches[0]);
+							return { openedTaskId: matches[0].task_id };
+						},
+					}
+				: null,
+		[data, setSelectedTask],
+	);
+	useWebMcpTool(healthTool);
+	useWebMcpTool(taskTool);
+}
+
 function StatCard({
 	title,
 	value,
@@ -185,6 +262,7 @@ export function SchedulerTab() {
 	const platformJobsFetching = useIsFetching({ queryKey: ["platform-jobs"] });
 	const isRefreshing = query.isFetching || platformJobsFetching > 0;
 	const data = query.data;
+	useSchedulerWebMcp(data, setSelectedTask);
 
 	if (query.isLoading && !data) {
 		return (

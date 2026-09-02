@@ -1,19 +1,17 @@
 """Deferred execution promoter.
 
-Every 60 seconds, moves SCHEDULED executions whose ``scheduled_at`` has
-matured onto the RabbitMQ workflow-executions queue by flipping them to
-PENDING and calling the shared ``_publish_pending`` helper.
+Every 60 seconds, moves due SCHEDULED executions onto RabbitMQ through the
+same serialized, publisher-confirmed transition used by run-now dispatch.
 
 Design notes:
 
-- Each row uses the same advisory transaction lock as immediate publication.
-  The broker publish is confirmed before SCHEDULED advances to PENDING, so a
-  scheduler crash cannot strand an unpublished PENDING row.
-- Multiple schedulers may discover the same candidate, but the advisory lock
-  plus row lock lets only the still-SCHEDULED owner publish it.
-- ``LIMIT 500`` bounds catch-up bursts, and reported worker free slots reduce
-  that bound when capacity is known. Redis diagnostics never replace the
-  PostgreSQL schedule authority.
+- Each row remains SCHEDULED until broker confirmation. An execution-keyed
+  advisory lock prevents a concurrent publisher from dispatching it twice.
+- ``SELECT ... FOR UPDATE SKIP LOCKED`` keeps the job safe to run in
+  parallel (multiple scheduler pods / APScheduler threads): each batch
+  picks a disjoint set of rows.
+- ``LIMIT 500`` bounds recovery bursts after an outage — if 10k rows
+  matured while the promoter was down, they drain in controlled batches.
 - ``user_email`` is intentionally an empty string: the Execution row does
   not persist the triggering user's email. The worker hydrates it from
   the User record keyed by ``executed_by``. ``startup=None`` for the same
@@ -23,12 +21,12 @@ Design notes:
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from src.core.database import get_db_context
 from src.models.enums import ExecutionStatus
 from src.models.orm.executions import Execution
-from src.services.execution.async_executor import _publish_pending
+from src.services.execution.async_executor import _publish_scheduled_once
 from src.services.execution.fault_injection import (
     FailurePoint,
     execution_failure_checkpoint,
@@ -100,75 +98,60 @@ async def promote_due_executions() -> tuple[int, int]:
 
         if not candidate_ids:
             return 0, 0
+        # Do not hold the batch row locks while waiting for broker confirms.
+        # The per-row publisher reacquires the canonical advisory fence.
         await db.commit()
 
         for execution_id in candidate_ids:
             try:
-                async with get_db_context() as claim_db:
-                    await claim_db.execute(
-                        text(
-                            "SELECT pg_advisory_xact_lock("
-                            "hashtext('bifrost:workflow-execution:' || :execution_id))"
-                        ),
-                        {"execution_id": str(execution_id)},
-                    )
-                    row = (
-                        await claim_db.execute(
-                            select(Execution)
-                            .where(
-                                Execution.id == execution_id,
-                                Execution.status == ExecutionStatus.SCHEDULED,
-                                Execution.scheduled_at <= datetime.now(timezone.utc),
-                            )
-                            .with_for_update()
-                        )
-                    ).scalar_one_or_none()
+                async with get_db_context() as row_db:
+                    row = await row_db.get(Execution, execution_id)
                     if row is None:
                         continue
-                    execution_failure_checkpoint(FailurePoint.SCHEDULE_PUBLISH)
-                    await _publish_pending(
-                        execution_id=str(row.id),
-                        workflow_id=str(row.workflow_id) if row.workflow_id else None,
-                        parameters=row.parameters or {},
-                        org_id=str(row.organization_id) if row.organization_id else None,
-                        user_id=str(row.executed_by) if row.executed_by else "",
-                        user_name=row.executed_by_name or "",
-                        user_email="",
-                        form_id=str(row.form_id) if row.form_id else None,
-                        startup=None,
-                        form_inputs={},
-                        embed={},
-                        api_key_id=str(row.api_key_id) if row.api_key_id else None,
-                        sync=False,
-                        is_platform_admin=bool(
-                            (row.execution_context or {}).get(
-                                "is_platform_admin", False
-                            )
+                    # Copy every value needed for publication while the ORM row
+                    # is attached. The context manager may roll back/expire the
+                    # session on exit; detached attributes are not a safe retry
+                    # boundary.
+                    publish_execution_id = str(row.id)
+                    publish_kwargs = {
+                        "execution_id": publish_execution_id,
+                        "workflow_id": str(row.workflow_id) if row.workflow_id else None,
+                        "parameters": row.parameters or {},
+                        "org_id": str(row.organization_id) if row.organization_id else None,
+                        "user_id": str(row.executed_by) if row.executed_by else "",
+                        "user_name": row.executed_by_name or "",
+                        "user_email": "",
+                        "form_id": str(row.form_id) if row.form_id else None,
+                        "startup": None,
+                        "form_inputs": {},
+                        "embed": {},
+                        "api_key_id": str(row.api_key_id) if row.api_key_id else None,
+                        "sync": False,
+                        "is_platform_admin": bool(
+                            (row.execution_context or {}).get("is_platform_admin", False)
                         ),
-                        is_provider_org=bool(
-                            (row.execution_context or {}).get(
-                                "is_provider_org", False
-                            )
+                        "is_provider_org": bool(
+                            (row.execution_context or {}).get("is_provider_org", False)
                         ),
-                        is_external=bool(
+                        "is_external": bool(
                             (row.execution_context or {}).get("is_external", False)
                         ),
-                        file_path=None,
-                        solution_deployment_id=(
+                        "file_path": None,
+                        "solution_deployment_id": (
                             str(row.solution_deployment_id)
                             if row.solution_deployment_id
                             else None
                         ),
-                        runtime_evidence=(row.execution_context or {}).get(
-                            "runtime_evidence"
-                        ),
-                        runtime_mode=row.runtime_mode,
-                        execution_record_exists=True,
-                    )
-                    row.status = ExecutionStatus.PENDING
-                    row.started_at = None
-                    await claim_db.commit()
-                    promoted += 1
+                        "runtime_evidence": row.runtime_evidence,
+                        "runtime_mode": row.runtime_mode,
+                        "execution_record_exists": True,
+                    }
+                execution_failure_checkpoint(FailurePoint.SCHEDULE_PUBLISH)
+                published = await _publish_scheduled_once(
+                    execution_id=publish_execution_id,
+                    publish_kwargs=publish_kwargs,
+                )
+                promoted += int(published)
             except Exception:
                 failures += 1
                 logger.exception(

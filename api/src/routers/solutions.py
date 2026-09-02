@@ -352,8 +352,10 @@ async def get_solution(solution_id: UUID, ctx: Context, user: CurrentSuperuser) 
     row = await ctx.db.get(SolutionORM, solution_id)
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Solution not found")
+    counts = await _solution_entity_counts(ctx, [row.id])
     return SolutionDTO.model_validate(row).model_copy(
         update={
+            "entity_counts": counts.get(row.id, SolutionEntityCounts()),
             "logo_url": _entity_logo_url(
                 "solutions", row.id, row.logo_thumbnail_version
             ),
@@ -1503,6 +1505,11 @@ async def _run_deploy_job(
                 solution = await db.get(SolutionORM, solution_id)
                 if solution is None:
                     raise SolutionDeployConflict("Solution not found")
+                # Snapshot scalar identity before commit. AsyncSession commit
+                # expires ORM attributes by default; reading solution.slug
+                # afterwards can attempt implicit async IO and raise
+                # MissingGreenlet after the deploy has already become durable.
+                solution_slug = solution.slug
                 await _set_phase("validating bundle and applying resources")
                 result = await deploy_zip_to_solution_path(
                     db, solution, zip_path, force=force
@@ -1524,16 +1531,38 @@ async def _run_deploy_job(
                     stored_artifact = await SolutionSourceArtifactStorage(solution_id).read()
                     if stored_artifact is None:
                         raise SolutionFinalizeIncomplete(str(solution_id))
-                    accountability = await reconcile_solution_deploy_obligation(
-                        db,
-                        solution_id=solution_id,
-                        solution_slug=solution.slug,
-                        accountability_organization_id=accountability_organization_id,
-                        deploy_job_id=job_id,
-                        candidate_id=candidate_id,
-                        artifact=stored_artifact,
-                    )
-                await db.commit()
+                    try:
+                        accountability = await reconcile_solution_deploy_obligation(
+                            db,
+                            solution_id=solution_id,
+                            solution_slug=solution_slug,
+                            accountability_organization_id=accountability_organization_id,
+                            deploy_job_id=job_id,
+                            candidate_id=candidate_id,
+                            artifact=stored_artifact,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - deploy is durable
+                        logger.exception(
+                            "Solution deploy job %s accountability reconciliation failed",
+                            job_id,
+                        )
+                        # Reconciliation owns only post-deploy evidence. Clear a
+                        # potentially failed transaction without rolling back the
+                        # already committed Solution resources.
+                        try:
+                            await db.rollback()
+                        except Exception:  # noqa: BLE001 - preserve deploy truth
+                            logger.exception(
+                                "Solution deploy job %s accountability rollback failed",
+                                job_id,
+                            )
+                        accountability = {
+                            "state": "attention_required",
+                            "reason": "post-deploy accountability reconciliation failed",
+                            "error_type": type(exc).__name__,
+                        }
+                    else:
+                        await db.commit()
                 deploy_result = {
                     "solution_id": str(solution_id),
                     "candidate_id": candidate_id,

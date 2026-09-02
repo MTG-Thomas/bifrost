@@ -1,6 +1,6 @@
 # MTG Bifrost Versioning
 
-`MTG-Thomas/bifrost` uses an **independent semver line** owned by Midtown Technology
+`Midtown-Technology-Group/bifrost` uses an **independent semver line** owned by Midtown Technology
 Group. Version numbers describe **MTG fork behavior**, not upstream release numbers.
 
 ## Semver policy
@@ -28,7 +28,7 @@ which upstream tag or commit range the MTG release incorporated.
 
 ## Tags and releases
 
-1. Cut semver tags on `MTG-Thomas/bifrost` only (`vMAJOR.MINOR.PATCH`).
+1. Cut semver tags on `Midtown-Technology-Group/bifrost` only (`vMAJOR.MINOR.PATCH`).
 2. Do **not** mirror upstream tags into this repo for dev-version computation.
 3. Fork-local prerelease tags such as `v0.9.1-mtg.1` are ignored by
    `scripts/compute-dev-version.sh`.

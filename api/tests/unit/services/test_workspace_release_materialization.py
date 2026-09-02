@@ -170,6 +170,22 @@ def _artifact(
         "static_effects": [],
         "computed_effects": computed_effects,
         "diagnostics": [],
+        "diagnostic_delta": {
+            "schema_version": "bifrost.workspace-diagnostic-delta/v1",
+            "baseline_release_id": release_payload["base_release_id"],
+            "baseline_manifest_id": release_payload["base_manifest_id"],
+            "affected_paths": ["workflows/demo.py"],
+            "introduced": [],
+            "worsened": [],
+            "unchanged": [],
+            "resolved": [],
+            "unrelated": [],
+        },
+        "diagnostic_decision": {
+            "schema_version": "bifrost.workspace-diagnostic-decision/v1",
+            "legacy_blocked": False,
+            "differential_blocked": False,
+        },
         "bounds": {
             "max_duration_seconds": 30,
             "max_external_calls": 1,
@@ -314,9 +330,7 @@ def test_prepare_rejects_risk_scope_identity_tampering() -> None:
         WorkspaceReleasePreparationError,
         match="release_id is invalid",
     ):
-        WorkspaceReleaseMaterializer._validate_manifest(
-            artifact, artifact.manifest
-        )
+        WorkspaceReleaseMaterializer._validate_manifest(artifact, artifact.manifest)
 
 
 def test_prepare_rejects_missing_nested_registration_identity_cleanly() -> None:
@@ -345,11 +359,94 @@ def test_prepare_manifest_rejects_blockers_for_every_risk_class() -> None:
             "path": "workflows/demo.py",
         }
     ]
+    artifact.manifest["diagnostic_delta"]["introduced"] = artifact.manifest[
+        "diagnostics"
+    ]
+    artifact.manifest["diagnostic_decision"] = {
+        "schema_version": "bifrost.workspace-diagnostic-decision/v1",
+        "legacy_blocked": True,
+        "differential_blocked": True,
+    }
     artifact.candidate_id = _canonical_candidate(artifact.manifest)
 
     with pytest.raises(
         WorkspaceReleasePreparationError,
         match="blocker-free release",
+    ):
+        WorkspaceReleaseMaterializer._validate_manifest(artifact, artifact.manifest)
+
+
+def test_prepare_shadow_keeps_legacy_gate_for_unchanged_blocker(monkeypatch) -> None:
+    artifact, _base, _closure = _artifact(uuid4())
+    finding = {
+        "code": "unresolved_repo_import",
+        "severity": "blocker",
+        "message": "unresolved repo-local import: modules.old",
+        "path": "workflows/demo.py",
+        "subject": {"kind": "import", "key": "modules.old"},
+        "enforcement": "differential",
+    }
+    artifact.manifest["diagnostics"] = [finding]
+    artifact.manifest["diagnostic_delta"]["unchanged"] = [finding]
+    artifact.manifest["diagnostic_decision"]["legacy_blocked"] = True
+    artifact.candidate_id = _canonical_candidate(artifact.manifest)
+    monkeypatch.setattr(
+        "src.services.workspace_release_materialization.get_settings",
+        lambda: SimpleNamespace(workspace_promotion_diagnostics_mode="shadow"),
+    )
+
+    with pytest.raises(WorkspaceReleasePreparationError, match="blocker-free release"):
+        WorkspaceReleaseMaterializer._validate_manifest(artifact, artifact.manifest)
+
+
+def test_prepare_enforce_accepts_unchanged_blocker(monkeypatch) -> None:
+    artifact, _base, _closure = _artifact(uuid4())
+    finding = {
+        "code": "unresolved_repo_import",
+        "severity": "blocker",
+        "message": "unresolved repo-local import: modules.old",
+        "path": "workflows/demo.py",
+        "subject": {"kind": "import", "key": "modules.old"},
+        "enforcement": "differential",
+    }
+    artifact.manifest["diagnostics"] = [finding]
+    artifact.manifest["diagnostic_delta"]["unchanged"] = [finding]
+    artifact.manifest["diagnostic_decision"]["legacy_blocked"] = True
+    artifact.candidate_id = _canonical_candidate(artifact.manifest)
+    monkeypatch.setattr(
+        "src.services.workspace_release_materialization.get_settings",
+        lambda: SimpleNamespace(workspace_promotion_diagnostics_mode="enforce"),
+    )
+
+    WorkspaceReleaseMaterializer._validate_manifest(artifact, artifact.manifest)
+
+
+def test_prepare_shadow_accepts_legacy_artifact_without_delta(monkeypatch) -> None:
+    artifact, _base, _closure = _artifact(uuid4())
+    del artifact.manifest["diagnostic_delta"]
+    del artifact.manifest["diagnostic_decision"]
+    artifact.candidate_id = _canonical_candidate(artifact.manifest)
+    monkeypatch.setattr(
+        "src.services.workspace_release_materialization.get_settings",
+        lambda: SimpleNamespace(workspace_promotion_diagnostics_mode="shadow"),
+    )
+
+    WorkspaceReleaseMaterializer._validate_manifest(artifact, artifact.manifest)
+
+
+def test_prepare_enforce_rejects_legacy_artifact_without_delta(monkeypatch) -> None:
+    artifact, _base, _closure = _artifact(uuid4())
+    del artifact.manifest["diagnostic_delta"]
+    del artifact.manifest["diagnostic_decision"]
+    artifact.candidate_id = _canonical_candidate(artifact.manifest)
+    monkeypatch.setattr(
+        "src.services.workspace_release_materialization.get_settings",
+        lambda: SimpleNamespace(workspace_promotion_diagnostics_mode="enforce"),
+    )
+
+    with pytest.raises(
+        WorkspaceReleasePreparationError,
+        match="differential diagnostic evidence is invalid",
     ):
         WorkspaceReleaseMaterializer._validate_manifest(artifact, artifact.manifest)
 

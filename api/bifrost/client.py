@@ -779,7 +779,7 @@ class BifrostClient:
         return _send_sync_with_5xx_retry(method, _send)
 
     async def _request_with_refresh(
-        self, method: str, path: str, **kwargs
+        self, method: str, path: str, *, retry_safe: bool = False, **kwargs
     ) -> httpx.Response:
         """Make an HTTP request, refreshing token on 401 and retrying once.
 
@@ -799,7 +799,8 @@ class BifrostClient:
                     response = await getattr(http, method)(path, **kwargs)
             return response
 
-        return await _send_with_5xx_retry(method, _send)
+        retry_method = "GET" if retry_safe else method
+        return await _send_with_5xx_retry(retry_method, _send)
 
     async def get(self, path: str, **kwargs) -> httpx.Response:
         """Make GET request."""
@@ -813,9 +814,13 @@ class BifrostClient:
         """
         return await self._get_async_client().get(path, **kwargs)
 
-    async def post(self, path: str, **kwargs) -> httpx.Response:
-        """Make POST request."""
-        return await self._request_with_refresh("post", path, **kwargs)
+    async def post(
+        self, path: str, *, retry_safe: bool = False, **kwargs
+    ) -> httpx.Response:
+        """Make POST request, optionally retrying a read-only POST on transient 5xx."""
+        return await self._request_with_refresh(
+            "post", path, retry_safe=retry_safe, **kwargs
+        )
 
     async def put(self, path: str, **kwargs) -> httpx.Response:
         """Make PUT request."""
@@ -833,7 +838,9 @@ class BifrostClient:
         """
         return await self._request_with_refresh("delete", path, **kwargs)
 
-    async def request(self, method: str, path: str, **kwargs) -> httpx.Response:
+    async def request(
+        self, method: str, path: str, *, retry_safe: bool = False, **kwargs
+    ) -> httpx.Response:
         """Make an arbitrary-method HTTP request with token refresh.
 
         Needed for verbs whose shortcut method on ``httpx.AsyncClient`` does
@@ -853,7 +860,8 @@ class BifrostClient:
                     response = await http.request(method.upper(), path, **kwargs)
             return response
 
-        return await _send_with_5xx_retry(method, _send)
+        retry_method = "GET" if retry_safe else method
+        return await _send_with_5xx_retry(retry_method, _send)
 
     def stream(self, method: str, path: str, **kwargs):
         """

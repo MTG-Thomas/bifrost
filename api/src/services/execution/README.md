@@ -1,19 +1,24 @@
 # Execution Engine
 
-Distributed, process-pooled execution system with Redis-first architecture for running workflows, scripts, and data providers in isolated processes.
+Distributed execution system for running workflows, scripts, and data providers
+in fresh isolated processes. PostgreSQL is authoritative for durable workflow
+identity and status. RabbitMQ transports work, while Redis carries bounded
+ephemeral context, live logs, cancellation signals, and synchronous results.
 
 ## Architecture Overview
 
-```
+```text
                           API Request
                                |
                                v
 +---------------------------+  |  +---------------------------+
 |        service.py         |  |  |      async_executor.py    |
-|  - Workflow lookup        |<-+->|  - Store pending in Redis |
-|  - Metadata resolution    |     |  - Publish to RabbitMQ    |
-|  - Sync/async dispatch    |     |  - Return execution_id    |
+|  - Workflow lookup        |<-+->|  - Pin PostgreSQL run     |
+|  - Metadata resolution    |     |  - Store Redis context    |
+|  - Sync/async dispatch    |     |  - Confirm Rabbit publish |
 +---------------------------+     +---------------------------+
+                                              |
+                         execution-ID advisory transaction fence
                                               |
                                               v
                                      +----------------+
@@ -25,7 +30,7 @@ Distributed, process-pooled execution system with Redis-first architecture for r
 +------------------------------------------------------------------+
 |                  workflow_execution.py (Consumer)                 |
 |  - Read pending execution from Redis                              |
-|  - Create PostgreSQL record (RUNNING)                             |
+|  - Claim PostgreSQL execution + durable attempt                   |
 |  - Pre-warm SDK cache                                             |
 |  - Route to ProcessPoolManager                                    |
 +------------------------------------------------------------------+
@@ -68,7 +73,7 @@ Distributed, process-pooled execution system with Redis-first architecture for r
 +------------------------------------------------------------------+
                         |
                         v
-                 Result via Queue
+              Result via private pipe
                         |
                         v
 +------------------------------------------------------------------+
@@ -86,20 +91,23 @@ Distributed, process-pooled execution system with Redis-first architecture for r
 
 | File | Responsibility |
 |------|----------------|
-| `service.py` | High-level orchestration. Workflow lookup by ID, metadata caching (Redis-first), sync/async dispatch routing. Entry point for `run_workflow()` and `run_code()`. |
+| `service.py` | High-level orchestration. Workflow lookup by ID, metadata caching, sync/async dispatch routing, and PostgreSQL fallback when a synchronous Redis wait expires. Entry point for `run_workflow()` and `run_code()`. |
 | `engine.py` | Unified execution engine. Handles workflows, inline scripts, and data providers. Sets up SDK context, captures variables via `sys.settrace()`, streams logs to Redis, handles data provider caching. |
-| `async_executor.py` | Queue management. Stores pending execution in Redis, publishes minimal message to RabbitMQ, returns execution ID immediately (<100ms target). |
+| `async_executor.py` | Dispatch management. Pins immutable execution/runtime evidence in PostgreSQL, stores ephemeral context in Redis, publishes a minimal RabbitMQ message, and returns the execution ID. |
 | `process_pool.py` | One-shot child lifecycle management. Forks on demand up to `max_workers`, handles timeouts (SIGTERM -> SIGKILL), detects crashes, and publishes heartbeats. |
 | `simple_worker.py` | Isolated subprocess entry point. Receives one parent-assembled context over a private pipe, clears workspace modules, delegates to `engine.py`, returns one result, and exits. |
-| `workflow_execution.py` | RabbitMQ consumer. Creates PostgreSQL records, pre-warms SDK cache, routes to process pool, handles results (success/failure), flushes data to Postgres, publishes WebSocket updates. |
+| `workflow_execution.py` | RabbitMQ consumer. Claims a durable attempt, resolves pinned metadata, routes to the process pool, token-fences results, flushes data, and publishes updates. |
 
 ## Execution States
 
-```
-PENDING     API accepted request, queued in RabbitMQ
+```text
+SCHEDULED   Durable execution exists; publication is unconfirmed or deferred
     |
     v
-RUNNING     Consumer picked up, worker executing
+PENDING     Broker publication confirmed
+    |
+    v
+RUNNING     Consumer claimed the run (attempt records claim/start separately)
     |
     +---> SUCCESS              Completed successfully
     |
@@ -112,27 +120,51 @@ RUNNING     Consumer picked up, worker executing
     +---> CANCELLED            User cancelled via API
 ```
 
+An authorized cancellation may project `CANCELLING` between `RUNNING` and
+`CANCELLED`. Historical executions created before attempt tracking return
+`legacy_unavailable` coverage rather than a fabricated attempt.
+
 ## Data Flow
 
 ### Async Execution (Default)
 
 1. API calls `run_workflow()` or `run_code()`
-2. `async_executor.py` stores pending execution in Redis
-3. Minimal message published to RabbitMQ queue
-4. API returns `{execution_id, status: "Pending"}` immediately
-5. Consumer reads from RabbitMQ, fetches context from Redis
-6. Consumer creates PostgreSQL record with `RUNNING` status
-7. Consumer routes to `ProcessPoolManager`
-8. Worker process executes code, returns result via queue
-9. Consumer updates PostgreSQL, flushes logs/writes, publishes WebSocket update
-10. Client receives update via WebSocket subscription
+2. `async_executor.py` creates a PostgreSQL `SCHEDULED` row and `dispatching`
+   attempt with immutable dispatch/runtime evidence under the execution lock
+3. Ephemeral context is stored in Redis and a minimal message is published with
+   broker confirmation
+4. The same fenced transaction advances the logical row to `PENDING` and the
+   attempt to `published`
+5. Consumer atomically claims `PENDING`, assigning the durable attempt an
+   internal capability token and worker incarnation
+6. Consumer resolves pinned metadata and routes a fresh child through
+   `ProcessPoolManager`
+7. RabbitMQ acknowledges the delivery after durable claim and successful child
+   routing, before tenant code completes. Recovery after that boundary comes
+   from the durable attempt lease, not broker redelivery.
+8. The pool copies the token into real and synthetic timeout/cancel/crash
+   results returned over the private result pipe
+9. Consumer accepts only the active token, terminalizing attempt and logical
+   execution before publishing updates
+10. Client treats WebSocket updates as live hints and reloads durable detail
+
+Rabbit delayed retries apply only to failures before child execution, such as
+admission pressure. Exhausted or malformed deliveries go to poison handling.
+Tenant workflow code is never automatically replayed.
+
+Persisted inline-code execution retains a legacy Redis-first creation path and
+therefore reports unavailable attempt coverage until that path is reconciled.
+Transient editor execution is intentionally not durable.
 
 ### Sync Execution (Tool Calls, `sync=True`)
 
 1. Steps 1-8 same as async
 2. Consumer pushes result to Redis list: `bifrost:result:{execution_id}`
 3. API waits on `BLPOP` for result (up to timeout)
-4. API returns complete result to caller
+4. If that Redis wait expires, API checks the authoritative PostgreSQL execution
+   projection for a terminal result
+5. API returns the durable terminal result when present, otherwise the polling
+   timeout response
 
 ```python
 # Sync execution with BLPOP
@@ -227,7 +259,7 @@ await _handle_cancel_request(execution_id)
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `max_workers` | 10 | Maximum worker processes |
-| `execution_timeout_seconds` | 300 | Default timeout per execution |
+| `execution_timeout_seconds` | 300 | Process-pool fallback; registered workflows carry pinned timeout policy |
 | `graceful_shutdown_seconds` | 5 | Time between SIGTERM and SIGKILL |
 | `worker_heartbeat_interval_seconds` | 10 | Heartbeat publish interval |
 | `worker_registration_ttl_seconds` | 30 | Redis registration TTL |

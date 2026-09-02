@@ -27,18 +27,23 @@ def test_required_checks_preserve_app_identity_and_legacy_statuses():
     required = [
         {"context": "Unit Tests", "app_id": 15368},
         {"context": "CodeRabbit", "app_id": None},
-        {"context": "SonarCloud", "app_id": 57789},
+        {"context": "SonarCloud Code Analysis", "app_id": 12526},
     ]
     runs = [
         {"name": "Unit Tests", "app": {"id": 15368}, "status": "completed", "conclusion": "success"},
         {"name": "Unit Tests", "app": {"id": 999}, "status": "completed", "conclusion": "success"},
-        {"name": "SonarCloud", "app": {"id": 57789}, "status": "in_progress", "conclusion": None},
+        {
+            "name": "SonarCloud Code Analysis",
+            "app": {"id": 12526},
+            "status": "in_progress",
+            "conclusion": None,
+        },
     ]
     statuses = [{"context": "CodeRabbit", "state": "success"}]
 
     state = required_check_state(required, runs, statuses)
 
-    assert state.pending == ("SonarCloud",)
+    assert state.pending == ("SonarCloud Code Analysis",)
     assert state.failed == ()
 
 

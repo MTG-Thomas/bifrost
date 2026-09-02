@@ -29,6 +29,7 @@ from src.models import (
     ExecutionLogPublic,
     WorkflowExecution,
 )
+from src.models.orm.executions import WorkflowExecutionAttempt as ExecutionAttempt
 from src.models.enums import ExecutionStatus
 from src.repositories.base import BaseRepository
 
@@ -677,13 +678,36 @@ class ExecutionRepository(BaseRepository[Execution]):
 
         # Work not yet claimed by a consumer can be cancelled immediately.
         # Running work needs the existing Redis cancellation signal.
+        prior_status = execution.status
         execution.status = (  # type: ignore[assignment]
             ExecutionStatus.CANCELLING.value
             if execution.status == ExecutionStatus.RUNNING.value
             else ExecutionStatus.CANCELLED.value
         )
 
-        await self.session.flush()
+        if prior_status in {
+            ExecutionStatus.SCHEDULED.value,
+            ExecutionStatus.PENDING.value,
+        }:
+            completed_at = datetime.now(timezone.utc)
+            execution.completed_at = completed_at
+            attempt = await self.session.scalar(
+                select(ExecutionAttempt)
+                .where(
+                    ExecutionAttempt.execution_id == execution_id,
+                    ExecutionAttempt.completed_at.is_(None),
+                )
+                .with_for_update()
+            )
+            if attempt is not None:
+                attempt.status = "cancelled"
+                attempt.phase = "terminal"
+                attempt.failure_phase = "cancellation"
+                attempt.failure_code = "cancelled_before_claim"
+                attempt.completed_at = completed_at
+                attempt.heartbeat_at = completed_at
+
+        await self.session.commit()
         await self.session.refresh(execution)
 
         # Publish update

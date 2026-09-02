@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from uuid import UUID
 
 import httpx
 import pytest
@@ -27,6 +28,7 @@ class _FakeClient:
         self._access_token = "test-token"
         self.calls: list[tuple[str, str, dict[str, Any] | None]] = []
         self._responses: dict[tuple[str, str], list[tuple[int, Any]]] = {}
+        self.post_kwargs: list[dict[str, Any]] = []
 
     def queue(self, method: str, path: str, status: int, body: Any) -> None:
         self._responses.setdefault((method, path), []).append((status, body))
@@ -51,9 +53,10 @@ class _FakeClient:
         return self._build("GET", path)
 
     async def post(
-        self, path: str, *, json: dict | None = None, **_kwargs
+        self, path: str, *, json: dict | None = None, **kwargs
     ) -> httpx.Response:
         self.calls.append(("POST", path, json))
+        self.post_kwargs.append(kwargs)
         return self._build("POST", path)
 
 
@@ -186,6 +189,8 @@ class TestWorkflowsExecute:
             "input_data": {},
             "sync": False,
         }
+        assert fake_client.post_kwargs[0]["retry_safe"] is True
+        UUID(fake_client.post_kwargs[0]["headers"]["X-Bifrost-Execution-ID"])
         # WS URL is correctly derived from api_url.
         assert captured["uri"] == "ws://test.local/ws/execution/exec-1"
         assert captured["headers"]["Authorization"] == "Bearer test-token"

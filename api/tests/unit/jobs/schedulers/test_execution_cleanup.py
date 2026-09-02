@@ -41,6 +41,7 @@ def test_is_restart_orphan_when_execution_predates_current_workers():
     )
     heartbeat_state = {
         "active_execution_ids": set(),
+        "live_worker_incarnation_ids": set(),
         "oldest_worker_started_at": now - timedelta(minutes=5),
         "heartbeat_count": 3,
     }
@@ -57,6 +58,7 @@ def test_is_restart_orphan_keeps_execution_claimed_by_heartbeat():
     )
     heartbeat_state = {
         "active_execution_ids": {str(execution_id)},
+        "live_worker_incarnation_ids": set(),
         "oldest_worker_started_at": now - timedelta(minutes=5),
         "heartbeat_count": 3,
     }
@@ -72,11 +74,179 @@ def test_is_restart_orphan_waits_for_worker_grace_period():
     )
     heartbeat_state = {
         "active_execution_ids": set(),
+        "live_worker_incarnation_ids": set(),
         "oldest_worker_started_at": now - timedelta(seconds=30),
         "heartbeat_count": 3,
     }
 
     assert not _is_restart_orphan(execution, now=now, heartbeat_state=heartbeat_state)
+
+
+def test_is_restart_orphan_when_attempt_owner_disappears_among_older_live_workers():
+    now = datetime.now(timezone.utc)
+    execution = SimpleNamespace(
+        id=uuid4(),
+        started_at=now - timedelta(minutes=15),
+    )
+    active_attempt = SimpleNamespace(
+        worker_incarnation_id=uuid4(),
+        heartbeat_at=now - timedelta(minutes=3),
+    )
+    heartbeat_state = {
+        "active_execution_ids": set(),
+        "live_worker_incarnation_ids": {str(uuid4()), str(uuid4())},
+        "oldest_worker_started_at": now - timedelta(hours=1),
+        "heartbeat_count": 2,
+    }
+
+    assert _is_restart_orphan(
+        execution,
+        now=now,
+        heartbeat_state=heartbeat_state,
+        active_attempt=active_attempt,
+    )
+
+
+def test_is_restart_orphan_keeps_attempt_with_live_owner_incarnation():
+    now = datetime.now(timezone.utc)
+    owner_incarnation_id = uuid4()
+    execution = SimpleNamespace(
+        id=uuid4(),
+        started_at=now - timedelta(minutes=15),
+    )
+    active_attempt = SimpleNamespace(
+        worker_incarnation_id=owner_incarnation_id,
+        heartbeat_at=now - timedelta(minutes=3),
+    )
+    heartbeat_state = {
+        "active_execution_ids": set(),
+        "live_worker_incarnation_ids": {str(owner_incarnation_id), str(uuid4())},
+        "oldest_worker_started_at": now - timedelta(hours=1),
+        "heartbeat_count": 2,
+    }
+
+    assert not _is_restart_orphan(
+        execution,
+        now=now,
+        heartbeat_state=heartbeat_state,
+        active_attempt=active_attempt,
+    )
+
+
+def test_runner_loss_attempt_limit_is_fail_closed(monkeypatch):
+    monkeypatch.delenv("BIFROST_WORKFLOW_RUNNER_LOSS_MAX_ATTEMPTS", raising=False)
+    assert execution_cleanup._runner_loss_max_attempts() == 1
+
+    monkeypatch.setenv("BIFROST_WORKFLOW_RUNNER_LOSS_MAX_ATTEMPTS", "2")
+    assert execution_cleanup._runner_loss_max_attempts() == 2
+
+    monkeypatch.setenv("BIFROST_WORKFLOW_RUNNER_LOSS_MAX_ATTEMPTS", "invalid")
+    assert execution_cleanup._runner_loss_max_attempts() == 1
+
+
+def test_restart_orphan_grace_is_overridable_for_chaos_stacks(monkeypatch):
+    monkeypatch.delenv(
+        "BIFROST_WORKFLOW_RESTART_ORPHAN_GRACE_SECONDS", raising=False
+    )
+    assert execution_cleanup._restart_orphan_grace_seconds() == 120
+
+    monkeypatch.setenv("BIFROST_WORKFLOW_RESTART_ORPHAN_GRACE_SECONDS", "1")
+    assert execution_cleanup._restart_orphan_grace_seconds() == 1
+
+
+@pytest.mark.asyncio
+async def test_recover_restart_orphan_fences_attempt_and_republishes(monkeypatch):
+    execution_id = uuid4()
+    claim_token = uuid4()
+    execution = SimpleNamespace(
+        id=execution_id,
+        status="Running",
+        started_at=datetime.now(timezone.utc),
+        completed_at=None,
+        duration_ms=100,
+        error_message="old",
+    )
+    attempt = SimpleNamespace(claim_token=claim_token)
+    db = SimpleNamespace(scalar=AsyncMock(side_effect=[1, attempt]))
+    finalize = AsyncMock(return_value=True)
+    republish = AsyncMock()
+    transition = AsyncMock()
+    monkeypatch.setenv("BIFROST_WORKFLOW_RUNNER_LOSS_MAX_ATTEMPTS", "2")
+
+    with (
+        patch(
+            "src.services.execution.attempts.finalize_attempt",
+            finalize,
+        ),
+        patch(
+            "src.services.execution.async_executor.republish_execution_from_dispatch",
+            republish,
+        ),
+        patch.object(execution_cleanup, "transition_execution_attempt", transition),
+    ):
+        recovered = await execution_cleanup._recover_restart_orphan(db, execution)
+
+    assert recovered is True
+    finalize.assert_awaited_once_with(
+        db,
+        execution_id,
+        claim_token,
+        status="worker_lost",
+        phase="terminal",
+        failure_code="worker_lost",
+        failure_phase="worker",
+    )
+    transition.assert_awaited_once()
+    republish.assert_awaited_once_with(execution)
+    assert execution.status == "Pending"
+    assert execution.started_at is None
+    assert execution.error_message is None
+
+
+@pytest.mark.asyncio
+async def test_recover_restart_orphan_stops_at_attempt_limit(monkeypatch):
+    execution = SimpleNamespace(id=uuid4())
+    db = SimpleNamespace(scalar=AsyncMock(return_value=2))
+    monkeypatch.setenv("BIFROST_WORKFLOW_RUNNER_LOSS_MAX_ATTEMPTS", "2")
+
+    assert not await execution_cleanup._recover_restart_orphan(db, execution)
+
+
+@pytest.mark.asyncio
+async def test_recover_restart_orphan_publish_failure_preserves_state(monkeypatch):
+    execution_id = uuid4()
+    claim_token = uuid4()
+    started_at = datetime.now(timezone.utc)
+    execution = SimpleNamespace(
+        id=execution_id,
+        status="Running",
+        started_at=started_at,
+        completed_at=None,
+        duration_ms=100,
+        error_message=None,
+    )
+    attempt = SimpleNamespace(claim_token=claim_token)
+    db = SimpleNamespace(scalar=AsyncMock(side_effect=[1, attempt]))
+    finalize = AsyncMock(return_value=True)
+    republish = AsyncMock(side_effect=ConnectionError("broker unavailable"))
+    transition = AsyncMock()
+    monkeypatch.setenv("BIFROST_WORKFLOW_RUNNER_LOSS_MAX_ATTEMPTS", "2")
+
+    with (
+        patch("src.services.execution.attempts.finalize_attempt", finalize),
+        patch(
+            "src.services.execution.async_executor.republish_execution_from_dispatch",
+            republish,
+        ),
+        patch.object(execution_cleanup, "transition_execution_attempt", transition),
+        pytest.raises(ConnectionError, match="broker unavailable"),
+    ):
+        await execution_cleanup._recover_restart_orphan(db, execution)
+
+    finalize.assert_not_awaited()
+    transition.assert_not_awaited()
+    assert execution.status == "Running"
+    assert execution.started_at == started_at
 
 
 def test_parse_heartbeat_time_normalizes_zulu_and_naive_values():
@@ -134,6 +304,7 @@ async def test_load_worker_heartbeat_state_returns_empty_state_without_redis(mon
 
     assert state == {
         "active_execution_ids": set(),
+        "live_worker_incarnation_ids": set(),
         "oldest_worker_started_at": None,
         "heartbeat_count": 0,
     }
@@ -281,6 +452,7 @@ async def test_load_worker_heartbeat_failure_does_not_block_age_cleanup(monkeypa
 
     assert state == {
         "active_execution_ids": set(),
+        "live_worker_incarnation_ids": set(),
         "oldest_worker_started_at": None,
         "heartbeat_count": 0,
     }
@@ -336,12 +508,34 @@ class _QueryResult:
 class _CleanupSession:
     def __init__(self, results):
         self._results = list(results)
+        self._executions = {}
+        for result in self._results:
+            for row in result._rows:
+                execution = row[0] if result._tuple_rows else row
+                if hasattr(execution, "id"):
+                    self._executions[execution.id] = execution
+        self._execution_rereads = list(self._executions.values())
         self.execute = AsyncMock(side_effect=self._execute)
+        self.scalar = AsyncMock(side_effect=self._scalar)
         self.commit = AsyncMock()
         self.add = MagicMock()
 
-    async def _execute(self, _query):
+    async def _execute(self, query, _params=None):
+        if "pg_advisory_xact_lock" in str(query):
+            return _QueryResult([])
         return self._results.pop(0)
+
+    async def _scalar(self, query):
+        statement = str(query)
+        if "FROM executions" in statement:
+            if not self._execution_rereads:
+                raise AssertionError("unexpected execution row re-read")
+            return self._execution_rereads.pop(0)
+        if "FROM workflows" in statement:
+            return 1800
+        if "FROM workflow_execution_attempts" in statement:
+            return None
+        raise AssertionError(f"unexpected scalar query: {statement}")
 
     async def __aenter__(self):
         return self
@@ -364,6 +558,7 @@ async def test_cleanup_sweeps_overdue_scheduled_and_null_start_running_rows() ->
             scheduled_at=now - timedelta(minutes=age_minutes),
             created_at=now - timedelta(minutes=age_minutes + 1),
             workflow_name=f"{status.value} workflow",
+            workflow_id=None,
             executed_by=uuid4(),
             executed_by_name="Scheduler",
             organization_id=None,
@@ -375,8 +570,7 @@ async def test_cleanup_sweeps_overdue_scheduled_and_null_start_running_rows() ->
     session = _CleanupSession(
         [
             _QueryResult([scheduled]),
-            _QueryResult([]),
-            _QueryResult([(running, 1800)], tuple_rows=True),
+            _QueryResult([(running, 1800, None)], tuple_rows=True),
             _QueryResult([]),
             _QueryResult([]),
         ]
@@ -417,6 +611,12 @@ async def test_cleanup_sweeps_overdue_scheduled_and_null_start_running_rows() ->
                 "agent_run_errors": [],
             },
         ),
+        patch.object(
+            execution_cleanup,
+            "transition_execution_attempt",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
     ):
         result = await execution_cleanup.cleanup_stuck_executions()
 
@@ -429,9 +629,43 @@ async def test_cleanup_sweeps_overdue_scheduled_and_null_start_running_rows() ->
     assert session.add.call_count == 2
 
     scheduled_query = str(session.execute.await_args_list[0].args[0])
-    pending_query = str(session.execute.await_args_list[1].args[0])
     assert "coalesce(executions.scheduled_at, executions.created_at)" in scheduled_query
-    assert (
-        "coalesce(executions.started_at, executions.scheduled_at, executions.created_at)"
-        in pending_query
+
+
+@pytest.mark.asyncio
+async def test_cleanup_does_not_terminalize_old_pending_rows() -> None:
+    session = _CleanupSession(
+        [
+            _QueryResult([]),
+            _QueryResult([], tuple_rows=True),
+            _QueryResult([]),
+        ]
     )
+    with (
+        patch.object(execution_cleanup, "get_session_factory", return_value=lambda: session),
+        patch.object(
+            execution_cleanup,
+            "_load_worker_heartbeat_state",
+            new_callable=AsyncMock,
+            return_value={
+                "active_execution_ids": set(),
+                "oldest_worker_started_at": None,
+                "heartbeat_count": 0,
+            },
+        ),
+        patch.object(
+            execution_cleanup,
+            "_cleanup_stale_agent_runs",
+            new_callable=AsyncMock,
+            return_value={
+                "agent_run_queued_timeouts": 0,
+                "agent_run_running_timeouts": 0,
+                "agent_run_total_cleaned": 0,
+                "agent_run_errors": [],
+            },
+        ),
+    ):
+        result = await execution_cleanup.cleanup_stuck_executions()
+
+    assert result["pending_timeouts"] == 0
+    assert session.execute.await_count == 3
