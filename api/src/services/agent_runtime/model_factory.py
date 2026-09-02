@@ -6,7 +6,7 @@ scheduler import boundary while giving every agent surface one model abstraction
 
 from decimal import Decimal, InvalidOperation
 
-from pydantic_ai.models import Model, infer_model
+from pydantic_ai.models import Model
 from pydantic_ai.usage import RequestUsage
 
 from src.services.agent_runtime.retry_transport import get_ai_retry_http_client
@@ -143,7 +143,27 @@ def create_agent_model(config: LLMConfig, *, model: str | None = None) -> Model:
             )
 
         from openai import AsyncOpenAI
+        from pydantic_ai.models.openai import OpenAIResponsesModel
         from pydantic_ai.providers.openai import OpenAIProvider
+
+        class BifrostOpenAIResponsesModel(OpenAIResponsesModel):
+            async def _process_streamed_response(self, *args, **kwargs):
+                streamed_response = await super()._process_streamed_response(*args, **kwargs)
+                requested_model = streamed_response.model_name
+                map_usage = streamed_response._map_usage
+
+                def map_usage_with_served_model(response):
+                    served_model = getattr(response, "model", None)
+                    if served_model and served_model != requested_model:
+                        streamed_response._model_name = served_model
+                        streamed_response.provider_details = {
+                            **(streamed_response.provider_details or {}),
+                            "requested_model": requested_model,
+                        }
+                    return map_usage(response)
+
+                streamed_response._map_usage = map_usage_with_served_model
+                return streamed_response
 
         client = AsyncOpenAI(
             api_key=config.api_key,
@@ -152,10 +172,7 @@ def create_agent_model(config: LLMConfig, *, model: str | None = None) -> Model:
             max_retries=0,
         )
         provider = OpenAIProvider(openai_client=client)
-        return infer_model(
-            f"openai:{model_name}",
-            provider_factory=lambda _provider_name: provider,
-        )
+        return BifrostOpenAIResponsesModel(model_name, provider=provider)
 
     if config.provider == "anthropic":
         from anthropic import AsyncAnthropic
