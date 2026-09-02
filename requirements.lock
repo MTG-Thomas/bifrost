@@ -933,13 +933,13 @@ fastapi==0.139.0 \
     # via
     #   bifrost-api (pyproject.toml)
     #   sentry-sdk
-fastmcp==4.0.0b1 \
-    --hash=sha256:d66eb7b0763ffff2ae0fc573778ea25604dcb7e59769e5afaf9851a806eb1129 \
-    --hash=sha256:f98d69588a73e1672840558641d5d0f111e207baffe001f3465713a53ebb6b4c
+fastmcp==4.0.0b5 \
+    --hash=sha256:39e970a556872e90eed7e34972477eeef24d1a0949be05e0ed57045d474a4608 \
+    --hash=sha256:b6771dae5b0c1502e287b94e473c0e43b186db001e4a5786464e9085e5bdff7b
     # via bifrost-api (pyproject.toml)
-fastmcp-slim[client,server]==4.0.0b1 \
-    --hash=sha256:158efb25720e0cb301711146b2d05d181de95cd91fe70e87c251ad14b123d665 \
-    --hash=sha256:dd907a3db5a2f479ca958c30157e227b4f7b340a56d333eb91de95719254597a
+fastmcp-slim[client,server]==4.0.0b5 \
+    --hash=sha256:4c47372fab61cbdcedc4c8f726e29229d37b03e60044a0288111aa19d0709690 \
+    --hash=sha256:548677ab0859a0e2dc6fe78602ac6d235d3dce2355d885933cdfd4268f9f429e
     # via fastmcp
 frozenlist==1.8.0 \
     --hash=sha256:0325024fe97f94c41c08872db482cf8ac4800d80e79222c6b0b7b162d5b13686 \
@@ -3412,9 +3412,9 @@ uc-micro-py==2.0.0 \
     --hash=sha256:3603a3859af53e5a39bc7677713c78ea6589ff188d70f4fee165db88e22b242c \
     --hash=sha256:c53691e495c8db60e16ffc4861a35469b0ba0821fe409a8a7a0a71864d33a811
     # via linkify-it-py
-uncalled-for==0.3.1 \
-    --hash=sha256:074cdc92da8356278f93d0ded6f2a66dd883dbecaf9bc89437646ee2289cc200 \
-    --hash=sha256:5e412ac6708f04b56bef5867b5dcf6690ebce4eb7316058d9c50787492bb4bca
+uncalled-for==0.4.0 \
+    --hash=sha256:16c4bb3337532e4bd5569adc192285976f3ad5305402256d34c67a12b5c968bd \
+    --hash=sha256:335b95bd2422332ec210d518f314a16e4c640921c39fc8bf2ad095bd3538f4af
     # via fastmcp-slim
 urllib3==2.7.0 \
     --hash=sha256:231e0ec3b63ceb14667c67be60f2f2c40a518cb38b03af60abc813da26505f4c \
