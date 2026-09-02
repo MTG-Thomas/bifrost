@@ -352,8 +352,10 @@ async def get_solution(solution_id: UUID, ctx: Context, user: CurrentSuperuser) 
     row = await ctx.db.get(SolutionORM, solution_id)
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Solution not found")
+    counts = await _solution_entity_counts(ctx, [row.id])
     return SolutionDTO.model_validate(row).model_copy(
         update={
+            "entity_counts": counts.get(row.id, SolutionEntityCounts()),
             "logo_url": _entity_logo_url(
                 "solutions", row.id, row.logo_thumbnail_version
             ),

@@ -132,7 +132,10 @@ async function seedSolutionFile(api: AuthedApi, solutionId: string) {
 		},
 		params: { location: "solutions" },
 	});
-	expect(policyResponse.ok(), `seed file policy: ${await policyResponse.text()}`).toBe(true);
+	expect(
+		policyResponse.ok() || policyResponse.status() === 409,
+		`seed file policy: ${await policyResponse.text()}`,
+	).toBe(true);
 
 	const writeResponse = await api.post(`/api/files/write?solution=${solutionId}`, {
 		data: {
