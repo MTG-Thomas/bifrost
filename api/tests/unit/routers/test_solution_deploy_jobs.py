@@ -125,7 +125,17 @@ async def test_run_deploy_job_does_not_start_after_job_is_terminal(
 
 
 @pytest.mark.asyncio
-async def test_deploy_accountability_runs_after_storage_finalize(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("reconcile_error", "rollback_error"),
+    [
+        (None, None),
+        (RuntimeError("readback failed"), None),
+        (RuntimeError("readback failed"), RuntimeError("rollback failed")),
+    ],
+)
+async def test_deploy_accountability_runs_after_storage_finalize(
+    tmp_path, monkeypatch, reconcile_error, rollback_error
+):
     events: list[str] = []
     job = SolutionDeployJob(id=uuid4(), install_id=uuid4(), status="queued")
     solution = Solution(
@@ -145,6 +155,11 @@ async def test_deploy_accountability_runs_after_storage_finalize(tmp_path, monke
 
         async def commit(self):
             events.append("commit")
+
+        async def rollback(self):
+            events.append("rollback")
+            if rollback_error is not None:
+                raise rollback_error
 
     database = FakeDB()
 
@@ -183,6 +198,8 @@ async def test_deploy_accountability_runs_after_storage_finalize(tmp_path, monke
 
     async def reconcile(*_args, **_kwargs):
         events.append("reconcile")
+        if reconcile_error is not None:
+            raise reconcile_error
         return {"state": "released", "obligation_id": "obligation-1"}
 
     from src.core import database as database_module
@@ -220,7 +237,20 @@ async def test_deploy_accountability_runs_after_storage_finalize(tmp_path, monke
 
     assert events[:4] == ["commit", "finalize", "artifact_read", "reconcile"]
     assert job.status == "succeeded"
-    assert job.result["source_release_accountability"]["state"] == "released"
+    accountability = job.result["source_release_accountability"]
+    if reconcile_error is None:
+        assert accountability["state"] == "released"
+        assert events.count("commit") == 2
+        assert "rollback" not in events
+    else:
+        assert accountability == {
+            "state": "attention_required",
+            "reason": "post-deploy accountability reconciliation failed",
+            "error_type": "RuntimeError",
+        }
+        assert events.count("commit") == 1
+        assert events.count("rollback") == 1
+        assert events.index("rollback") > events.index("reconcile")
 
 
 @pytest.mark.asyncio
