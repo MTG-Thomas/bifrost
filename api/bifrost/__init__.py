@@ -82,7 +82,7 @@ Example:
 from .api import api
 from .config import config
 from .events import events
-from .executions import executions
+from .executions import Executions as executions
 from .files import files
 from .forms import forms
 from .integrations import integrations

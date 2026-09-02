@@ -273,3 +273,63 @@ async def test_form_resolves_workflow_ref_stored_as_pathfn(db_session) -> None:
         sol, forms=[form.id]
     )
     assert ("workflow", str(wf.id)) in {(d.kind, d.ref) for d in preview.pulled_in}
+
+
+async def test_forward_closure_is_transitive_workflow_to_workflow_via_execute(
+    db_session,
+) -> None:
+    # Workflow -> workflow via Python execute should be pulled transitively.
+    sol = await _solution(db_session)
+    parent = await _wf(db_session, path="workflows/parent.py", name="parent")
+    child = await _wf(
+        db_session,
+        path="workflows/child.py",
+        fn="run",
+        name="child",
+    )
+    repo = _FakeRepo(
+        {
+            "workflows/parent.py": (
+                b'await workflows.execute("workflows/child.py::run")'
+            ),
+        }
+    )
+
+    preview = await SolutionDependencyWalker(db_session, repo=repo).preview(
+        sol, workflows=[parent.id]
+    )
+    assert ("workflow", str(child.id)) in {
+        (d.kind, d.ref) for d in preview.pulled_in
+    }
+
+
+async def test_outside_ref_warns_when_workflow_executes_selected_workflow(
+    db_session,
+) -> None:
+    # Outside workflow execute-calls are surfaced as outside references.
+    db = db_session
+    sol = await _solution(db)
+    target = await _wf(db, path="workflows/target.py", name="target")
+    outside = await _wf(db, path="workflows/outside.py", name="outside")
+
+    repo = _FakeRepo(
+        {
+            "workflows/target.py": b"",
+            "workflows/outside.py": (
+                b'await workflows.execute("workflows/target.py::main")'
+            ),
+        }
+    )
+
+    preview = await SolutionDependencyWalker(db, repo=repo).preview(
+        sol, workflows=[target.id]
+    )
+    warns = [
+        w
+        for w in preview.outside_references
+        if w.referencer_kind == "workflow"
+        and w.referencer_ref == str(outside.id)
+        and w.target_ref == str(target.id)
+    ]
+    assert len(warns) == 1
+    assert warns[0].referencer_name == "outside"

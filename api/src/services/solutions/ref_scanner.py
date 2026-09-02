@@ -8,7 +8,8 @@ The scans are STATIC and intentionally simple:
 - Python module imports reuse the canonical AST scanner in
   ``solution_vendoring`` (workflows -> ``modules/*.py``).
 - Entity name/path references (``tables.get("x")``, ``config.get("k")``,
-  ``useWorkflow("p::f")``, ``useTable("x")``, ``integrations.get("Name")``) are
+  ``useWorkflow("p::f")``, ``workflows.execute("p::f")``,
+  ``useTable("x")``, ``integrations.get("Name")``) are
   matched as STRING LITERALS via
   regex. Dynamic references built from variables are invisible — which is
   exactly why the capture/export preview is a deselectable human-checked list
@@ -55,6 +56,11 @@ _WORKFLOW_RE = re.compile(
     rf"""\buseWorkflow(?:Query|Mutation)?\s*\(\s*{_STR}"""
 )
 
+# Python workflow execution calls (``workflows.execute("path::fn")``).
+_WORKFLOW_EXECUTE_RE = re.compile(
+    rf"""(?<![\w.])(?:sdk\.)?workflows\.execute\s*\(\s*{_STR}"""
+)
+
 
 # ``integrations.get("Name")`` / ``sdk.integrations.get("Name")``.
 # First arg is the integration NAME (a string literal). Dynamic refs are
@@ -77,10 +83,13 @@ def scan_config_refs(source: str) -> set[str]:
 def scan_workflow_refs(source: str) -> set[str]:
     """Return workflow identifiers in ``source``.
 
-    Matches ``useWorkflow``/``useWorkflowQuery``/``useWorkflowMutation``; the
-    captured value is a bare name OR a ``path::fn`` ref (caller resolves both).
+    Matches ``useWorkflow``/``useWorkflowQuery``/``useWorkflowMutation`` and
+    ``workflows.execute``; the captured value is a bare name OR a ``path::fn``
+    ref (caller resolves both).
     """
-    return set(_WORKFLOW_RE.findall(source))
+    return set(_WORKFLOW_RE.findall(source)) | set(
+        _WORKFLOW_EXECUTE_RE.findall(source)
+    )
 
 
 def scan_integration_refs(source: str) -> set[str]:

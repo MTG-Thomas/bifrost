@@ -34,6 +34,47 @@ def test_scan_workflow_refs_query_and_mutation_hooks() -> None:
     assert scan_workflow_refs(src) == {"get_clients", "workflows/m.py::save"}
 
 
+def test_scan_workflow_refs_python_execute() -> None:
+    src = (
+        'results = workflows.execute("workflows/main.py::handler")\n'
+        "follow = await workflows.execute('workflows/child.py::run')\n"
+        "await sdk.workflows.execute('workflows/sdk.py::main')"
+    )
+    assert scan_workflow_refs(src) == {
+        "workflows/main.py::handler",
+        "workflows/child.py::run",
+        "workflows/sdk.py::main",
+    }
+
+
+def test_scan_workflow_refs_python_execute_with_whitespace_and_dynamic_arg() -> None:
+    src = (
+        'workflows.execute ( "workflows/with_space.py::spaced" , timeout=5 )\n'
+        "workflow_ref = 'workflows/dynamic.py::ignore'\n"
+        "x = workflows.execute(workflow_ref)\n"
+    )
+    assert scan_workflow_refs(src) == {"workflows/with_space.py::spaced"}
+
+
+def test_scan_workflow_refs_python_execute_rejects_prefixed_call() -> None:
+    src = (
+        'foo.workflows.execute("workflows/rejected.py::run")\n'
+        'bar.sdk.workflows.execute("workflows/ignored.py::run")\n'
+        'workflows.execute("workflows/accepted.py::run")\n'
+    )
+    assert scan_workflow_refs(src) == {"workflows/accepted.py::run"}
+
+
+def test_scan_workflow_refs_python_execute_unrelated_and_malformed() -> None:
+    src = (
+        'other.execute("workflows/noop.py::run")\n'
+        "workflows.schedule('workflows/nope.py::run')\n"
+        "workflows.execute()\n"
+        'workflows.execute("workflows/bad.py::broken\n'
+    )
+    assert scan_workflow_refs(src) == set()
+
+
 def test_scanners_ignore_unrelated_strings() -> None:
     # A bare string or a similarly-named symbol must NOT be picked up.
     src = 'name = "orders"\nimport environment\nconfigure("x")'
