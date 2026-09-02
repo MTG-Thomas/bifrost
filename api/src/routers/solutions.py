@@ -1503,6 +1503,11 @@ async def _run_deploy_job(
                 solution = await db.get(SolutionORM, solution_id)
                 if solution is None:
                     raise SolutionDeployConflict("Solution not found")
+                # Snapshot scalar identity before commit. AsyncSession commit
+                # expires ORM attributes by default; reading solution.slug
+                # afterwards can attempt implicit async IO and raise
+                # MissingGreenlet after the deploy has already become durable.
+                solution_slug = solution.slug
                 await _set_phase("validating bundle and applying resources")
                 result = await deploy_zip_to_solution_path(
                     db, solution, zip_path, force=force
@@ -1527,7 +1532,7 @@ async def _run_deploy_job(
                     accountability = await reconcile_solution_deploy_obligation(
                         db,
                         solution_id=solution_id,
-                        solution_slug=solution.slug,
+                        solution_slug=solution_slug,
                         accountability_organization_id=accountability_organization_id,
                         deploy_job_id=job_id,
                         candidate_id=candidate_id,
