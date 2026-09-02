@@ -13,7 +13,7 @@ TREE_SHA = "a" * 40
 SOURCE_SHA = "b" * 40
 MAIN_SHA = "c" * 40
 DIGEST = "sha256:" + "d" * 64
-IMAGE = "ghcr.io/mtg-thomas/bifrost-api"
+IMAGE = "ghcr.io/midtown-technology-group/bifrost-api"
 VERSION = "1.1.1-dev.456"
 TRANSFER_REPOSITORIES = (
     "MTG-Thomas/bifrost",
