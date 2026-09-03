@@ -510,8 +510,13 @@ async def _runtime_and_registration_readback(
     actual_workflows = sorted(
         (str(row.id), row.path, row.function_name, row.name)
         for row in (
-            await db.scalars(
-                select(Workflow).where(Workflow.solution_id == solution_id)
+            await db.execute(
+                select(
+                    Workflow.id,
+                    Workflow.path,
+                    Workflow.function_name,
+                    Workflow.name,
+                ).where(Workflow.solution_id == solution_id)
             )
         ).all()
     )

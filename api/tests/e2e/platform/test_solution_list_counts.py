@@ -25,7 +25,9 @@ pytestmark = pytest.mark.e2e
 
 
 @pytest.mark.asyncio
-async def test_solution_list_includes_entity_counts(e2e_client, platform_admin, db_session):
+async def test_solution_list_and_detail_include_entity_counts(
+    e2e_client, platform_admin, db_session
+):
     slug = f"counted-{uuid.uuid4().hex[:8]}"
     create = e2e_client.post(
         "/api/solutions",
@@ -96,6 +98,12 @@ async def test_solution_list_includes_entity_counts(e2e_client, platform_admin, 
             "claims": 1,
             "files": 1,
         }
+
+        detail = e2e_client.get(
+            f"/api/solutions/{solution_id}", headers=platform_admin.headers
+        )
+        assert detail.status_code == 200, detail.text
+        assert detail.json()["entity_counts"] == solution["entity_counts"]
     finally:
         # The global solution and all counted entities are test-owned. Leaving
         # them behind makes later manifest validation see a dangling global

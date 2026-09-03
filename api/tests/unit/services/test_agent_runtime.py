@@ -190,6 +190,39 @@ def test_openai_uses_pydantic_default_model() -> None:
     ) is False
 
 
+@pytest.mark.asyncio
+async def test_openai_stream_uses_terminal_served_model(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from pydantic_ai.models.openai import OpenAIResponsesModel
+    from pydantic_ai.usage import RequestUsage
+
+    streamed_response = SimpleNamespace(
+        model_name="model-router",
+        _model_name="model-router",
+        provider_details=None,
+        _map_usage=Mock(return_value=RequestUsage(input_tokens=2, output_tokens=3)),
+    )
+    process_stream = AsyncMock(return_value=streamed_response)
+    monkeypatch.setattr(OpenAIResponsesModel, "_process_streamed_response", process_stream)
+    model = create_agent_model(
+        LLMConfig(
+            provider="openai",
+            model="model-router",
+            api_key="test-key",
+            endpoint="https://foundry.example.test/openai/v1",
+        )
+    )
+
+    stream = await model._process_streamed_response(None, {}, None)  # type: ignore[arg-type,attr-defined]
+    usage = stream._map_usage(SimpleNamespace(model="gpt-5-mini-2025-08-07"))
+
+    assert usage == RequestUsage(input_tokens=2, output_tokens=3)
+    assert stream._model_name == "gpt-5-mini-2025-08-07"
+    assert stream.provider_details == {"requested_model": "model-router"}
+
+
 def test_create_agent_model_uses_native_openrouter_adapter() -> None:
     from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 

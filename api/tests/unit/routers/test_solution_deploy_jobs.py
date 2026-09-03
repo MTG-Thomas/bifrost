@@ -125,7 +125,17 @@ async def test_run_deploy_job_does_not_start_after_job_is_terminal(
 
 
 @pytest.mark.asyncio
-async def test_deploy_accountability_runs_after_storage_finalize(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("reconcile_error", "rollback_error"),
+    [
+        (None, None),
+        (RuntimeError("readback failed"), None),
+        (RuntimeError("readback failed"), RuntimeError("rollback failed")),
+    ],
+)
+async def test_deploy_accountability_runs_after_storage_finalize(
+    tmp_path, monkeypatch, reconcile_error, rollback_error
+):
     events: list[str] = []
     job = SolutionDeployJob(id=uuid4(), install_id=uuid4(), status="queued")
     solution = Solution(
@@ -145,6 +155,11 @@ async def test_deploy_accountability_runs_after_storage_finalize(tmp_path, monke
 
         async def commit(self):
             events.append("commit")
+
+        async def rollback(self):
+            events.append("rollback")
+            if rollback_error is not None:
+                raise rollback_error
 
     database = FakeDB()
 
@@ -183,6 +198,8 @@ async def test_deploy_accountability_runs_after_storage_finalize(tmp_path, monke
 
     async def reconcile(*_args, **_kwargs):
         events.append("reconcile")
+        if reconcile_error is not None:
+            raise reconcile_error
         return {"state": "released", "obligation_id": "obligation-1"}
 
     from src.core import database as database_module
@@ -220,4 +237,101 @@ async def test_deploy_accountability_runs_after_storage_finalize(tmp_path, monke
 
     assert events[:4] == ["commit", "finalize", "artifact_read", "reconcile"]
     assert job.status == "succeeded"
-    assert job.result["source_release_accountability"]["state"] == "released"
+    accountability = job.result["source_release_accountability"]
+    if reconcile_error is None:
+        assert accountability["state"] == "released"
+        assert events.count("commit") == 2
+        assert "rollback" not in events
+    else:
+        assert accountability == {
+            "state": "attention_required",
+            "reason": "post-deploy accountability reconciliation failed",
+            "error_type": "RuntimeError",
+        }
+        assert events.count("commit") == 1
+        assert events.count("rollback") == 1
+        assert events.index("rollback") > events.index("reconcile")
+
+
+@pytest.mark.asyncio
+async def test_deploy_snapshots_slug_before_commit_expires_solution(tmp_path, monkeypatch):
+    events: list[str] = []
+    job = SolutionDeployJob(id=uuid4(), install_id=uuid4(), status="queued")
+
+    class ExpiringSolution:
+        id = job.install_id
+        organization_id = uuid4()
+        _expired = False
+
+        @property
+        def slug(self):
+            if self._expired:
+                raise RuntimeError("expired ORM attribute was accessed")
+            return "snapshot-before-commit"
+
+    solution = ExpiringSolution()
+
+    class FakeDB:
+        async def get(self, model, row_id):
+            if model is SolutionDeployJob and row_id == job.id:
+                return job
+            if model is Solution and row_id == solution.id:
+                return solution
+            return None
+
+        async def commit(self):
+            solution._expired = True
+
+    database = FakeDB()
+
+    @asynccontextmanager
+    async def fake_db_context():
+        yield database
+
+    @asynccontextmanager
+    async def fake_write_lock(_solution_id):
+        yield
+
+    async def finalize_s3():
+        events.append("finalize")
+
+    result = SimpleNamespace(
+        finalize_s3=finalize_s3,
+        workflows_upserted=1, workflows_deleted=0,
+        tables_upserted=0, tables_deleted=0,
+        apps_upserted=0, apps_deleted=0,
+        forms_upserted=0, forms_deleted=0,
+        agents_upserted=0, agents_deleted=0,
+        claims_upserted=0, claims_deleted=0,
+        integrations_shell_created=0, roles_created=[],
+    )
+
+    async def reconcile(*_args, **kwargs):
+        assert kwargs["solution_slug"] == "snapshot-before-commit"
+        return {"state": "released"}
+
+    from src.core import database as database_module
+    from src.services import solution_deploy_obligations
+    from src.services.solutions import source_artifact, write_lock, zip_install
+
+    monkeypatch.setattr(database_module, "get_db_context", fake_db_context)
+    monkeypatch.setattr(write_lock, "solution_write_lock", fake_write_lock)
+    monkeypatch.setattr(zip_install, "deploy_zip_to_solution_path", AsyncMock(return_value=result))
+    monkeypatch.setattr(
+        source_artifact,
+        "SolutionSourceArtifactStorage",
+        lambda _solution_id: SimpleNamespace(read=AsyncMock(return_value=b"artifact")),
+    )
+    monkeypatch.setattr(solution_deploy_obligations, "reconcile_solution_deploy_obligation", reconcile)
+    zip_path = tmp_path / "deploy.zip"
+    zip_path.write_bytes(b"artifact")
+
+    await _run_deploy_job(
+        job.id,
+        solution.id,
+        zip_path,
+        force=False,
+        accountability_organization_id=solution.organization_id,
+    )
+
+    assert job.status == "succeeded"
