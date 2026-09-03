@@ -198,6 +198,20 @@ async def get_current_user_optional(
     if not delegated_user_id_valid:
         return None
 
+    try:
+        engine_execution_id = (
+            UUID(payload["engine_execution_id"])
+            if payload.get("engine_execution_id")
+            else None
+        )
+        engine_attempt_token = (
+            UUID(payload["engine_attempt_token"])
+            if payload.get("engine_attempt_token")
+            else None
+        )
+    except (TypeError, ValueError):
+        return None
+
     return UserPrincipal(
         user_id=user_id,
         email=payload.get("email", ""),
@@ -217,16 +231,8 @@ async def get_current_user_optional(
         form_id=payload.get("form_id"),
         verified_params=payload.get("verified_params"),
         is_engine_token=payload.get("engine", False) is True,
-        engine_execution_id=(
-            UUID(payload["engine_execution_id"])
-            if payload.get("engine_execution_id")
-            else None
-        ),
-        engine_attempt_token=(
-            UUID(payload["engine_attempt_token"])
-            if payload.get("engine_attempt_token")
-            else None
-        ),
+        engine_execution_id=engine_execution_id,
+        engine_attempt_token=engine_attempt_token,
         delegated_user_id=delegated_user_id,
         delegated_email=payload.get("delegated_email", ""),
         delegated_name=payload.get("delegated_name", ""),
