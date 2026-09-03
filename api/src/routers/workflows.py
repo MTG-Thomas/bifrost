@@ -33,6 +33,7 @@ from src.models import (
     DeactivateWorkflowResponse,
     DeleteWorkflowRequest,
     EntityUsage,
+    ExecutionRetryPolicy,
     OrphanedWorkflowInfo,
     OrphanedWorkflowsResponse,
     RecreateFileResponse,
@@ -65,6 +66,7 @@ from src.services.workflow_registration import (
     add_workflow_registration,
     resolve_workflow_registration_id,
 )
+from src.services.execution.retry_policy import normalize_retry_policy
 from src.services.workspace_release_registration_authority import (
     WorkspaceReleaseRegistrationGoverned,
     guard_workspace_registration_mutation,
@@ -169,7 +171,7 @@ def _convert_workflow_orm_to_schema(workflow: WorkflowORM, used_by_count: int = 
         parameters=parameters,
         execution_mode=execution_mode,
         timeout_seconds=workflow.timeout_seconds if workflow.timeout_seconds is not None else 1800,
-        retry_policy=None,
+        retry_policy=normalize_retry_policy(getattr(workflow, "retry_policy", None)),
         endpoint_enabled=workflow.endpoint_enabled or False,
         allowed_methods=workflow.allowed_methods or ["POST"],
         disable_global_key=workflow.disable_global_key or False,
@@ -755,6 +757,9 @@ async def _insert_scheduled_execution(
     }
     if runtime_evidence is not None:
         execution_context["runtime_evidence"] = runtime_evidence
+    from src.services.execution.retry_policy import workflow_retry_policy_snapshot
+
+    retry_policy = await workflow_retry_policy_snapshot(db, workflow_id)
     execution = Execution(
         id=exec_id,
         workflow_id=workflow_id,
@@ -779,6 +784,7 @@ async def _insert_scheduled_execution(
             if runtime_evidence
             else None
         ),
+        retry_policy=retry_policy,
         execution_context=execution_context,
     )
     db.add(execution)
@@ -1508,6 +1514,14 @@ async def register_workflow(
         existing_wf.organization_id = org_uuid
         if request.access_level is not None:
             existing_wf.access_level = request.access_level
+        if "retry_policy" in request.model_fields_set:
+            from src.services.execution.retry_policy import snapshot_retry_policy
+
+            existing_wf.retry_policy = snapshot_retry_policy(
+                request.retry_policy.model_dump(mode="json")
+                if request.retry_policy is not None
+                else None
+            )
         existing_wf.updated_at = datetime.now(timezone.utc)
         await db.flush()
     else:
@@ -1525,6 +1539,11 @@ async def register_workflow(
             is_active=True,
             organization_id=org_uuid,
             access_level=request.access_level if request.access_level is not None else "role_based",
+            retry_policy=(
+                request.retry_policy.model_dump(mode="json")
+                if request.retry_policy is not None
+                else ExecutionRetryPolicy().model_dump(mode="json")
+            ),
         )
         try:
             await add_workflow_registration(
@@ -1587,6 +1606,7 @@ async def register_workflow(
         type=workflow.type,
         description=workflow.description,
         organization_id=str(workflow.organization_id) if workflow.organization_id else None,
+        retry_policy=normalize_retry_policy(getattr(workflow, "retry_policy", None)),
     )
 
 
@@ -1668,6 +1688,18 @@ async def update_workflow(
                     detail=f"Invalid access_level: '{request.access_level}'. Must be 'authenticated', 'everyone', or 'role_based'",
                 )
             workflow.access_level = request.access_level
+
+        if "retry_policy" in request.model_fields_set:
+            if request.retry_policy is None:
+                from src.services.execution.retry_policy import disabled_retry_policy
+
+                workflow.retry_policy = disabled_retry_policy()
+            else:
+                from src.services.execution.retry_policy import snapshot_retry_policy
+
+                workflow.retry_policy = snapshot_retry_policy(
+                    request.retry_policy.model_dump(mode="json")
+                )
 
         # Role assignment edits. ``role_ids`` (when explicitly provided) bulk-replaces
         # the assignment set; ``clear_roles`` is the legacy single-purpose flag and

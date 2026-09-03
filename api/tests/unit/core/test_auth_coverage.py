@@ -111,6 +111,25 @@ async def test_optional_user_rejects_mcp_scoped_rest_token(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("claim", ["engine_execution_id", "engine_attempt_token"])
+async def test_optional_user_rejects_malformed_engine_uuid_claim(monkeypatch, claim):
+    monkeypatch.setattr(
+        auth,
+        "decode_token",
+        lambda token, *, expected_type: _payload(**{claim: "not-a-uuid"}),
+    )
+
+    assert (
+        await auth.get_current_user_optional(
+            _request(),
+            _credentials("engine-token"),
+            object(),
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
 async def test_required_user_and_active_superuser_guards_raise_http_errors(monkeypatch):
     async def no_current_user(*args):
         return None
@@ -208,6 +227,44 @@ async def test_execution_context_rejects_inactive_solution(monkeypatch):
 
     assert exc.value.status_code == 409
     assert "inactive" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_execution_context_rejects_revoked_engine_attempt() -> None:
+    class Db:
+        async def scalar(self, statement):
+            return None
+
+    principal = _principal(
+        is_engine_token=True,
+        engine_execution_id=uuid4(),
+        engine_attempt_token=uuid4(),
+        role_ids=[uuid4()],
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await auth.get_execution_context(_request(), principal, Db())
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail == "Execution attempt lease is missing or revoked"
+
+
+@pytest.mark.asyncio
+async def test_execution_context_accepts_active_engine_attempt() -> None:
+    class Db:
+        async def scalar(self, statement):
+            return uuid4()
+
+    principal = _principal(
+        is_engine_token=True,
+        engine_execution_id=uuid4(),
+        engine_attempt_token=uuid4(),
+        role_ids=[uuid4()],
+    )
+
+    context = await auth.get_execution_context(_request(), principal, Db())
+
+    assert context.user is principal
 
 
 @pytest.mark.asyncio

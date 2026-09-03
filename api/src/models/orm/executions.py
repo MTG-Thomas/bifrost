@@ -94,6 +94,20 @@ class Execution(Base):
     dispatch_evidence_hash: Mapped[str | None] = mapped_column(
         String(71), nullable=True
     )
+    retry_policy: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=lambda: {
+            "version": "execution-retry/v1",
+            "enabled": False,
+            "max_attempts": 2,
+            "retry_on": [],
+        },
+        server_default=text(
+            "jsonb_build_object('version', 'execution-retry/v1', 'enabled', false, "
+            "'max_attempts', 2, 'retry_on', jsonb_build_array())"
+        ),
+    )
     # Null identifies rows created before attempt tracking was deployed. New
     # ORM-created executions opt in even if they fail before queue claim and
     # therefore legitimately have an empty attempt list.

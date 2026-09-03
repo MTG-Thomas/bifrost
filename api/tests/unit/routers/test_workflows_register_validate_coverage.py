@@ -480,6 +480,57 @@ async def test_register_workflow_validates_and_preserves_promoted_uuid() -> None
 
 
 @pytest.mark.asyncio
+async def test_register_workflow_reactivation_preserves_omitted_retry_policy() -> None:
+    policy = {
+        "version": "execution-retry/v1",
+        "enabled": True,
+        "max_attempts": 2,
+        "retry_on": ["worker_lost"],
+    }
+    existing = SimpleNamespace(
+        id=uuid4(),
+        name="run",
+        function_name="run",
+        path="workflows/run.py",
+        type="workflow",
+        description=None,
+        organization_id=None,
+        access_level="role_based",
+        is_active=False,
+        is_orphaned=True,
+        retry_policy=policy.copy(),
+    )
+    service = SimpleNamespace(
+        read_file=AsyncMock(
+            return_value=(b"from bifrost import workflow\n@workflow\ndef run(): pass\n", None)
+        )
+    )
+    indexer = SimpleNamespace(index_python_file=AsyncMock())
+
+    with (
+        patch("src.services.file_storage.FileStorageService", return_value=service),
+        patch(
+            "src.services.file_storage.indexers.workflow.WorkflowIndexer",
+            return_value=indexer,
+        ),
+        patch.object(
+            workflows,
+            "_guard_workflow_registration_mutation",
+            new=AsyncMock(),
+        ),
+        patch("src.services.mcp_server.server.refresh_workflow_tools", AsyncMock()),
+    ):
+        result = await workflows.register_workflow(
+            RegisterWorkflowRequest(path="workflows/run.py", function_name="run"),
+            _Db(existing, existing),
+            _admin(),
+        )
+
+    assert existing.retry_policy == policy
+    assert result.retry_policy.model_dump(mode="json") == policy
+
+
+@pytest.mark.asyncio
 async def test_update_workflow_validates_name_access_and_methods() -> None:
     workflow_id = uuid4()
     workflow = SimpleNamespace(id=workflow_id, solution_id=None, name="run")

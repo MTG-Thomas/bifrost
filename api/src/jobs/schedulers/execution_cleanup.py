@@ -7,7 +7,6 @@ remain in claimed or otherwise recoverably orphaned states for too long.
 Runs every 5 minutes to find and timeout stuck executions.
 """
 
-import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -40,20 +39,6 @@ DEFAULT_AGENT_RUN_TIMEOUT_SECONDS = 30 * 60
 AGENT_RUN_TIMEOUT_GRACE_SECONDS = 5 * 60
 
 
-def _runner_loss_max_attempts() -> int:
-    """Return the opt-in workflow runner-loss attempt limit."""
-    try:
-        return max(
-            1,
-            min(
-                10,
-                int(os.environ.get("BIFROST_WORKFLOW_RUNNER_LOSS_MAX_ATTEMPTS", "1")),
-            ),
-        )
-    except ValueError:
-        return 1
-
-
 def _restart_orphan_grace_seconds() -> int:
     try:
         return max(
@@ -76,7 +61,17 @@ async def _recover_restart_orphan(db, execution: ExecutionModel) -> bool:
             ExecutionAttempt.execution_id == execution.id
         )
     )
-    if int(attempt_count or 0) >= _runner_loss_max_attempts():
+    from src.services.execution.retry_policy import (
+        operator_max_attempts,
+        should_retry_execution,
+    )
+
+    if not should_retry_execution(
+        getattr(execution, "retry_policy", None),
+        "worker_lost",
+        int(attempt_count or 0),
+        operator_max_attempts(),
+    ):
         return False
 
     from src.services.execution.async_executor import (
@@ -136,129 +131,26 @@ def _execution_age_anchor(execution: ExecutionModel) -> datetime:
     return anchor.astimezone(timezone.utc)
 
 
-async def _load_worker_heartbeat_state(now: datetime) -> dict[str, Any]:
-    """Read Redis worker heartbeats for restart-orphan detection."""
-    state: dict[str, Any] = {
-        "active_execution_ids": set(),
-        "live_worker_incarnation_ids": set(),
-        "oldest_worker_started_at": None,
-        "heartbeat_count": 0,
-    }
-    redis_client = get_redis_client()
-    if not redis_client:
-        return state
-
-    try:
-        cursor = 0
-        while True:
-            cursor, keys = await redis_client.scan(
-                cursor,
-                match="bifrost:pool:*:heartbeat",
-                count=100,
-            )
-            for key in keys:
-                raw = await redis_client.get(key)
-                if not raw:
-                    continue
-                try:
-                    heartbeat = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                state["heartbeat_count"] += 1
-                incarnation_id = heartbeat.get("worker_incarnation_id")
-                if incarnation_id:
-                    state["live_worker_incarnation_ids"].add(str(incarnation_id))
-                started_at = _parse_heartbeat_time(heartbeat.get("started_at"))
-                if started_at is not None:
-                    oldest = state["oldest_worker_started_at"]
-                    state["oldest_worker_started_at"] = (
-                        started_at if oldest is None else min(oldest, started_at)
-                    )
-                for process in heartbeat.get("processes") or []:
-                    execution = (
-                        process.get("execution")
-                        if isinstance(process, dict)
-                        else None
-                    )
-                    execution_id = (
-                        execution.get("execution_id")
-                        if isinstance(execution, dict)
-                        else None
-                    )
-                    if execution_id:
-                        state["active_execution_ids"].add(str(execution_id))
-            if cursor == 0:
-                break
-    except Exception as exc:
-        logger.warning(
-            "Worker heartbeat state is unavailable; continuing with age-based execution cleanup: %s",
-            exc,
-        )
-        return {
-            "active_execution_ids": set(),
-            "live_worker_incarnation_ids": set(),
-            "oldest_worker_started_at": None,
-            "heartbeat_count": 0,
-        }
-
-    return state
-
-
-def _parse_heartbeat_time(value: Any) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
 def _is_restart_orphan(
     execution: ExecutionModel,
     *,
     now: datetime,
-    heartbeat_state: dict[str, Any],
     active_attempt: ExecutionAttempt | None = None,
 ) -> bool:
-    if not execution.started_at:
+    """Return whether the authoritative database attempt lease expired."""
+    if (
+        not execution.started_at
+        or active_attempt is None
+        or active_attempt.claim_token is None
+        or active_attempt.status not in {"claimed", "running"}
+    ):
         return False
-    if heartbeat_state.get("heartbeat_count", 0) <= 0:
+    lease_renewed_at = active_attempt.heartbeat_at or active_attempt.claimed_at
+    if lease_renewed_at is None:
         return False
-    if str(execution.id) in heartbeat_state.get("active_execution_ids", set()):
-        return False
-
-    owner_incarnation_id = (
-        getattr(active_attempt, "worker_incarnation_id", None)
-        if active_attempt is not None
-        else None
-    )
-    if owner_incarnation_id is not None:
-        if str(owner_incarnation_id) in heartbeat_state.get(
-            "live_worker_incarnation_ids", set()
-        ):
-            return False
-        heartbeat_at = getattr(active_attempt, "heartbeat_at", None)
-        grace_anchor = heartbeat_at or execution.started_at
-        if grace_anchor.tzinfo is None:
-            grace_anchor = grace_anchor.replace(tzinfo=timezone.utc)
-        return (now - grace_anchor).total_seconds() >= _restart_orphan_grace_seconds()
-
-    # Legacy attempts have no owner-incarnation evidence. Preserve the
-    # fleet-restart heuristic for those executions.
-    oldest_worker_started_at = heartbeat_state.get("oldest_worker_started_at")
-    if oldest_worker_started_at is None:
-        return False
-
-    started_at = execution.started_at
-    if started_at.tzinfo is None:
-        started_at = started_at.replace(tzinfo=timezone.utc)
-
-    if started_at >= oldest_worker_started_at:
-        return False
-    return (now - oldest_worker_started_at).total_seconds() >= _restart_orphan_grace_seconds()
+    if lease_renewed_at.tzinfo is None:
+        lease_renewed_at = lease_renewed_at.replace(tzinfo=timezone.utc)
+    return (now - lease_renewed_at).total_seconds() >= _restart_orphan_grace_seconds()
 
 
 async def cleanup_stuck_executions() -> dict[str, Any]:
@@ -293,8 +185,6 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
     now = datetime.now(timezone.utc)
 
     try:
-        heartbeat_state = await _load_worker_heartbeat_state(now)
-
         # Collect data for WebSocket broadcasts (published after session closes)
         pubsub_updates: list[dict] = []
 
@@ -346,7 +236,6 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
                 if _is_restart_orphan(
                     execution,
                     now=now,
-                    heartbeat_state=heartbeat_state,
                     active_attempt=active_attempt,
                 ):
                     running_stuck.append(execution)
@@ -447,7 +336,6 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
                         restart_orphan = _is_restart_orphan(
                             execution,
                             now=now,
-                            heartbeat_state=heartbeat_state,
                             active_attempt=active_attempt,
                         )
                         if not restart_orphan:
@@ -547,14 +435,6 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
                             .with_for_update()
                         )
                     if active_attempt is not None:
-                        owner_incarnation_lost = bool(
-                            active_attempt.worker_incarnation_id
-                            and heartbeat_state.get("heartbeat_count", 0) > 0
-                            and str(active_attempt.worker_incarnation_id)
-                            not in heartbeat_state.get(
-                                "live_worker_incarnation_ids", set()
-                            )
-                        )
                         if original_status == ExecutionStatus.CANCELLING:
                             active_attempt.status = "cancelled"
                             active_attempt.failure_code = "cancellation_timeout"
@@ -571,10 +451,7 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
                             active_attempt.failure_phase = "queue"
                         elif (
                             original_status == ExecutionStatus.RUNNING
-                            and (
-                                owner_incarnation_lost
-                                or restart_orphan
-                            )
+                            and restart_orphan
                         ):
                             active_attempt.status = "worker_lost"
                             active_attempt.failure_code = "worker_incarnation_lost"

@@ -259,7 +259,9 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # old clients ignore it and retain their existing risk-class handling.
     # Promotion responses gained optional diagnostic delta/decision evidence
     # (2026-08-31). ADDITIVE: old clients ignore the extra response fields.
-    "7be790668fda1514867b67b863933f25fbbc51625b7568e1914c78d31ce68d2b"
+    # Workflow updates gained an optional execution retry policy (2026-09-03).
+    # ADDITIVE: old clients omit it and workflows remain non-retryable by default.
+    "afdf39ae264e4715499e68dfc838df1b6d747abf4c8e1f2acc136173a3a019a3"
 )
 
 

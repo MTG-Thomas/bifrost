@@ -32,6 +32,7 @@ from src.models import (
 from src.models.orm.executions import WorkflowExecutionAttempt as ExecutionAttempt
 from src.models.enums import ExecutionStatus
 from src.repositories.base import BaseRepository
+from src.services.execution.retry_policy import snapshot_retry_policy
 
 logger = logging.getLogger(__name__)
 
@@ -528,6 +529,9 @@ class ExecutionRepository(BaseRepository[Execution]):
             executed_by_name=execution.executed_by_name or str(execution.executed_by),
             status=ExecutionStatus(execution.status),
             input_data=execution.parameters or {},
+            retry_policy=snapshot_retry_policy(
+                getattr(execution, "retry_policy", None)
+            ),
             result=execution.result,
             result_type=execution.result_type,
             error_message=execution.error_message,
@@ -746,6 +750,9 @@ class ExecutionRepository(BaseRepository[Execution]):
             executed_by_name=execution.executed_by_name or str(execution.executed_by),
             status=ExecutionStatus(execution.status),
             input_data=execution.parameters or {},
+            retry_policy=snapshot_retry_policy(
+                getattr(execution, "retry_policy", None)
+            ),
             result=execution.result,
             result_type=execution.result_type,
             error_message=execution.error_message,

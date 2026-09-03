@@ -49,6 +49,12 @@ DOMAIN_VALUES: dict[tuple[str, str] | str, Any] = {
     ("ManifestSolutionConfigSchema", "type"): "string",
     ("ManifestIntegrationConfigSchema", "type"): "string",
     ("ManifestApp", "app_model"): "standalone_v2",
+    ("ManifestWorkflow", "retry_policy"): {
+        "version": "execution-retry/v1",
+        "enabled": True,
+        "max_attempts": 3,
+        "retry_on": ["worker_lost", "subprocess_crash"],
+    },
     # `list[dict[str, Any]]` — the generic list-of-dict generator would emit a
     # list of strings; supply a valid policy-document shape instead.
     ("ManifestFilePolicy", "policies"): [{"name": "SENT::policy", "actions": ["read"]}],

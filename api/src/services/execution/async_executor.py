@@ -276,6 +276,9 @@ async def _persist_execution_pin(
             runtime_evidence=runtime_evidence,
             runtime_mode=runtime_mode,
         )
+        from src.services.execution.retry_policy import workflow_retry_policy_snapshot
+
+        retry_policy = await workflow_retry_policy_snapshot(db, uuid.UUID(workflow_id))
         pinned_execution = Execution(
             id=uuid.UUID(execution_id),
             workflow_name=pinned_runtime.name if pinned_runtime else "pending",
@@ -290,6 +293,7 @@ async def _persist_execution_pin(
             runtime_evidence_hash=evidence_hash,
             dispatch_evidence=dispatch,
             dispatch_evidence_hash=sha256_digest(canonical_json(dispatch)),
+            retry_policy=retry_policy,
             attempt_tracking_version="v1",
             # SCHEDULED is the durable, retryable pre-publication state.
             # The queue claimant atomically advances it to PENDING only

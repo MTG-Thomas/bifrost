@@ -421,6 +421,7 @@ def validate_csrf_token(cookie_token: str, header_token: str) -> bool:
 def mint_engine_token(
     *,
     execution_id: str | None = None,
+    attempt_token: str | None = None,
     solution_id: str | None = None,
     global_repo_access: bool = False,
     timeout_seconds: int = 1800,
@@ -456,6 +457,7 @@ def mint_engine_token(
         "is_superuser": True,
         "engine": True,
         "engine_execution_id": execution_id,
+        "engine_attempt_token": attempt_token,
         "engine_solution_id": solution_id,
         "engine_global_repo_access": bool(global_repo_access),
     }

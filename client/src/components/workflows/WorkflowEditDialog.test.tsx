@@ -69,7 +69,12 @@ function makeWorkflow(overrides: Partial<Workflow> = {}): Workflow {
 		parameters: [],
 		execution_mode: "sync",
 		timeout_seconds: 1800,
-		retry_policy: null,
+		retry_policy: {
+			version: "execution-retry/v1",
+			enabled: false,
+			max_attempts: 2,
+			retry_on: [],
+		},
 		endpoint_enabled: false,
 		allowed_methods: ["POST"],
 		disable_global_key: false,
@@ -125,6 +130,31 @@ describe("WorkflowEditDialog", () => {
 			},
 		]);
 		expect(onOpenChange).toHaveBeenCalledWith(false);
+	});
+
+	it("submits an opt-in infrastructure retry policy", async () => {
+		const { user } = renderWithProviders(
+			<WorkflowEditDialog
+				workflow={makeWorkflow()}
+				open={true}
+				onOpenChange={vi.fn()}
+			/>,
+		);
+
+		await user.click(screen.getByRole("tab", { name: /execution/i }));
+		await user.click(screen.getByLabelText(/retry infrastructure failures/i));
+		await user.click(screen.getByLabelText(/worker lease expires/i));
+		await user.click(screen.getByRole("button", { name: /save changes/i }));
+
+		await waitFor(() => expect(mockUpdateWorkflow).toHaveBeenCalledTimes(1));
+		expect(mockUpdateWorkflow.mock.calls[0][1]).toMatchObject({
+			retry_policy: {
+				version: "execution-retry/v1",
+				enabled: true,
+				max_attempts: 2,
+				retry_on: ["worker_lost"],
+			},
+		});
 	});
 
 	it("resets the workflow tool name to the function name when cleared", async () => {

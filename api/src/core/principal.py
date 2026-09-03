@@ -67,6 +67,8 @@ class UserPrincipal:
     # engine and embed sessions intentionally share SYSTEM_USER_ID, so the
     # subject alone cannot identify an engine delegation safely.
     is_engine_token: bool = False
+    engine_execution_id: UUID | None = None
+    engine_attempt_token: UUID | None = None
     # Original caller identity carried only by the internal workflow-engine
     # token. The token retains transport authority, while delegated execution
     # authorization and audit identity use these claims instead of the engine.

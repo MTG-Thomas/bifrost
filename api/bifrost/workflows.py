@@ -40,7 +40,7 @@ class workflows:
                 - parameters: dict - Workflow parameters
                 - execution_mode: str - Execution mode
                 - timeout_seconds: int - Max execution time
-                - retry_policy: dict | None - Retry configuration
+                - retry_policy: dict - Infrastructure retry policy
                 - endpoint_enabled: bool - Whether exposed as HTTP endpoint
                 - allowed_methods: list[str] | None - Allowed HTTP methods
                 - disable_global_key: bool - Whether global API key is disabled

@@ -54,7 +54,11 @@ from bifrost.contracts.organizations import OrganizationCreate, OrganizationUpda
 from bifrost.contracts.solutions import SolutionCandidateDeployEnqueued
 from bifrost.contracts.tables import TableCreate, TableUpdate
 from bifrost.contracts.users import RoleCreate, RoleUpdate
-from bifrost.contracts.workflows import WorkflowUpdateRequest
+from bifrost.contracts.workflows import (
+    ExecutionRetryFailure,
+    ExecutionRetryPolicy,
+    WorkflowUpdateRequest,
+)
 
 __all__ = [
     # Enums
@@ -73,6 +77,8 @@ __all__ = [
     "RoleUpdate",
     # Workflows
     "WorkflowUpdateRequest",
+    "ExecutionRetryFailure",
+    "ExecutionRetryPolicy",
     # Forms
     "FormCreate",
     "FormUpdate",

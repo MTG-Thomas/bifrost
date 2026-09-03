@@ -10,7 +10,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.models.enums import FormAccessLevel
-from src.models.contracts.base import RetryPolicy
+from src.models.contracts.base import ExecutionRetryPolicy
 
 if TYPE_CHECKING:
     pass
@@ -89,8 +89,10 @@ class WorkflowMetadata(BaseModel):
     execution_mode: Literal["sync", "async"] = Field(default="sync", description="Execution mode")
     timeout_seconds: int = Field(default=1800, ge=0, le=86400, description="Max execution time in seconds. 0 = no timeout. Default 1800 (30 min), max 86400 (24h).")
 
-    # Retry policy (for future use)
-    retry_policy: RetryPolicy | None = Field(default=None, description="Retry configuration")
+    retry_policy: ExecutionRetryPolicy = Field(
+        default_factory=ExecutionRetryPolicy,
+        description="Execution-engine retry policy",
+    )
 
     # HTTP Endpoint configuration
     endpoint_enabled: bool = Field(default=False, description="Whether workflow is exposed as HTTP endpoint")
@@ -189,6 +191,13 @@ class RegisterWorkflowRequest(BaseModel):
             "reactivating; pass an empty list to clear."
         ),
     )
+    retry_policy: ExecutionRetryPolicy | None = Field(
+        default=None,
+        description=(
+            "Policy for retrying eligible infrastructure failures. Omit to "
+            "preserve the policy when reactivating an existing workflow."
+        ),
+    )
 
 
 class RegisterWorkflowResponse(BaseModel):
@@ -200,6 +209,7 @@ class RegisterWorkflowResponse(BaseModel):
     type: str = Field(..., description="Executable type: workflow, tool, or data_provider")
     description: str | None = Field(default=None, description="Workflow description")
     organization_id: str | None = Field(default=None, description="Organization ID if org-scoped, null for global")
+    retry_policy: ExecutionRetryPolicy = Field(default_factory=ExecutionRetryPolicy)
 
 
 # ==================== WORKFLOW VALIDATION ====================
@@ -346,6 +356,10 @@ class WorkflowUpdateRequest(BaseModel):
     execution_mode: Literal["sync", "async"] | None = Field(
         default=None,
         description="Execution mode: 'sync' for immediate response, 'async' for background execution"
+    )
+    retry_policy: ExecutionRetryPolicy | None = Field(
+        default=None,
+        description="Execution-engine retry policy",
     )
 
     # Economics - value metrics for reporting
