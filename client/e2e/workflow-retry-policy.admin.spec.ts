@@ -92,10 +92,13 @@ test.describe("Workflow infrastructure retry policy", () => {
 			version: "execution-retry/v1",
 			enabled: true,
 			max_attempts: 3,
-		retry_on: expect.arrayContaining(["worker_lost", "subprocess_crash"]),
+			retry_on: expect.arrayContaining([
+				"worker_lost",
+				"subprocess_crash",
+			]),
+		});
+		expect(
+			(persisted?.retry_policy as { retry_on: string[] }).retry_on,
+		).toHaveLength(2);
 	});
-	expect(
-		(persisted?.retry_policy as { retry_on: string[] }).retry_on,
-	).toHaveLength(2);
-});
 });
