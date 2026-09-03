@@ -733,7 +733,7 @@ client_docs() {
         --profile client run --rm \
         -e "DOCS_CAPTURE_IDS=$capture_ids" \
         playwright-runner \
-        npx playwright test --project=docs "${passthrough[@]}"
+        node e2e/support/run-playwright.mjs --project=docs "${passthrough[@]}"
     return 0
 }
 
