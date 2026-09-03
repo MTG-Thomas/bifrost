@@ -52,7 +52,7 @@ test.describe("Workflow infrastructure retry policy", () => {
 	}) => {
 		await page.goto("/workflows");
 		await page.getByPlaceholder(/search by name/i).fill(WORKFLOW_FUNCTION);
-		await page.getByRole("button", { name: "Table view" }).click();
+		await page.getByLabel("Table view").click();
 
 		const workflowRow = page.getByRole("row", {
 			name: new RegExp(WORKFLOW_FUNCTION),
