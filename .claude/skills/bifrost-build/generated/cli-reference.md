@@ -2446,6 +2446,8 @@ Options:
   --role-ids TEXT                 Role refs (UUID or name) for role_based
                                   access. Repeat the flag for multiple, or
                                   pass a comma-separated list.
+  --retry-policy TEXT             Retry policy as JSON or @path to a JSON/YAML
+                                  file.
   --json                          Emit JSON instead of human-readable output.
   --help                          Show this message and exit.
 ```
@@ -2526,6 +2528,8 @@ Options:
   --description TEXT              description
   --category TEXT                 category
   --timeout-seconds INTEGER       timeout_seconds
+  --retry-policy TEXT             retry_policy as JSON literal or @path to a
+                                  YAML/JSON file.
   --tags TEXT                     tags (repeat for multiple).
   --endpoint-enabled / --no-endpoint-enabled
                                   endpoint_enabled (tri-state; omit to leave

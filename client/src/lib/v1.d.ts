@@ -3577,6 +3577,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspace-promotions/preview-jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Enqueue Workspace Promotion Preview */
+        post: operations["enqueue_workspace_promotion_preview_api_workspace_promotions_preview_jobs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspace-promotions/drafts": {
         parameters: {
             query?: never;
@@ -10791,6 +10808,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/platform/workers/commands/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List audited worker controls */
+        get: operations["list_worker_control_commands_api_platform_workers_commands_history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/platform/queue": {
         parameters: {
             query?: never;
@@ -11791,6 +11825,38 @@ export interface components {
         AdminRevokeRequest: {
             /** User Id */
             user_id: string;
+        };
+        /** AdmissionDiagnostics */
+        AdmissionDiagnostics: {
+            /**
+             * Attempts
+             * @default 0
+             */
+            attempts: number;
+            /**
+             * Successes
+             * @default 0
+             */
+            successes: number;
+            /** Rejections */
+            rejections?: {
+                [key: string]: number;
+            };
+            /**
+             * Wait Seconds Total
+             * @default 0
+             */
+            wait_seconds_total: number;
+            /**
+             * Wait Seconds Max
+             * @default 0
+             */
+            wait_seconds_max: number;
+            /**
+             * Wait Seconds Average
+             * @default 0
+             */
+            wait_seconds_average: number;
         };
         /**
          * AffectedEntity
@@ -17498,6 +17564,40 @@ export interface components {
             } | null;
             /** Sequence */
             sequence: number;
+        };
+        /**
+         * ExecutionRetryFailure
+         * @description Execution-engine failures that may start another attempt.
+         * @enum {string}
+         */
+        ExecutionRetryFailure: "worker_lost" | "subprocess_crash";
+        /**
+         * ExecutionRetryPolicy
+         * @description Versioned policy for retries after execution-engine failures.
+         */
+        ExecutionRetryPolicy: {
+            /**
+             * Version
+             * @default execution-retry/v1
+             * @constant
+             */
+            version: "execution-retry/v1";
+            /**
+             * Enabled
+             * @default false
+             */
+            enabled: boolean;
+            /**
+             * Max Attempts
+             * @description Total attempts, including the initial execution
+             * @default 2
+             */
+            max_attempts: number;
+            /**
+             * Retry On
+             * @description Execution-engine failures eligible for another attempt
+             */
+            retry_on?: components["schemas"]["ExecutionRetryFailure"][];
         };
         /**
          * ExecutionStats
@@ -23401,6 +23501,21 @@ export interface components {
             max_workers?: number | null;
             /** Processes */
             processes?: components["schemas"]["ProcessInfo"][];
+            /** Available Slots */
+            available_slots?: number | null;
+            /** Saturation Ratio */
+            saturation_ratio?: number | null;
+            /** Memory Current Bytes */
+            memory_current_bytes?: number | null;
+            /** Memory Max Bytes */
+            memory_max_bytes?: number | null;
+            /** Memory Utilization */
+            memory_utilization?: number | null;
+            /** Estimated Drain Seconds */
+            estimated_drain_seconds?: number | null;
+            /** Health Reasons */
+            health_reasons?: string[];
+            admission?: components["schemas"]["AdmissionDiagnostics"];
         };
         /**
          * PoolStatsResponse
@@ -23432,6 +23547,17 @@ export interface components {
              * @description Total busy processes across all pools
              */
             total_busy: number;
+            /** Total Available Slots */
+            total_available_slots?: number | null;
+            /**
+             * Saturated Workers
+             * @default 0
+             */
+            saturated_workers: number;
+            /** Admission Rejections */
+            admission_rejections?: {
+                [key: string]: number;
+            };
         };
         /**
          * PoolSummary
@@ -23518,6 +23644,17 @@ export interface components {
              * @description Memory limit of the worker container in bytes (from cgroup, -1 if unlimited)
              */
             memory_max_bytes?: number | null;
+            /** Available Slots */
+            available_slots?: number | null;
+            /** Saturation Ratio */
+            saturation_ratio?: number | null;
+            /** Memory Utilization */
+            memory_utilization?: number | null;
+            /** Estimated Drain Seconds */
+            estimated_drain_seconds?: number | null;
+            /** Health Reasons */
+            health_reasons?: string[];
+            admission?: components["schemas"]["AdmissionDiagnostics"];
         };
         /**
          * PoolsListResponse
@@ -23702,6 +23839,72 @@ export interface components {
             message: string;
             /** Path */
             path?: string | null;
+            subject?: components["schemas"]["PromotionDiagnosticSubject"] | null;
+            /**
+             * Enforcement
+             * @default absolute
+             * @enum {string}
+             */
+            enforcement: "absolute" | "differential";
+        };
+        /** PromotionDiagnosticChange */
+        PromotionDiagnosticChange: {
+            baseline: components["schemas"]["PromotionDiagnostic"];
+            candidate: components["schemas"]["PromotionDiagnostic"];
+        };
+        /**
+         * PromotionDiagnosticDecision
+         * @description Legacy and differential decisions bound to one immutable candidate.
+         */
+        PromotionDiagnosticDecision: {
+            /**
+             * Schema Version
+             * @default bifrost.workspace-diagnostic-decision/v1
+             * @constant
+             */
+            schema_version: "bifrost.workspace-diagnostic-decision/v1";
+            /** Legacy Blocked */
+            legacy_blocked: boolean;
+            /** Differential Blocked */
+            differential_blocked: boolean;
+        };
+        /**
+         * PromotionDiagnosticDelta
+         * @description Immutable comparison of candidate findings with its exact active base.
+         */
+        PromotionDiagnosticDelta: {
+            /**
+             * Schema Version
+             * @default bifrost.workspace-diagnostic-delta/v1
+             * @constant
+             */
+            schema_version: "bifrost.workspace-diagnostic-delta/v1";
+            /** Baseline Release Id */
+            baseline_release_id: string;
+            /** Baseline Manifest Id */
+            baseline_manifest_id: string;
+            /** Affected Paths */
+            affected_paths: string[];
+            /** Introduced */
+            introduced?: components["schemas"]["PromotionDiagnostic"][];
+            /** Worsened */
+            worsened?: components["schemas"]["PromotionDiagnosticChange"][];
+            /** Unchanged */
+            unchanged?: components["schemas"]["PromotionDiagnostic"][];
+            /** Resolved */
+            resolved?: components["schemas"]["PromotionDiagnostic"][];
+            /** Unrelated */
+            unrelated?: components["schemas"]["PromotionDiagnostic"][];
+        };
+        /**
+         * PromotionDiagnosticSubject
+         * @description Stable identity for one concrete diagnostic finding.
+         */
+        PromotionDiagnosticSubject: {
+            /** Kind */
+            kind: string;
+            /** Key */
+            key: string;
         };
         /** PromotionEntry */
         PromotionEntry: {
@@ -24082,6 +24285,8 @@ export interface components {
             worker_id: string;
             /** Processes Affected */
             processes_affected: number;
+            /** Command Id */
+            command_id?: string | null;
         };
         /**
          * RecycleProcessRequest
@@ -24109,6 +24314,8 @@ export interface components {
             process_id?: string | null;
             /** Pid */
             pid?: number | null;
+            /** Command Id */
+            command_id?: string | null;
         };
         /**
          * RefreshJobRun
@@ -24237,6 +24444,8 @@ export interface components {
              * @description Role IDs for role_based access. Omit to leave unchanged when reactivating; pass an empty list to clear.
              */
             role_ids?: string[] | null;
+            /** @description Policy for retrying eligible infrastructure failures. */
+            retry_policy?: components["schemas"]["ExecutionRetryPolicy"];
         };
         /**
          * RegisterWorkflowResponse
@@ -24278,6 +24487,7 @@ export interface components {
              * @description Organization ID if org-scoped, null for global
              */
             organization_id?: string | null;
+            retry_policy?: components["schemas"]["ExecutionRetryPolicy"];
         };
         /**
          * ReimportJobResponse
@@ -24505,30 +24715,6 @@ export interface components {
              * @description Result message
              */
             message: string;
-        };
-        /**
-         * RetryPolicy
-         * @description Retry policy configuration for workflow execution
-         */
-        RetryPolicy: {
-            /**
-             * Max Attempts
-             * @description Total attempts including initial execution
-             * @default 3
-             */
-            max_attempts: number;
-            /**
-             * Backoff Seconds
-             * @description Initial backoff duration in seconds
-             * @default 2
-             */
-            backoff_seconds: number;
-            /**
-             * Max Backoff Seconds
-             * @description Maximum backoff cap in seconds
-             * @default 60
-             */
-            max_backoff_seconds: number;
         };
         /**
          * RevokeAllResponse
@@ -28258,6 +28444,34 @@ export interface components {
              */
             rate_limited_count_24h: number;
         };
+        /** WorkerControlCommandPublic */
+        WorkerControlCommandPublic: {
+            /** Id */
+            id: string;
+            /** Worker Id */
+            worker_id: string;
+            /** Action */
+            action: string;
+            /** Process Id */
+            process_id: number | null;
+            /** Status */
+            status: string;
+            /** Requested By User Id */
+            requested_by_user_id: string;
+            /** Reason */
+            reason: string;
+            /** Failure Message */
+            failure_message: string | null;
+            /**
+             * Requested At
+             * Format: date-time
+             */
+            requested_at: string;
+            /** Claimed At */
+            claimed_at: string | null;
+            /** Completed At */
+            completed_at: string | null;
+        };
         /**
          * WorkerMetricPoint
          * @description A single time-series data point for the memory chart.
@@ -28396,6 +28610,7 @@ export interface components {
             execution_context?: {
                 [key: string]: unknown;
             } | null;
+            retry_policy?: components["schemas"]["ExecutionRetryPolicy"];
             attempt_history?: components["schemas"]["ExecutionAttemptHistory"];
         };
         /**
@@ -28750,8 +28965,8 @@ export interface components {
              * @default 1800
              */
             timeout_seconds: number;
-            /** @description Retry configuration */
-            retry_policy?: components["schemas"]["RetryPolicy"] | null;
+            /** @description Execution-engine retry policy */
+            retry_policy?: components["schemas"]["ExecutionRetryPolicy"];
             /**
              * Endpoint Enabled
              * @description Whether workflow is exposed as HTTP endpoint
@@ -29005,6 +29220,8 @@ export interface components {
              * @description Execution mode: 'sync' for immediate response, 'async' for background execution
              */
             execution_mode?: ("sync" | "async") | null;
+            /** @description Execution-engine retry policy */
+            retry_policy?: components["schemas"]["ExecutionRetryPolicy"] | null;
             /**
              * Time Saved
              * @description Minutes saved per execution (for ROI reporting)
@@ -29315,6 +29532,8 @@ export interface components {
              * @enum {string}
              */
             risk_class: "R0" | "R1" | "R2";
+            /** Risk Paths */
+            risk_paths?: string[];
             /** Policy Version */
             policy_version: string;
             registration: components["schemas"]["PromotionRegistrationEvidence"];
@@ -29340,6 +29559,8 @@ export interface components {
             local_run?: components["schemas"]["PromotionRunEvidence"] | null;
             /** Diagnostics */
             diagnostics?: components["schemas"]["PromotionDiagnostic"][];
+            diagnostic_delta?: components["schemas"]["PromotionDiagnosticDelta"] | null;
+            diagnostic_decision?: components["schemas"]["PromotionDiagnosticDecision"] | null;
             /**
              * Lifecycle Status
              * @enum {string}
@@ -29578,6 +29799,8 @@ export interface components {
              * @enum {string}
              */
             risk_class: "R0" | "R1" | "R2";
+            /** Risk Paths */
+            risk_paths?: string[];
             /** Policy Version */
             policy_version: string;
             /** Closure */
@@ -29615,6 +29838,8 @@ export interface components {
             source_artifact_key?: string | null;
             /** Diagnostics */
             diagnostics: components["schemas"]["PromotionDiagnostic"][];
+            diagnostic_delta?: components["schemas"]["PromotionDiagnosticDelta"] | null;
+            diagnostic_decision?: components["schemas"]["PromotionDiagnosticDecision"] | null;
             /** Expires At */
             expires_at?: string | null;
         };
@@ -36532,6 +36757,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkspacePromotionPreviewResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enqueue_workspace_promotion_preview_api_workspace_promotions_preview_jobs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspacePromotionPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformJobAccepted"];
                 };
             };
             /** @description Validation Error */
@@ -49783,6 +50041,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RecycleAllResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_worker_control_commands_api_platform_workers_commands_history_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerControlCommandPublic"][];
                 };
             };
             /** @description Validation Error */
