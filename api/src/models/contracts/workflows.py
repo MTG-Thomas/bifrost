@@ -191,9 +191,12 @@ class RegisterWorkflowRequest(BaseModel):
             "reactivating; pass an empty list to clear."
         ),
     )
-    retry_policy: ExecutionRetryPolicy = Field(
-        default_factory=ExecutionRetryPolicy,
-        description="Policy for retrying eligible infrastructure failures.",
+    retry_policy: ExecutionRetryPolicy | None = Field(
+        default=None,
+        description=(
+            "Policy for retrying eligible infrastructure failures. Omit to "
+            "preserve the policy when reactivating an existing workflow."
+        ),
     )
 
 

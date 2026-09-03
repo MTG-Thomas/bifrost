@@ -83,7 +83,14 @@ class WorkflowMetadata(BaseModel):
     parameters: dict
     execution_mode: str
     timeout_seconds: int | None
-    retry_policy: dict
+    retry_policy: dict = Field(
+        default_factory=lambda: {
+            "version": "execution-retry/v1",
+            "enabled": False,
+            "max_attempts": 2,
+            "retry_on": [],
+        }
+    )
     endpoint_enabled: bool
     allowed_methods: list[str] | None
     disable_global_key: bool

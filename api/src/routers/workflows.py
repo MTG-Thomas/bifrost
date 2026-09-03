@@ -33,6 +33,7 @@ from src.models import (
     DeactivateWorkflowResponse,
     DeleteWorkflowRequest,
     EntityUsage,
+    ExecutionRetryPolicy,
     OrphanedWorkflowInfo,
     OrphanedWorkflowsResponse,
     RecreateFileResponse,
@@ -1513,7 +1514,14 @@ async def register_workflow(
         existing_wf.organization_id = org_uuid
         if request.access_level is not None:
             existing_wf.access_level = request.access_level
-        existing_wf.retry_policy = request.retry_policy.model_dump(mode="json")
+        if "retry_policy" in request.model_fields_set:
+            from src.services.execution.retry_policy import snapshot_retry_policy
+
+            existing_wf.retry_policy = snapshot_retry_policy(
+                request.retry_policy.model_dump(mode="json")
+                if request.retry_policy is not None
+                else None
+            )
         existing_wf.updated_at = datetime.now(timezone.utc)
         await db.flush()
     else:
@@ -1531,7 +1539,11 @@ async def register_workflow(
             is_active=True,
             organization_id=org_uuid,
             access_level=request.access_level if request.access_level is not None else "role_based",
-            retry_policy=request.retry_policy.model_dump(mode="json"),
+            retry_policy=(
+                request.retry_policy.model_dump(mode="json")
+                if request.retry_policy is not None
+                else ExecutionRetryPolicy().model_dump(mode="json")
+            ),
         )
         try:
             await add_workflow_registration(
