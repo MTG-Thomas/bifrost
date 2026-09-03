@@ -1013,7 +1013,8 @@ class AgentRunConsumer(BaseConsumer):
                             "llm_model": agent_run_ref.llm_model,
                         },
                     )
-            except asyncio.CancelledError:
+            except asyncio.CancelledError:  # NOSONAR
+                # Persist terminal chat cancellation before returning.
                 duration_ms = int((time.time() - start_time) * 1000)
                 if streamed_content and assistant_message_id is not None:
                     await executor._save_message(
@@ -1103,7 +1104,8 @@ class AgentRunConsumer(BaseConsumer):
                 cancel_watcher.cancel()
                 try:
                     await cancel_watcher
-                except asyncio.CancelledError:
+                except asyncio.CancelledError:  # NOSONAR
+                    # This owned watcher was explicitly cancelled above.
                     # Expected after explicitly cancelling the watcher above.
                     pass
 

@@ -652,7 +652,7 @@ async def deploy_application(
     deployment_id = uuid4()
     storage = ApplicationDeployStorage(job_id)
     worker_owns_source = False
-    tmp = tempfile.NamedTemporaryFile(
+    tmp = tempfile.NamedTemporaryFile(  # NOSONAR -- bounded upload spool.
         prefix="bifrost-app-upload-", suffix=".zip", delete=False
     )
     tmp_path = Path(tmp.name)

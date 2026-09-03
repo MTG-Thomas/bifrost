@@ -257,9 +257,7 @@ function getConversationId(
 ): string | null {
 	if (inputConversationId == null) return projection.conversation_id;
 	if (projection.conversation_id == null) return inputConversationId;
-	return projection.conversation_id === inputConversationId
-		? projection.conversation_id
-		: projection.conversation_id;
+	return projection.conversation_id;
 }
 
 function shouldApplyToConversation(
@@ -1241,7 +1239,9 @@ export function hydrateChatProjection(
 	}
 
 	if (snapshot.runs) {
-		for (const runId of Object.keys(snapshot.runs).sort()) {
+		for (const runId of Object.keys(snapshot.runs).sort((left, right) =>
+			left.localeCompare(right),
+		)) {
 			const incomingRun = snapshot.runs[runId];
 			if (!incomingRun) continue;
 			const existing =

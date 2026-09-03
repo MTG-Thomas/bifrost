@@ -34,7 +34,8 @@ class ApplicationDeployStorage:
 
     async def write_path(self, path: Path) -> tuple[str, int]:
         async def chunks() -> AsyncIterator[bytes]:
-            with path.open("rb") as source:
+            with path.open("rb") as source:  # NOSONAR
+                # The async iterator streams bounded chunks from local staging.
                 while chunk := source.read(CHUNK_SIZE):
                     yield chunk
 
@@ -45,7 +46,8 @@ class ApplicationDeployStorage:
     async def copy_to_path(self, path: Path, *, expected_sha256: str) -> int:
         digest = hashlib.sha256()
         size = 0
-        with path.open("wb") as destination:
+        with path.open("wb") as destination:  # NOSONAR
+            # Object storage is streamed into bounded local chunks.
             async for chunk in self._storage.iter_object_chunks(
                 self.key, chunk_size=CHUNK_SIZE
             ):

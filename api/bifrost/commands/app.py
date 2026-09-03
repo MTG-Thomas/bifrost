@@ -315,7 +315,8 @@ def deploy_cmd(path: str) -> None:
 
     async def run(zip_path: pathlib.Path) -> dict:
         client = _client(binding.api_url)
-        with zip_path.open("rb") as source:
+        # HTTPX owns the archive for the lifetime of this single CLI request.
+        with zip_path.open("rb") as source:  # NOSONAR -- local CLI upload stream.
             response = await client.post(
                 f"/api/applications/{binding.app_id}/deploy",
                 files={"source": ("app-source.zip", source, "application/zip")},
@@ -383,11 +384,12 @@ def start_cmd(
             check=True,
         )
 
+    proxy_origin = (public_url or f"http://127.0.0.1:{port}").rstrip("/")
     env = _vite_child_env(
         dict(os.environ),
         app_id=binding.app_id,
         org_id=org_id,
-        access_token=client._access_token,
+        proxy_origin=proxy_origin,
     )
     vite = subprocess.Popen(
         [npm, "run", "dev", "--", "--port", str(vite_port), "--strictPort"],
@@ -413,8 +415,7 @@ def start_cmd(
             runner = web.AppRunner(app)
             await runner.setup()
             await web.TCPSite(runner, bind_host, port).start()
-            origin = (public_url or f"http://127.0.0.1:{port}").rstrip("/")
-            click.echo(f"\n  Bifrost App → {origin}")
+            click.echo(f"\n  Bifrost App → {proxy_origin}")
             click.echo(f"  Live organization scope: {org_id or 'current user'}")
             click.echo("  Press Ctrl-C to stop.\n")
             try:
