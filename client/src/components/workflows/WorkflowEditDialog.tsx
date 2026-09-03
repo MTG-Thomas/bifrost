@@ -569,7 +569,12 @@ export function WorkflowEditDialog({
 												min={1}
 												max={10}
 												value={retryMaxAttempts}
-												onChange={(event) => setRetryMaxAttempts(Number(event.target.value))}
+												onChange={(event) => {
+													const value = event.currentTarget.valueAsNumber;
+													if (!Number.isNaN(value)) {
+														setRetryMaxAttempts(Math.min(10, Math.max(1, Math.round(value))));
+													}
+												}}
 											/>
 										</div>
 										<div className="space-y-3">
