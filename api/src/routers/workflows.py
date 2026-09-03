@@ -169,7 +169,7 @@ def _convert_workflow_orm_to_schema(workflow: WorkflowORM, used_by_count: int = 
         parameters=parameters,
         execution_mode=execution_mode,
         timeout_seconds=workflow.timeout_seconds if workflow.timeout_seconds is not None else 1800,
-        retry_policy=workflow.retry_policy,
+        retry_policy=getattr(workflow, "retry_policy", None) or {},
         endpoint_enabled=workflow.endpoint_enabled or False,
         allowed_methods=workflow.allowed_methods or ["POST"],
         disable_global_key=workflow.disable_global_key or False,
@@ -1593,7 +1593,7 @@ async def register_workflow(
         type=workflow.type,
         description=workflow.description,
         organization_id=str(workflow.organization_id) if workflow.organization_id else None,
-        retry_policy=workflow.retry_policy or {},
+        retry_policy=getattr(workflow, "retry_policy", None) or {},
     )
 
 

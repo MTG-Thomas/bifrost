@@ -5,6 +5,7 @@ from typing import Literal
 from uuid import UUID
 
 from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.contracts.base import ExecutionRetryPolicy
@@ -53,8 +54,10 @@ async def workflow_retry_policy_snapshot(
         return disabled_retry_policy()
     from src.models.orm.workflows import Workflow
 
-    workflow = await session.get(Workflow, workflow_id)
-    return snapshot_retry_policy(workflow.retry_policy if workflow else None)
+    policy = await session.scalar(
+        select(Workflow.retry_policy).where(Workflow.id == workflow_id)
+    )
+    return snapshot_retry_policy(policy)
 
 
 def should_retry_execution(
