@@ -3,17 +3,17 @@
 **Open-source automation platform for Integration Services** - Built to democratize best-in-class tooling before venture capital gets the chance to own something we're all incredibly passionate about.
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
-[![CI](https://github.com/MTG-Thomas/bifrost/actions/workflows/ci.yml/badge.svg)](https://github.com/MTG-Thomas/bifrost/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/MTG-Thomas/bifrost/graph/badge.svg)](https://codecov.io/gh/MTG-Thomas/bifrost)
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/quality_gate?project=MTG-Thomas_bifrost)](https://sonarcloud.io/summary/new_code?id=MTG-Thomas_bifrost)
-[![CodeQL](https://github.com/MTG-Thomas/bifrost/actions/workflows/codeql.yml/badge.svg)](https://github.com/MTG-Thomas/bifrost/actions/workflows/codeql.yml)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/MTG-Thomas/bifrost/badge)](https://securityscorecards.dev/viewer/?uri=github.com/MTG-Thomas/bifrost)
+[![CI](https://github.com/Midtown-Technology-Group/bifrost/actions/workflows/ci.yml/badge.svg)](https://github.com/Midtown-Technology-Group/bifrost/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/Midtown-Technology-Group/bifrost/graph/badge.svg)](https://codecov.io/gh/Midtown-Technology-Group/bifrost)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/quality_gate?project=Midtown-Technology-Group_bifrost)](https://sonarcloud.io/summary/new_code?id=Midtown-Technology-Group_bifrost)
+[![CodeQL](https://github.com/Midtown-Technology-Group/bifrost/actions/workflows/codeql.yml/badge.svg)](https://github.com/Midtown-Technology-Group/bifrost/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Midtown-Technology-Group/bifrost/badge)](https://securityscorecards.dev/viewer/?uri=github.com/Midtown-Technology-Group/bifrost)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13022/badge)](https://www.bestpractices.dev/en/projects/13022)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green.svg)](https://fastapi.tiangolo.com/)
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-blue.svg)](https://www.docker.com/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-blue.svg)](https://www.postgresql.org/)
-[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/MTG-Thomas/bifrost?utm_source=badge)
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/Midtown-Technology-Group/bifrost?utm_source=badge)
 
 ---
 
@@ -201,15 +201,16 @@ The test stack runs in Docker and is separate from your dev stack. Boot it once 
 # Backend tests (stack must be up)
 ./test.sh                                          # Unit tests (fast default)
 ./test.sh e2e                                      # Backend e2e
-./test.sh all                                      # Unit + e2e (mirrors CI)
+./test.sh all                                      # All backend tests, including slow tests
 ./test.sh tests/unit/test_foo.py::test_bar -v      # Passthrough to pytest
 
 # Client tests
 ./test.sh client unit                              # Vitest (no stack needed)
 ./test.sh client e2e                               # Playwright in containers
 
-# CI-equivalent (one-shot: boot → run → tear down)
-./test.sh ci
+# Required pre-PR gate and broader one-shot run
+./test.sh pre-pr                                 # Required clean-commit gate before a PR
+./test.sh ci                                     # All backend + full browser suites
 ```
 
 Parallel worktrees each get their own isolated stack, so you can run tests in several worktrees simultaneously without conflict.
@@ -292,9 +293,9 @@ testing expectations, and the Developer Certificate of Origin (DCO). See
 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) and [GOVERNANCE.md](GOVERNANCE.md) for
 community and maintainer policy.
 
-- [Open issues](https://github.com/MTG-Thomas/bifrost/issues)
-- [`help wanted`](https://github.com/MTG-Thomas/bifrost/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
-- [`good first issue`](https://github.com/MTG-Thomas/bifrost/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+- [Open issues](https://github.com/Midtown-Technology-Group/bifrost/issues)
+- [`help wanted`](https://github.com/Midtown-Technology-Group/bifrost/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
+- [`good first issue`](https://github.com/Midtown-Technology-Group/bifrost/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 
 ## License
 

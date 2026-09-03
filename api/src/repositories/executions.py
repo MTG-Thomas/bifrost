@@ -29,6 +29,7 @@ from src.models import (
     ExecutionLogPublic,
     WorkflowExecution,
 )
+from src.models.orm.executions import WorkflowExecutionAttempt as ExecutionAttempt
 from src.models.enums import ExecutionStatus
 from src.repositories.base import BaseRepository
 
@@ -78,6 +79,7 @@ class ExecutionRepository(BaseRepository[Execution]):
         execution_model: str | None = None,
         workflow_id: str | None = None,
         solution_deployment_id: str | None = None,
+        check_existing: bool = True,
     ) -> Execution:
         """
         Create a new execution record.
@@ -131,7 +133,11 @@ class ExecutionRepository(BaseRepository[Execution]):
         # A scheduled execution has a pre-existing row (inserted at schedule
         # time as SCHEDULED, promoted to PENDING by the scheduler). In that
         # case update-in-place instead of inserting a duplicate PK.
-        existing = await self.session.get(Execution, UUID(execution_id))
+        existing = (
+            await self.session.get(Execution, UUID(execution_id))
+            if check_existing
+            else None
+        )
         if existing is not None:
             if getattr(existing, "solution_deployment_id", None) != parsed_solution_deployment_id:
                 raise ValueError("immutable scheduled execution deployment pin mismatch")
@@ -181,7 +187,12 @@ class ExecutionRepository(BaseRepository[Execution]):
 
         self.session.add(execution)
         await self.session.flush()
-        await self.session.refresh(execution)
+        if check_existing:
+            # Preserve the historical repository contract for callers that do
+            # not know whether the row already exists. Immediate workflow
+            # dispatches pass check_existing=False and do not need DB-generated
+            # values before committing the known-new row.
+            await self.session.refresh(execution)
 
         logger.info(f"Created execution record: {execution_id} (status={status.value})")
         return execution
@@ -377,7 +388,10 @@ class ExecutionRepository(BaseRepository[Execution]):
                 logger.debug(f"invalid end_date {end_date!r}, ignoring filter: {e}")
 
         # Order by newest first
-        query = query.order_by(desc(Execution.started_at))
+        query = query.order_by(
+            desc(Execution.started_at).nulls_last(),
+            desc(Execution.id),
+        )
 
         # Pagination
         query = query.offset(offset).limit(limit + 1)  # +1 to check for more
@@ -464,6 +478,9 @@ class ExecutionRepository(BaseRepository[Execution]):
                 model=entry.model,
                 input_tokens=entry.input_tokens,
                 output_tokens=entry.output_tokens,
+                cache_read_tokens=entry.cache_read_tokens,
+                cache_write_tokens=entry.cache_write_tokens,
+                provider_cost=(str(entry.provider_cost) if entry.provider_cost is not None else None),
                 cost=str(entry.cost) if entry.cost else None,
                 duration_ms=entry.duration_ms,
                 timestamp=entry.timestamp.isoformat() if entry.timestamp else "",
@@ -478,6 +495,9 @@ class ExecutionRepository(BaseRepository[Execution]):
             totals_query = select(
                 func.coalesce(func.sum(AIUsage.input_tokens), 0).label("total_input"),
                 func.coalesce(func.sum(AIUsage.output_tokens), 0).label("total_output"),
+                func.coalesce(func.sum(AIUsage.cache_read_tokens), 0).label("total_cache_read"),
+                func.coalesce(func.sum(AIUsage.cache_write_tokens), 0).label("total_cache_write"),
+                func.coalesce(func.sum(AIUsage.provider_cost), Decimal("0")).label("total_provider_cost"),
                 func.coalesce(func.sum(AIUsage.cost), Decimal("0")).label("total_cost"),
                 func.coalesce(func.sum(AIUsage.duration_ms), 0).label("total_duration"),
                 func.count(AIUsage.id).label("call_count"),
@@ -489,6 +509,9 @@ class ExecutionRepository(BaseRepository[Execution]):
             ai_totals = AIUsageTotalsSimple(
                 total_input_tokens=int(totals_row.total_input or 0),
                 total_output_tokens=int(totals_row.total_output or 0),
+                total_cache_read_tokens=int(totals_row.total_cache_read or 0),
+                total_cache_write_tokens=int(totals_row.total_cache_write or 0),
+                total_provider_cost=str(totals_row.total_provider_cost or Decimal("0")),
                 total_cost=str(totals_row.total_cost or Decimal("0")),
                 total_duration_ms=int(totals_row.total_duration or 0),
                 call_count=int(totals_row.call_count or 0),
@@ -655,13 +678,36 @@ class ExecutionRepository(BaseRepository[Execution]):
 
         # Work not yet claimed by a consumer can be cancelled immediately.
         # Running work needs the existing Redis cancellation signal.
+        prior_status = execution.status
         execution.status = (  # type: ignore[assignment]
             ExecutionStatus.CANCELLING.value
             if execution.status == ExecutionStatus.RUNNING.value
             else ExecutionStatus.CANCELLED.value
         )
 
-        await self.session.flush()
+        if prior_status in {
+            ExecutionStatus.SCHEDULED.value,
+            ExecutionStatus.PENDING.value,
+        }:
+            completed_at = datetime.now(timezone.utc)
+            execution.completed_at = completed_at
+            attempt = await self.session.scalar(
+                select(ExecutionAttempt)
+                .where(
+                    ExecutionAttempt.execution_id == execution_id,
+                    ExecutionAttempt.completed_at.is_(None),
+                )
+                .with_for_update()
+            )
+            if attempt is not None:
+                attempt.status = "cancelled"
+                attempt.phase = "terminal"
+                attempt.failure_phase = "cancellation"
+                attempt.failure_code = "cancelled_before_claim"
+                attempt.completed_at = completed_at
+                attempt.heartbeat_at = completed_at
+
+        await self.session.commit()
         await self.session.refresh(execution)
 
         # Publish update
@@ -736,6 +782,7 @@ async def create_execution(
     workflow_id: str | None = None,
     solution_deployment_id: str | None = None,
     session: "AsyncSession | None" = None,
+    check_existing: bool = True,
 ) -> None:
     """
     Create a new execution record in PostgreSQL.
@@ -767,6 +814,7 @@ async def create_execution(
             execution_model=execution_model,
             workflow_id=workflow_id,
             solution_deployment_id=solution_deployment_id,
+            check_existing=check_existing,
         )
 
     if session is not None:

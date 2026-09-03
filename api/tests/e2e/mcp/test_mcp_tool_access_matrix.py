@@ -436,7 +436,12 @@ class TestMcpToolAccessMatrix:
 
     @pytest.mark.parametrize(
         "variant_key",
-        [k for (caller, _agent_org, k) in ADMIN_EXPECTED_VISIBLE if caller == "platform_admin"],
+        [
+            key
+            for (caller, _agent_org, key), expected_visible
+            in ADMIN_EXPECTED_VISIBLE.items()
+            if caller == "platform_admin" and expected_visible
+        ],
         ids=lambda k: f"admin__org_a_agent__{k}",
     )
     async def test_platform_admin_sees_attached_tool(

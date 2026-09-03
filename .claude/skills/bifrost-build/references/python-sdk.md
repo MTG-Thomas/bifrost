@@ -90,17 +90,18 @@ Treat event payloads as a versioned contract. Topic-triggered execution context 
 
 ### `agents`
 
-Use `agents.run()` when workflow orchestration needs a configured Bifrost agent. The result may be structured data or text according to the agent contract. Set bounded timeouts and do not recursively delegate without a stopping condition.
+Use `agents.run()` when workflow orchestration needs to wait for a configured Bifrost agent. The result may be structured data or text according to the agent contract. Use `agents.enqueue()` to return immediately with a run ID, then call `agents.get_run()` when you need its current status or result. Set bounded timeouts for synchronous runs and do not recursively delegate without a stopping condition.
 
 ### `ai`
 
-Use the configured model provider for completion, structured output, or streaming. Prefer structured output for machine-consumed results and validate it before side effects.
+Use the configured model provider for completion, structured output, or streaming. `ai.complete()` uses the profile marked Default unless `profile=` names another reusable profile. Prefer structured output for machine-consumed results and validate it before side effects.
 
 ```python
 from bifrost import ai
 
 response = await ai.complete(
     prompt="Summarize the incident in three bullets.",
+    profile="Summarization",  # Omit to use the platform default profile.
     max_tokens=250,
 )
 summary = response.content

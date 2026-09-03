@@ -13,16 +13,33 @@ import base64
 import hashlib
 import json
 import pathlib
+import re
 import subprocess
 import unicodedata
 from collections import deque
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, Mapping
 
 PROMOTION_BUNDLE_SCHEMA = "bifrost.workspace-promotion-bundle/v1"
 MAX_SNAPSHOT_FILES = 4_000
 MAX_CLOSURE_FILES = 200
-MAX_CLOSURE_BYTES = 4 * 1024 * 1024
+# Real Workspace vendor clients such as modules/meraki.py legitimately exceed
+# 4 MiB. This remains a strict decoded-byte budget shared by local compilation
+# and server validation; production activation can reuse/fetch reviewed blobs
+# instead of accepting an unbounded request body.
+MAX_CLOSURE_BYTES = 32 * 1024 * 1024
+WORKSPACE_EXECUTABLE_ROOTS = frozenset(
+    {
+        "agents",
+        "apps",
+        "features",
+        "helpers",
+        "integrations",
+        "modules",
+        "shared",
+        "workflows",
+    }
+)
 
 
 class PromotionBundleError(ValueError):
@@ -36,6 +53,15 @@ class PromotionBundle:
     files: tuple[dict[str, str], ...]
 
 
+@dataclass(frozen=True)
+class ProtectedMainProvenance:
+    """Exact reviewed Git source submitted with a production preview."""
+
+    repository: str
+    commit_sha: str
+    tree_sha: str
+
+
 def normalize_workspace_path(value: str) -> str:
     path = pathlib.PurePosixPath(value.replace("\\", "/").strip("/"))
     if not path.parts or any(part in {"", ".", ".."} for part in path.parts):
@@ -45,6 +71,16 @@ def normalize_workspace_path(value: str) -> str:
 
 def sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def is_executable_workspace_path(path: str) -> bool:
+    """Return whether a path belongs to the executable release-v1 tree."""
+
+    normalized = normalize_workspace_path(path)
+    return (
+        normalized.endswith(".py")
+        and normalized.split("/", 1)[0] in WORKSPACE_EXECUTABLE_ROOTS
+    )
 
 
 def snapshot_id(snapshot_files: dict[str, str]) -> str:
@@ -87,7 +123,7 @@ def discover_python_snapshot(
             {
                 normalize_workspace_path(line)
                 for line in result.stdout.splitlines()
-                if line
+                if line and is_executable_workspace_path(line)
             }
         )
 
@@ -97,7 +133,7 @@ def discover_python_snapshot(
             f"snapshot must contain 1-{MAX_SNAPSHOT_FILES} Python files"
         )
 
-    _reject_path_collisions(paths)
+    reject_path_collisions(paths)
     for path in paths:
         candidate = root / path
         if candidate.is_symlink():
@@ -117,6 +153,169 @@ def discover_python_snapshot(
             "workspace changed while promotion snapshot was read"
         )
     return first_hashes, second
+
+
+def _run_git_bytes(
+    root: pathlib.Path, *args: str, input_bytes: bytes | None = None
+) -> bytes:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            input=input_bytes,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise PromotionBundleError(
+            f"could not read reviewed Git source with git {' '.join(args)}"
+        ) from exc
+    return result.stdout
+
+
+def _git_hex(root: pathlib.Path, revision: str) -> str:
+    value = (
+        _run_git_bytes(root, "rev-parse", "--verify", revision).decode().strip().lower()
+    )
+    if len(value) != 40 or any(
+        character not in "0123456789abcdef" for character in value
+    ):
+        raise PromotionBundleError(
+            f"Git revision did not resolve to a full SHA: {revision}"
+        )
+    return value
+
+
+def _github_repository(remote_url: str) -> str:
+    value = remote_url.strip()
+    patterns = (
+        r"^https://github\.com/(?P<name>[^/]+/[^/]+?)(?:\.git)?$",
+        r"^ssh://git@github\.com/(?P<name>[^/]+/[^/]+?)(?:\.git)?$",
+        r"^git@github\.com:(?P<name>[^/]+/[^/]+?)(?:\.git)?$",
+    )
+    for pattern in patterns:
+        if match := re.match(pattern, value, flags=re.IGNORECASE):
+            return match.group("name")
+    raise PromotionBundleError(
+        "origin must identify a GitHub owner/repository for protected-main promotion"
+    )
+
+
+def protected_main_provenance(
+    root: pathlib.Path,
+    *,
+    source_ref: str = "origin/main",
+) -> ProtectedMainProvenance:
+    """Resolve immutable reviewed provenance without reading working-tree bytes."""
+
+    root = root.resolve()
+    commit_sha = _git_hex(root, f"{source_ref}^{{commit}}")
+    tree_sha = _git_hex(root, f"{commit_sha}^{{tree}}")
+    remote_url = _run_git_bytes(root, "remote", "get-url", "origin").decode().strip()
+    return ProtectedMainProvenance(
+        repository=_github_repository(remote_url),
+        commit_sha=commit_sha,
+        tree_sha=tree_sha,
+    )
+
+
+def refresh_protected_main(root: pathlib.Path) -> ProtectedMainProvenance:
+    """Fetch the authoritative protected branch before compiling a preview."""
+
+    root = root.resolve()
+    # Validate that the configured origin is the GitHub repository whose
+    # protected branch the API will independently read. This happens before
+    # network access so an accidental fork/local remote fails with a useful
+    # diagnostic instead of producing misleading provenance.
+    remote_url = _run_git_bytes(root, "remote", "get-url", "origin").decode().strip()
+    _github_repository(remote_url)
+    try:
+        _run_git_bytes(
+            root,
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "origin",
+            "+refs/heads/main:refs/remotes/origin/main",
+        )
+    except PromotionBundleError as exc:
+        raise PromotionBundleError(
+            "could not refresh authoritative origin/main; verify GitHub access and "
+            "run `git fetch origin main` before building a reviewed preview"
+        ) from exc
+    return protected_main_provenance(root)
+
+
+def discover_git_python_snapshot(
+    root: pathlib.Path,
+    *,
+    commit_sha: str,
+) -> tuple[dict[str, str], dict[str, bytes]]:
+    """Read tracked Python bytes directly from one immutable Git tree."""
+
+    root = root.resolve()
+    tree = _run_git_bytes(root, "ls-tree", "-r", "-z", commit_sha)
+    entries: list[tuple[str, str]] = []
+    for raw_entry in tree.split(b"\0"):
+        if not raw_entry:
+            continue
+        try:
+            metadata, raw_path = raw_entry.split(b"\t", 1)
+            mode, object_type, object_id = metadata.decode("ascii").split(" ")
+            path = normalize_workspace_path(raw_path.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise PromotionBundleError(
+                "reviewed Git tree contains an invalid entry"
+            ) from exc
+        if not is_executable_workspace_path(path):
+            continue
+        if mode == "120000":
+            raise PromotionBundleError(
+                f"symlinks are not eligible for promotion: {path}"
+            )
+        if object_type != "blob" or mode not in {"100644", "100755"}:
+            raise PromotionBundleError(f"unsupported reviewed Git object for {path}")
+        entries.append((path, object_id))
+    entries.sort()
+    if not entries or len(entries) > MAX_SNAPSHOT_FILES:
+        raise PromotionBundleError(
+            f"snapshot must contain 1-{MAX_SNAPSHOT_FILES} Python files"
+        )
+    reject_path_collisions(path for path, _object_id in entries)
+
+    batch_input = b"".join(
+        object_id.encode("ascii") + b"\n" for _, object_id in entries
+    )
+    batch = _run_git_bytes(root, "cat-file", "--batch", input_bytes=batch_input)
+    offset = 0
+    contents: dict[str, bytes] = {}
+    for path, expected_object_id in entries:
+        newline = batch.find(b"\n", offset)
+        if newline < 0:
+            raise PromotionBundleError(
+                "Git stopped while reading reviewed source blobs"
+            )
+        header = batch[offset:newline].decode("ascii", errors="replace").split(" ")
+        if len(header) != 3 or header[0] != expected_object_id or header[1] != "blob":
+            raise PromotionBundleError(
+                f"Git returned unexpected reviewed blob metadata for {path}"
+            )
+        try:
+            size = int(header[2])
+        except ValueError as exc:
+            raise PromotionBundleError(
+                f"Git returned an invalid blob size for {path}"
+            ) from exc
+        start = newline + 1
+        end = start + size
+        if end >= len(batch) or batch[end : end + 1] != b"\n":
+            raise PromotionBundleError(
+                f"Git returned incomplete reviewed bytes for {path}"
+            )
+        contents[path] = batch[start:end]
+        offset = end + 1
+    hashes = {path: sha256_bytes(raw) for path, raw in contents.items()}
+    return hashes, contents
 
 
 def _module_name(path: str) -> str:
@@ -143,7 +342,9 @@ def _module_index(snapshot_paths: Iterable[str]) -> dict[str, str]:
     return index
 
 
-def _reject_path_collisions(paths: Iterable[str]) -> None:
+def reject_path_collisions(paths: Iterable[str]) -> None:
+    """Reject paths that collide after Workspace normalization and case-folding."""
+
     identities: dict[str, str] = {}
     for raw_path in paths:
         path = normalize_workspace_path(raw_path)
@@ -160,72 +361,114 @@ def _resolve_imports(path: str, raw: bytes, modules: dict[str, str]) -> set[str]
         tree = ast.parse(raw.decode("utf-8"), filename=path)
     except (SyntaxError, UnicodeDecodeError) as exc:
         raise PromotionBundleError(f"cannot parse {path}: {exc}") from exc
-    current_module = _module_name(path)
-    package_parts = current_module.split(".")
-    if pathlib.PurePosixPath(path).name != "__init__.py":
-        package_parts = package_parts[:-1]
-    resolved: set[str] = set()
+    return resolve_imports_from_tree(path, tree, modules)
 
-    def add_module(name: str) -> None:
+
+def resolve_imports_from_tree(
+    path: str,
+    tree: ast.AST,
+    modules: Mapping[str, str],
+) -> set[str]:
+    """Resolve repo-local imports from an already parsed Python syntax tree."""
+
+    resolver = WorkspaceImportResolver(path, modules)
+    for node in ast.walk(tree):
+        resolver.scan(node)
+    return resolver.result()
+
+
+class WorkspaceImportResolver:
+    """Incrementally resolve repo-local imports while walking one syntax tree."""
+
+    def __init__(self, path: str, modules: Mapping[str, str]) -> None:
+        self.path = path
+        self.modules = modules
+        current_module = _module_name(path)
+        self.package_parts = current_module.split(".")
+        if pathlib.PurePosixPath(path).name != "__init__.py":
+            self.package_parts = self.package_parts[:-1]
+        self.resolved: set[str] = set()
+
+    def _add_module(self, name: str) -> None:
         parts = name.split(".")
         for length in range(len(parts), 0, -1):
             candidate = ".".join(parts[:length])
-            target = modules.get(candidate)
+            target = self.modules.get(candidate)
             if target:
-                resolved.add(target)
+                self.resolved.add(target)
                 return
 
-    for node in ast.walk(tree):
+    def _scan_import_from(self, node: ast.ImportFrom) -> None:
+        base_parts = self.package_parts[:]
+        if node.level:
+            trim = node.level - 1
+            base_parts = base_parts[: len(base_parts) - trim] if trim else base_parts
+        elif node.module:
+            base_parts = []
+        module_parts = (node.module or "").split(".") if node.module else []
+        base = ".".join([*base_parts, *module_parts])
+        if base:
+            self._add_module(base)
+        for alias in node.names:
+            if alias.name != "*":
+                self._add_module(
+                    ".".join(value for value in (base, alias.name) if value)
+                )
+
+    @staticmethod
+    def _literal_dynamic_import(node: ast.AST) -> str | None:
+        if not isinstance(node, ast.Call) or not node.args:
+            return None
+        first = node.args[0]
+        if not isinstance(first, ast.Constant) or not isinstance(first.value, str):
+            return None
+        if isinstance(node.func, ast.Name):
+            name = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            name = node.func.attr
+        else:
+            return None
+        return first.value if name in {"import_module", "__import__"} else None
+
+    def scan(self, node: ast.AST) -> None:
         if isinstance(node, ast.Import):
             for alias in node.names:
-                add_module(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            base_parts = package_parts[:]
-            if node.level:
-                trim = node.level - 1
-                base_parts = (
-                    base_parts[: len(base_parts) - trim] if trim else base_parts
-                )
-            elif node.module:
-                base_parts = []
-            module_parts = (node.module or "").split(".") if node.module else []
-            base = ".".join([*base_parts, *module_parts])
-            if base:
-                add_module(base)
-            for alias in node.names:
-                if alias.name != "*":
-                    add_module(".".join(value for value in (base, alias.name) if value))
-        elif (
-            isinstance(node, ast.Call)
-            and node.args
-            and isinstance(node.args[0], ast.Constant)
-            and isinstance(node.args[0].value, str)
-            and (
-                (
-                    isinstance(node.func, ast.Name)
-                    and node.func.id in {"import_module", "__import__"}
-                )
-                or (
-                    isinstance(node.func, ast.Attribute)
-                    and node.func.attr in {"import_module", "__import__"}
-                )
-            )
-        ):
-            add_module(node.args[0].value)
-    resolved.discard(path)
-    return resolved
+                self._add_module(alias.name)
+            return
+        if isinstance(node, ast.ImportFrom):
+            self._scan_import_from(node)
+            return
+        if module := self._literal_dynamic_import(node):
+            self._add_module(module)
+
+    def result(self) -> set[str]:
+        resolved = set(self.resolved)
+        resolved.discard(self.path)
+        return resolved
 
 
-def build_promotion_bundle(root: pathlib.Path, selected_path: str) -> PromotionBundle:
+def _build_bundle_from_snapshot(
+    *,
+    selected_path: str,
+    cohort_paths: tuple[str, ...] = (),
+    snapshot_files: dict[str, str],
+    contents: dict[str, bytes],
+) -> PromotionBundle:
     selected_path = normalize_workspace_path(selected_path)
-    snapshot_files, contents = discover_python_snapshot(root)
     if selected_path not in snapshot_files:
         raise PromotionBundleError(
-            f"selected path is not in the Git workspace: {selected_path}"
+            f"selected path is not in the Workspace snapshot: {selected_path}"
         )
     modules = _module_index(snapshot_files)
+    roots = tuple(sorted(set(cohort_paths) | {selected_path}))
+    missing_roots = [path for path in roots if path not in snapshot_files]
+    if missing_roots:
+        raise PromotionBundleError(
+            "promotion cohort paths are absent from reviewed source: "
+            + ", ".join(missing_roots)
+        )
     closure: set[str] = set()
-    queue = deque([selected_path])
+    queue = deque(roots)
     while queue:
         path = queue.popleft()
         if path in closure:
@@ -243,7 +486,7 @@ def build_promotion_bundle(root: pathlib.Path, selected_path: str) -> PromotionB
         raise PromotionBundleError(
             f"dependency closure exceeds {MAX_CLOSURE_BYTES} bytes; reviewed promotion is required"
         )
-    files = tuple(
+    files: tuple[dict[str, str], ...] = tuple(
         {
             "path": path,
             "sha256": snapshot_files[path],
@@ -258,10 +501,88 @@ def build_promotion_bundle(root: pathlib.Path, selected_path: str) -> PromotionB
     )
 
 
+def build_promotion_bundle(root: pathlib.Path, selected_path: str) -> PromotionBundle:
+    """Build a non-authoritative candidate from one stable working tree."""
+
+    snapshot_files, contents = discover_python_snapshot(root)
+    return _build_bundle_from_snapshot(
+        selected_path=selected_path,
+        snapshot_files=snapshot_files,
+        contents=contents,
+    )
+
+
+def build_reviewed_promotion_bundle(
+    root: pathlib.Path,
+    selected_path: str,
+    *,
+    source_ref: str = "origin/main",
+    cohort_paths: tuple[str, ...] = (),
+) -> tuple[PromotionBundle, ProtectedMainProvenance]:
+    """Build a production candidate from exact protected Git objects only."""
+
+    provenance = protected_main_provenance(root, source_ref=source_ref)
+    snapshot_files, contents = discover_git_python_snapshot(
+        root, commit_sha=provenance.commit_sha
+    )
+    return (
+        _build_bundle_from_snapshot(
+            selected_path=selected_path,
+            cohort_paths=cohort_paths,
+            snapshot_files=snapshot_files,
+            contents=contents,
+        ),
+        provenance,
+    )
+
+
+def reviewed_changed_python_paths(
+    root: pathlib.Path, *, commit_sha: str
+) -> tuple[str, ...]:
+    """Return executable paths changed by one reviewed commit's first parent."""
+
+    parent = _git_hex(root, f"{commit_sha}^")
+    raw = _run_git_bytes(
+        root,
+        "diff-tree",
+        "--no-commit-id",
+        "--name-only",
+        "-r",
+        "-z",
+        parent,
+        commit_sha,
+    )
+    paths: list[str] = []
+    for item in raw.split(b"\0"):
+        if not item:
+            continue
+        try:
+            path = normalize_workspace_path(item.decode("utf-8"))
+        except UnicodeDecodeError as exc:
+            raise PromotionBundleError(
+                "reviewed commit contains an invalid path"
+            ) from exc
+        if not is_executable_workspace_path(path):
+            continue
+        try:
+            _run_git_bytes(root, "cat-file", "-e", f"{commit_sha}:{path}")
+        except PromotionBundleError as exc:
+            raise PromotionBundleError(
+                "declared-change promotion does not support deleted executable paths: "
+                + path
+            ) from exc
+        paths.append(path)
+    if not paths:
+        raise PromotionBundleError(
+            "reviewed commit has no executable Workspace paths to promote"
+        )
+    return tuple(sorted(set(paths)))
+
+
 def dependency_edges(contents: dict[str, bytes]) -> dict[str, set[str]]:
     """Return importer -> repo-local imports for one complete Python inventory."""
     normalized = {normalize_workspace_path(path): raw for path, raw in contents.items()}
-    _reject_path_collisions(normalized)
+    reject_path_collisions(normalized)
     modules = _module_index(normalized)
     return {
         path: _resolve_imports(path, raw, modules)
@@ -279,7 +600,7 @@ def dependency_edges_for_file(
     path = normalize_workspace_path(path)
     paths = {normalize_workspace_path(item) for item in snapshot_paths}
     paths.add(path)
-    _reject_path_collisions(paths)
+    reject_path_collisions(paths)
     return _resolve_imports(path, raw, _module_index(paths))
 
 
@@ -298,7 +619,7 @@ def validate_submitted_bundle(
         normalize_workspace_path(path): digest
         for path, digest in snapshot_files.items()
     }
-    _reject_path_collisions(normalized_snapshot)
+    reject_path_collisions(normalized_snapshot)
     for path, digest in normalized_snapshot.items():
         if not path.endswith(".py"):
             raise PromotionBundleError(f"snapshot contains a non-Python path: {path}")
@@ -373,11 +694,17 @@ __all__ = [
     "PROMOTION_BUNDLE_SCHEMA",
     "PromotionBundle",
     "PromotionBundleError",
+    "ProtectedMainProvenance",
     "build_promotion_bundle",
+    "build_reviewed_promotion_bundle",
     "dependency_edges",
     "dependency_edges_for_file",
+    "discover_git_python_snapshot",
+    "is_executable_workspace_path",
+    "refresh_protected_main",
     "git_source_revision",
     "normalize_workspace_path",
+    "protected_main_provenance",
     "sha256_bytes",
     "snapshot_id",
     "validate_submitted_bundle",

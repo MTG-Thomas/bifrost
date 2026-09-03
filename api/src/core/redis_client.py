@@ -18,7 +18,7 @@ import json
 import logging
 from decimal import Decimal
 from datetime import datetime, timezone
-from typing import Any, Awaitable, TypedDict, cast
+from typing import Any, Awaitable, NotRequired, TypedDict, cast
 
 import redis.asyncio as redis
 
@@ -58,6 +58,7 @@ class PendingExecution(TypedDict):
     script_name: str | None  # Name for inline code execution
     parameters: dict[str, Any]
     org_id: str | None
+    org_id_overridden: bool
     user_id: str
     user_name: str
     user_email: str
@@ -71,8 +72,10 @@ class PendingExecution(TypedDict):
     is_provider_org: bool  # Trusted caller provider-org membership
     is_external: bool  # Trusted caller external-access restriction
     event: dict[str, Any] | None  # EventContext fields if event-triggered; None otherwise
+    artifact_workspace_id: str | None
     created_at: str  # ISO format
     cancelled: bool
+    execution_attempt_id: NotRequired[str]
 
 
 class RedisClient:
@@ -111,6 +114,7 @@ class RedisClient:
         user_id: str,
         user_name: str,
         user_email: str,
+        org_id_overridden: bool = False,
         form_id: str | None = None,
         script_name: str | None = None,
         startup: Any | None = None,
@@ -125,6 +129,7 @@ class RedisClient:
         solution_deployment_id: str | None = None,
         runtime_evidence: dict[str, Any] | None = None,
         runtime_mode: str = "legacy",
+        artifact_workspace_id: str | None = None,
     ) -> None:
         """
         Store pending execution in Redis.
@@ -158,6 +163,7 @@ class RedisClient:
             "script_name": script_name,
             "parameters": parameters,
             "org_id": org_id,
+            "org_id_overridden": org_id_overridden,
             "user_id": user_id,
             "user_name": user_name,
             "user_email": user_email,
@@ -171,6 +177,7 @@ class RedisClient:
             "is_provider_org": is_provider_org,
             "is_external": is_external,
             "event": event,
+            "artifact_workspace_id": artifact_workspace_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "cancelled": False,
         }
@@ -512,7 +519,7 @@ class RedisClient:
     async def close(self) -> None:
         """Close Redis connection."""
         if self._redis:
-            await self._redis.close()
+            await self._redis.aclose()
             self._redis = None
 
     # =========================================================================

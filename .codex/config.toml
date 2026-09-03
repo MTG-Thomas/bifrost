@@ -1,0 +1,6 @@
+project_root_markers = [".git", "AGENTS.md", ".codex"]
+
+[mcp_servers.repowise]
+command = "repowise"
+args = ["mcp"]
+startup_timeout_sec = 30

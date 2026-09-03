@@ -52,6 +52,7 @@ import {
 	type Schedule,
 } from "@/components/execution/ScheduleControls";
 import { toast } from "sonner";
+import { useFormWebMcp } from "@/components/forms/use-form-webmcp";
 
 function createSubmissionNonce(): string {
 	const browserCrypto = globalThis.crypto;
@@ -129,6 +130,8 @@ interface FormRendererProps {
 	preventNavigation?: boolean;
 	/** Whether deferred-execution controls are available. */
 	allowScheduling?: boolean;
+	/** Expose safe, non-submitting tools to a browser agent. Disabled for embeds. */
+	enableWebMcp?: boolean;
 }
 
 // Helper function to convert DataProviderOption[] to ComboboxOption[]
@@ -214,9 +217,7 @@ const DataProviderField = memo(
 				<p className="text-sm text-destructive">{providerError}</p>
 			)}
 			{!providerError && fieldHelpText && (
-				<p className="text-sm text-muted-foreground">
-					{fieldHelpText}
-				</p>
+				<p className="text-sm text-muted-foreground">{fieldHelpText}</p>
 			)}
 			{fieldError && (
 				<p className="text-sm text-destructive">
@@ -253,6 +254,7 @@ function FormRendererInner({
 	onExecutionStart,
 	preventNavigation,
 	allowScheduling = !preventNavigation,
+	enableWebMcp = false,
 }: FormRendererProps) {
 	const navigate = useNavigate();
 	const submitForm = useSubmitForm();
@@ -675,6 +677,10 @@ function FormRendererInner({
 		handleSubmit,
 		formState: { errors, isValid },
 		setValue,
+		setFocus,
+		getValues,
+		getFieldState,
+		trigger,
 		watch,
 		control,
 	} = useForm({
@@ -1416,6 +1422,21 @@ function FormRendererInner({
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [fields, context]);
 
+	useFormWebMcp({
+		enabled:
+			enableWebMcp && !confirmationMarkdown && !isLoadingLaunchWorkflow,
+		formName: form.name,
+		visibleFields,
+		providerLoading: dataProviderState.loading,
+		providerErrors: dataProviderState.errors,
+		providerLoaded: dataProviderState.successfullyLoaded,
+		getValues,
+		getFieldState,
+		setValue,
+		setFocus,
+		trigger,
+	});
+
 	// Show loading state while launch workflow executes or data providers load (only on initial load)
 	const isAnyDataProviderLoading = Object.values(
 		dataProviderState.loading,
@@ -1651,6 +1672,7 @@ export function FormRenderer({
 	onExecutionStart,
 	preventNavigation,
 	allowScheduling,
+	enableWebMcp,
 }: FormRendererProps) {
 	const [searchParams] = useSearchParams();
 	const isEmbed = getEmbedTokenClaims()?.embed === true;
@@ -1670,6 +1692,7 @@ export function FormRenderer({
 				onExecutionStart={onExecutionStart}
 				preventNavigation={preventNavigation}
 				allowScheduling={allowScheduling}
+				enableWebMcp={enableWebMcp}
 			/>
 		</FormContextProvider>
 	);

@@ -1,23 +1,127 @@
-"""Preview-only rapid Workspace promotion HTTP surface."""
+"""Immutable rapid Workspace artifact, preparation, and canary HTTP surface."""
 
-from fastapi import APIRouter, HTTPException, status
+import hashlib
+import json
+import logging
+from typing import Annotated
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi.security import HTTPAuthorizationCredentials
 
 from src.config import get_settings
-from src.core.auth import Context, CurrentSuperuser
+from src.core.auth import Context, CurrentSuperuser, bearer_scheme
+from src.core.constants import SYSTEM_USER_UUID
 from src.core.db_deps import DbSession
+from src.jobs.platform.workspace_promotion_preview import (
+    WORKSPACE_PROMOTION_PREVIEW_DEFINITION,
+    WorkspacePromotionPreviewPayload,
+)
+from src.jobs.platform.workspace_release_prepare import (
+    WORKSPACE_RELEASE_PREPARE_DEFINITION,
+    WorkspaceReleasePreparePayload,
+)
+from src.models.contracts.platform_jobs import PlatformJobAccepted
 from src.models.contracts.workspace_promotions import (
+    SolutionDeployObligationListResponse,
+    SolutionDeployObligationResponse,
+    WorkspaceLiveStatusResponse,
+    WorkspacePromotionArtifactResponse,
+    WorkspacePromotionCanaryAccepted,
+    WorkspacePromotionCanaryRequest,
+    WorkspacePromotionDraftRequest,
+    WorkspacePromotionDraftResponse,
     WorkspacePromotionPreviewRequest,
     WorkspacePromotionPreviewResponse,
+    WorkspaceReleaseActivateRequest,
+    WorkspaceReleasePrepareRequest,
+    WorkspaceReleaseStatusResponse,
+    WorkspaceSourceReleaseDeclareRequest,
+    WorkspaceSourceReleaseDispositionRequest,
+    WorkspaceSourceReleaseListResponse,
+    WorkspaceSourceReleaseResponse,
+)
+from src.services.github_actions_oidc import (
+    GitHubActionsOIDCError,
+    WorkspaceSourceReleaseProducer,
+    authenticate_workspace_source_release_producer,
+    workspace_source_release_producer_configured,
+    workspace_source_release_tracking_expected,
+)
+from src.services.platform_jobs import (
+    enqueue_platform_job,
+    ensure_platform_job_notification,
+    publish_platform_job_update,
+)
+from src.services.solution_deploy_obligations import (
+    SolutionDeployObligationConflict,
+    SolutionDeployObligationService,
+)
+from src.services.workspace_draft_canary import (
+    WorkspaceDraftCanaryError,
+    WorkspaceDraftCanaryService,
 )
 from src.services.workspace_promotions import (
     WorkspacePromotionInvalid,
     WorkspacePromotionPreviewService,
+    build_workspace_promotion_preview_service,
+)
+from src.services.workspace_release_activation import (
+    WorkspaceReleaseActivationError,
+    WorkspaceReleaseActivationService,
+)
+from src.services.workspace_source_releases import (
+    WorkspaceSourceReleaseConflict,
+    WorkspaceSourceReleaseService,
 )
 
 router = APIRouter(
     prefix="/api/workspace-promotions",
-    tags=["Workspace rapid promotion (preview only)"],
+    tags=["Workspace rapid promotion"],
 )
+
+
+def _preview_job_dedupe_key(
+    organization_id: UUID, request: WorkspacePromotionPreviewRequest
+) -> str:
+    request_json = request.model_dump(mode="json")
+    canonical = json.dumps(request_json, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(f"{organization_id}:{canonical}".encode()).hexdigest()
+
+
+logger = logging.getLogger(__name__)
+
+
+async def _github_source_release_producer(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+) -> WorkspaceSourceReleaseProducer:
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="GitHub Actions OIDC bearer token is required",
+        )
+    settings = get_settings()
+    if not workspace_source_release_producer_configured(settings):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Workspace source-release OIDC producer is not configured",
+        )
+    try:
+        return await authenticate_workspace_source_release_producer(
+            credentials.credentials,
+            settings=settings,
+        )
+    except GitHubActionsOIDCError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+        ) from exc
+
+
+async def _service(
+    db: DbSession, organization_id: UUID
+) -> WorkspacePromotionPreviewService:
+    return await build_workspace_promotion_preview_service(db, organization_id)
 
 
 @router.post("/preview", response_model=WorkspacePromotionPreviewResponse)
@@ -39,11 +143,557 @@ async def preview_workspace_promotion(
             detail="an organization context is required",
         )
     try:
-        return await WorkspacePromotionPreviewService(db, ctx.org_id).preview(
+        return await (await _service(db, ctx.org_id)).preview(request, user.user_id)
+    except WorkspacePromotionInvalid as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "/preview-jobs",
+    response_model=PlatformJobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def enqueue_workspace_promotion_preview(
+    request: WorkspacePromotionPreviewRequest,
+    response: Response,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+) -> PlatformJobAccepted:
+    settings = get_settings()
+    if not settings.workspace_rapid_promotion_preview_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="rapid Workspace promotion preview is not enabled",
+        )
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    dedupe_key = _preview_job_dedupe_key(ctx.org_id, request)
+    job, reused = await enqueue_platform_job(
+        db,
+        WORKSPACE_PROMOTION_PREVIEW_DEFINITION,
+        WorkspacePromotionPreviewPayload(request=request),
+        dedupe_key=dedupe_key,
+        resource_lock_key=f"workspace-promotion-preview:{ctx.org_id}",
+        organization_id=ctx.org_id,
+        requested_by_user_id=user.user_id,
+        requested_by_email=user.email,
+        requested_by_name=user.name or user.email or "Unknown",
+        resource_type="workspace_promotion_preview",
+        resource_id=request.snapshot.snapshot_id,
+        title="Building immutable Workspace promotion preview",
+        action_url=None,
+    )
+    if reused and job.requested_by_user_id != str(user.user_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Workspace promotion preview is already in progress",
+        )
+    if job.notification_id is None:
+        try:
+            await ensure_platform_job_notification(db, job)
+        except Exception:
+            logger.warning(
+                "Workspace promotion preview queued without notification",
+                extra={"platform_job_id": str(job.id)},
+                exc_info=True,
+            )
+    await db.commit()
+    await db.refresh(job)
+    await publish_platform_job_update(job)
+    response.headers["Location"] = f"/api/platform-jobs/{job.id}"
+    return PlatformJobAccepted(
+        job_id=job.id,
+        notification_id=job.notification_id,
+        status=job.status,
+        reused=reused,
+    )
+
+
+@router.post(
+    "/drafts",
+    response_model=WorkspacePromotionDraftResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_workspace_promotion_draft(
+    request: WorkspacePromotionDraftRequest,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+) -> WorkspacePromotionDraftResponse:
+    settings = get_settings()
+    if not settings.workspace_rapid_promotion_draft_upload_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="local Workspace draft upload is not enabled",
+        )
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    try:
+        return await (await _service(db, ctx.org_id)).upload_draft(
             request, user.user_id
         )
     except WorkspacePromotionInvalid as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
+        ) from exc
+
+
+@router.get(
+    "/artifacts/{artifact_id}", response_model=WorkspacePromotionArtifactResponse
+)
+async def get_workspace_promotion_artifact(
+    artifact_id: UUID,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+):
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    try:
+        return await (await _service(db, ctx.org_id)).get_artifact(artifact_id)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace release artifact not found",
+        ) from exc
+
+
+@router.post(
+    "/artifacts/{artifact_id}/canary",
+    response_model=WorkspacePromotionCanaryAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def execute_workspace_promotion_canary(
+    artifact_id: UUID,
+    request: WorkspacePromotionCanaryRequest,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+):
+    settings = get_settings()
+    if not settings.workspace_release_prepare_canary_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace release canaries are not enabled",
+        )
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    service = WorkspaceDraftCanaryService(db, ctx.org_id)
+    try:
+        execution_id = await service.issue(
+            artifact_id,
+            request.parameters,
+            user_id=user.user_id,
+            user_name=user.name,
+            user_email=user.email,
+            is_platform_admin=user.is_platform_admin,
+            is_provider_org=user.is_provider_org,
+            is_external=user.is_external,
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace release artifact not found",
+        ) from exc
+    except WorkspaceDraftCanaryError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    return WorkspacePromotionCanaryAccepted(
+        execution_id=execution_id,
+        artifact_id=artifact_id,
+    )
+
+
+@router.post(
+    "/artifacts/{artifact_id}/prepare",
+    response_model=PlatformJobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def prepare_workspace_release(
+    artifact_id: UUID,
+    request: WorkspaceReleasePrepareRequest,
+    response: Response,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+) -> PlatformJobAccepted:
+    settings = get_settings()
+    if not settings.workspace_release_prepare_canary_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace release preparation is not enabled",
+        )
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    job, reused = await enqueue_platform_job(
+        db,
+        WORKSPACE_RELEASE_PREPARE_DEFINITION,
+        WorkspaceReleasePreparePayload(
+            artifact_id=artifact_id,
+            candidate_id=request.candidate_id,
+        ),
+        dedupe_key=f"{artifact_id}:{request.candidate_id}",
+        resource_lock_key=f"workspace-release:{ctx.org_id}",
+        organization_id=ctx.org_id,
+        requested_by_user_id=user.user_id,
+        requested_by_email=user.email,
+        requested_by_name=user.name or user.email or "Unknown",
+        resource_type="workspace_promotion_artifact",
+        resource_id=str(artifact_id),
+        title="Preparing immutable Workspace release",
+        action_url=None,
+    )
+    if reused and job.requested_by_user_id != str(user.user_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Workspace release preparation is already in progress",
+        )
+    if job.notification_id is None:
+        try:
+            await ensure_platform_job_notification(db, job)
+        except Exception:
+            logger.warning(
+                "Workspace release preparation queued without notification",
+                extra={"platform_job_id": str(job.id)},
+                exc_info=True,
+            )
+    await db.commit()
+    await db.refresh(job)
+    await publish_platform_job_update(job)
+    response.headers["Location"] = f"/api/platform-jobs/{job.id}"
+    return PlatformJobAccepted(
+        job_id=job.id,
+        notification_id=job.notification_id,
+        status=job.status,
+        reused=reused,
+    )
+
+
+@router.post(
+    "/releases/{release_id}/activate",
+    response_model=WorkspaceReleaseStatusResponse,
+)
+async def activate_workspace_release(
+    release_id: UUID,
+    request: WorkspaceReleaseActivateRequest,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+) -> WorkspaceReleaseStatusResponse:
+    if not get_settings().workspace_release_activation_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace release activation is not enabled",
+        )
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    service = WorkspaceReleaseActivationService(db, ctx.org_id)
+    try:
+        result = await service.activate(
+            release_id,
+            request,
+            authorized_by_user_id=user.user_id,
+            authorized_by_email=user.email,
+            authorized_by_name=user.name or user.email or "Unknown",
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace release not found",
+        ) from exc
+    except WorkspaceReleaseActivationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+    # The Live pointer and durable projection job are one committed transaction.
+    # This second phase only attaches optional UI notification/pubsub evidence;
+    # its failure cannot erase or downgrade the already queued durable job.
+    if result.activation_state != "live":
+        raise RuntimeError("Workspace release activation did not produce Live")
+    try:
+        result, job, _reused = await service.enqueue_projection(
+            release_id,
+            requested_by_user_id=user.user_id,
+            requested_by_email=user.email,
+            requested_by_name=user.name or user.email or "Unknown",
+        )
+        if job.notification_id is None:
+            try:
+                await ensure_platform_job_notification(db, job)
+                await db.commit()
+                await db.refresh(job)
+            except Exception:
+                logger.warning(
+                    "Workspace release lock-in queued without notification",
+                    extra={"platform_job_id": str(job.id)},
+                    exc_info=True,
+                )
+        await publish_platform_job_update(job)
+        return result
+    except Exception:
+        logger.exception(
+            "Workspace release is Live and history projection is durable, but "
+            "its notification could not be published",
+            extra={"workspace_release_row_id": str(release_id)},
+        )
+        await db.rollback()
+        return result
+
+
+@router.get("/live", response_model=WorkspaceLiveStatusResponse)
+async def get_live_workspace_release(
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+) -> WorkspaceLiveStatusResponse:
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    return await WorkspaceReleaseActivationService(db, ctx.org_id).get_live()
+
+
+@router.get("/releases/{release_id}", response_model=WorkspaceReleaseStatusResponse)
+async def get_workspace_release_status(
+    release_id: UUID,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+) -> WorkspaceReleaseStatusResponse:
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    try:
+        return await WorkspaceReleaseActivationService(db, ctx.org_id).get_release(
+            release_id
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace release not found",
+        ) from exc
+
+
+@router.post(
+    "/source-releases",
+    response_model=WorkspaceSourceReleaseResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def declare_workspace_source_release(
+    request: WorkspaceSourceReleaseDeclareRequest,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+) -> WorkspaceSourceReleaseResponse:
+    """Record the release disposition owed by one protected source commit."""
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    try:
+        return await WorkspaceSourceReleaseService(db, ctx.org_id).declare(
+            request,
+            created_by=user.user_id,
+        )
+    except (WorkspaceSourceReleaseConflict, SolutionDeployObligationConflict) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+
+@router.post(
+    "/source-releases/github",
+    response_model=WorkspaceSourceReleaseResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def declare_workspace_source_release_from_github(
+    request: WorkspaceSourceReleaseDeclareRequest,
+    db: DbSession,
+    producer: Annotated[
+        WorkspaceSourceReleaseProducer, Depends(_github_source_release_producer)
+    ],
+) -> WorkspaceSourceReleaseResponse:
+    """Record one protected-main push using a narrowly pinned Actions identity."""
+    if producer.source_commit_sha != request.source_commit_sha:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="OIDC source commit SHA does not match the declaration",
+        )
+    try:
+        return await WorkspaceSourceReleaseService(
+            db, producer.organization_id
+        ).declare(
+            request,
+            created_by=SYSTEM_USER_UUID,
+            producer=producer,
+        )
+    except (WorkspaceSourceReleaseConflict, SolutionDeployObligationConflict) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+
+@router.get(
+    "/source-releases",
+    response_model=WorkspaceSourceReleaseListResponse,
+)
+async def list_workspace_source_releases(
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> WorkspaceSourceReleaseListResponse:
+    """List pending, completed, and attention-required source releases."""
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    return await WorkspaceSourceReleaseService(db, ctx.org_id).list(
+        limit=limit,
+        tracking_expected=workspace_source_release_tracking_expected(get_settings()),
+    )
+
+
+@router.get(
+    "/solution-deploy-obligations",
+    response_model=SolutionDeployObligationListResponse,
+)
+async def list_solution_deploy_obligations(
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> SolutionDeployObligationListResponse:
+    """List reviewed Solution source that requires an explicit deployment."""
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    return await SolutionDeployObligationService(db, ctx.org_id).list(limit=limit)
+
+
+@router.get(
+    "/solution-deploy-obligations/{obligation_id}",
+    response_model=SolutionDeployObligationResponse,
+)
+async def get_solution_deploy_obligation(
+    obligation_id: UUID,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+) -> SolutionDeployObligationResponse:
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    try:
+        return await SolutionDeployObligationService(db, ctx.org_id).get(obligation_id)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Solution deploy obligation not found",
+        ) from exc
+
+
+@router.get(
+    "/source-releases/{source_release_id}",
+    response_model=WorkspaceSourceReleaseResponse,
+)
+async def get_workspace_source_release(
+    source_release_id: UUID,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+) -> WorkspaceSourceReleaseResponse:
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    try:
+        return await WorkspaceSourceReleaseService(db, ctx.org_id).get(
+            source_release_id
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace source release not found",
+        ) from exc
+
+
+@router.post(
+    "/source-releases/{source_release_id}/disposition",
+    response_model=WorkspaceSourceReleaseResponse,
+)
+async def set_workspace_source_release_disposition(
+    source_release_id: UUID,
+    request: WorkspaceSourceReleaseDispositionRequest,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+) -> WorkspaceSourceReleaseResponse:
+    """Explicitly defer or classify a reviewed source commit as non-production."""
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    try:
+        return await WorkspaceSourceReleaseService(
+            db, ctx.org_id
+        ).set_manual_disposition(
+            source_release_id,
+            disposition=request.disposition,
+            reason=request.reason,
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace source release not found",
+        ) from exc
+    except WorkspaceSourceReleaseConflict as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc

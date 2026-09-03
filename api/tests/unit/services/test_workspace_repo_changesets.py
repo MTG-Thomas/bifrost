@@ -28,6 +28,22 @@ from src.services.workspace_repo_changesets import (
     WorkspaceRepoChangesetService,
     require_organization_id,
 )
+from src.services.workspace_release_files import WorkspaceReleasePathGoverned
+
+
+@pytest.fixture(autouse=True)
+def _no_active_workspace_release(monkeypatch):
+    async def mutable(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "src.services.workspace_repo_changesets.reject_release_governed_paths",
+        mutable,
+    )
+    monkeypatch.setattr(
+        "src.services.workflow_registration.guard_workspace_registration_mutation",
+        mutable,
+    )
 
 
 class MemoryRepo:
@@ -194,6 +210,74 @@ def service(files=None, organization_id=None):
 def test_repo_changesets_require_an_organization_scope():
     with pytest.raises(OrganizationScopeRequired, match="organization-scoped"):
         require_organization_id(None)
+
+
+@pytest.mark.asyncio
+async def test_stage_rejects_path_governed_by_immutable_live(monkeypatch):
+    path = "features/existing.py"
+    svc = service({path: b"VALUE = 1\n"})
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
+
+    async def governed(_db, _organization_id, paths):
+        selected = list(paths)
+        raise WorkspaceReleasePathGoverned(
+            selected[0], "sha256:" + "a" * 64
+        )
+
+    monkeypatch.setattr(
+        "src.services.workspace_repo_changesets.reject_release_governed_paths",
+        governed,
+    )
+
+    with pytest.raises(ChangesetInvalid, match="use `bifrost promote`"):
+        await svc.stage(
+            row.id,
+            WorkspaceRepoFileMutationRequest(
+                path=path,
+                operation="write",
+                content_base64=base64.b64encode(b"VALUE = 2\n").decode(),
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_activation_rechecks_release_governance_after_validation(monkeypatch):
+    path = "features/existing.py"
+    source = b"VALUE = 1\n"
+    svc = service({path: source})
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
+    await svc.stage(
+        row.id,
+        WorkspaceRepoFileMutationRequest(
+            path=path,
+            operation="write",
+            content_base64=base64.b64encode(b"VALUE = 2\n").decode(),
+        ),
+    )
+    monkeypatch.setattr(
+        "src.services.workspace_repo_changesets.DeactivationProtectionService.detect_pending_deactivations",
+        AsyncMock(return_value=([], [])),
+    )
+    validation = await svc.validate(row.id)
+    assert validation.valid is True
+
+    async def governed(_db, _organization_id, paths):
+        selected = list(paths)
+        raise WorkspaceReleasePathGoverned(
+            selected[0], "sha256:" + "a" * 64
+        )
+
+    monkeypatch.setattr(
+        "src.services.workspace_repo_changesets.reject_release_governed_paths",
+        governed,
+    )
+
+    with pytest.raises(ChangesetInvalid, match="use `bifrost promote`"):
+        await svc.activate(
+            row.id,
+            WorkspaceRepoActivateRequest(candidate_id=validation.candidate_id),
+            "tester",
+        )
 
 
 def test_verify_requires_an_exact_existing_hash_without_content():

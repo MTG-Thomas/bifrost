@@ -100,7 +100,9 @@ class TestContractGate:
         )
         assert out == ""
 
-    def test_contract_mismatch_message_has_upgrade_instructions(self, monkeypatch):
+    def test_contract_mismatch_message_has_upgrade_instructions(
+        self, monkeypatch, capsys
+    ):
         _patch_version(monkeypatch, "1.2.3")
         from bifrost import cli
 
@@ -114,6 +116,8 @@ class TestContractGate:
         ):
             with pytest.raises(SystemExit):
                 cli._check_cli_version()
+
+        assert "pipx install --force" in capsys.readouterr().err
 
 
 # --------------------------------------------------------------------------- #
@@ -172,14 +176,14 @@ class TestOldServerFallback:
         assert out != ""  # a visible warning was emitted
         # Did not raise SystemExit (else _run would have propagated it).
 
-    def test_old_server_same_version_silent(self, monkeypatch):
-        """Old server but versions happen to match → nothing to warn about."""
+    def test_old_server_same_version_warns(self, monkeypatch):
+        """A matching build still cannot prove contract compatibility."""
         out = _run(
             monkeypatch,
             {"version": "1.2.3"},  # no contract_version, version equal
             installed="1.2.3",
         )
-        assert out == ""
+        assert "predates contract versioning" in out
 
 
 # --------------------------------------------------------------------------- #

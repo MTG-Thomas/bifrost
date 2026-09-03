@@ -58,6 +58,22 @@ def graphql_payload(request: httpx.Request) -> dict:
     return json.loads(request.content.decode())
 
 
+def test_workspace_release_provenance_is_written_as_commit_trailers() -> None:
+    release_row_id = uuid4()
+    request = replace(
+        commit_request(changeset_id=release_row_id),
+        workspace_release_id="sha256:" + "a" * 64,
+        workspace_release_row_id=release_row_id,
+        workspace_release_ledger_sha256="b" * 64,
+    )
+
+    _headline, body = request.github_message()
+
+    assert f"Workspace-Release-ID: {'sha256:' + 'a' * 64}" in body
+    assert f"Workspace-Release-Row-ID: {release_row_id}" in body
+    assert f"Workspace-Release-Ledger-SHA256: {'b' * 64}" in body
+
+
 def head_response(
     *, history=None, oid="a" * 40, signature_state="VALID"
 ) -> httpx.Response:
@@ -587,6 +603,53 @@ async def test_writer_inspects_exact_commit_bytes_without_mutation(private_key_p
 
 
 @pytest.mark.asyncio
+async def test_writer_reads_exact_protected_source_bytes(private_key_pem):
+    source_sha = "d" * 40
+    content = b"reviewed source\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": "installation-token"})
+        if request.url.path == "/graphql":
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "repository": {
+                            "object": {
+                                "oid": source_sha,
+                                "tree": {"oid": "1" * 40},
+                            }
+                        }
+                    }
+                },
+            )
+        if "/compare/" in request.url.path:
+            return httpx.Response(200, json={"status": "identical"})
+        if request.url.path.endswith("/contents/workflows/example.py"):
+            assert request.url.params["ref"] == source_sha
+            return httpx.Response(200, content=content)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        writer = GitHubAppCommitWriter(
+            repo_url="https://github.com/MTG-Thomas/workspace",
+            branch="production-live",
+            app_id=123,
+            installation_id=456,
+            private_key=private_key_pem,
+            client=client,
+        )
+        snapshot = await writer.read_files(
+            ("workflows/example.py",), ref=source_sha, reachable_from="main"
+        )
+
+    assert snapshot.commit_sha == source_sha
+    assert snapshot.tree_sha == "1" * 40
+    assert snapshot.files == {"workflows/example.py": content}
+
+
+@pytest.mark.asyncio
 async def test_writer_inspects_verified_branch_head(private_key_pem):
     content = b"live source\n"
 
@@ -717,6 +780,37 @@ async def test_writer_rejects_head_drift_bound_by_convergence_candidate(
             convergence_candidate_id="sha256:" + "a" * 64,
         )
         with pytest.raises(PlatformCommitError, match="head changed"):
+            await writer.write(request)
+
+    assert mutation_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_writer_rejects_head_tree_drift_before_mutation(private_key_pem):
+    mutation_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal mutation_calls
+        if request.url.path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": "installation-token"})
+        payload = graphql_payload(request)
+        if "query BranchHead" in payload["query"]:
+            return head_response()
+        if "mutation CreatePlatformCommit" in payload["query"]:
+            mutation_calls += 1
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        writer = GitHubAppCommitWriter(
+            repo_url="https://github.com/MTG-Thomas/workspace",
+            branch="production-live",
+            app_id=123,
+            installation_id=456,
+            private_key=private_key_pem,
+            client=client,
+        )
+        request = replace(commit_request(), expected_head_tree_sha="f" * 40)
+        with pytest.raises(PlatformCommitError, match="tree changed"):
             await writer.write(request)
 
     assert mutation_calls == 0

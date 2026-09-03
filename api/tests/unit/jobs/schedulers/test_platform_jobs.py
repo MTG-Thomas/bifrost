@@ -150,12 +150,24 @@ async def test_concurrent_replicas_claim_each_row_once(
 @pytest.mark.asyncio
 async def test_expired_lease_requeues_then_fails_at_attempt_limit(
     db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Keep the lease valid to the live scheduler container while advancing only
+    # this test process beyond it. Otherwise the live scheduler can recover the
+    # deliberately expired row before the function under test sees it.
+    wall_clock_now = datetime.now(timezone.utc)
+    lease_deadline = wall_clock_now + timedelta(days=1)
+    monkeypatch.setattr(
+        scheduler,
+        "_now",
+        lambda: wall_clock_now + timedelta(days=2),
+    )
+
     job = await _queued_job(db_session)
     job.status = "running"
     job.attempt = 1
     job.lease_token = uuid4()
-    job.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    job.lease_expires_at = lease_deadline
     await db_session.commit()
 
     recovered, failed = await scheduler.recover_expired_platform_jobs()
@@ -167,7 +179,7 @@ async def test_expired_lease_requeues_then_fails_at_attempt_limit(
     job.status = "running"
     job.attempt = job.max_attempts
     job.lease_token = uuid4()
-    job.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    job.lease_expires_at = lease_deadline
     await db_session.commit()
     recovered, failed = await scheduler.recover_expired_platform_jobs()
     assert (recovered, failed) == (1, 1)
@@ -193,6 +205,26 @@ async def test_memory_admission_defers_without_claiming(
     assert job.status == "queued"
     assert job.phase == "Waiting for scheduler memory"
     assert job.lease_token is None
+
+
+@pytest.mark.asyncio
+async def test_memory_admission_uses_persisted_requirement(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = await _queued_job(db_session)
+    mib = 1024 * 1024
+    job.memory_required_bytes = 128 * mib
+    monkeypatch.setattr(
+        scheduler,
+        "get_cgroup_memory",
+        lambda: (850 * mib, 1024 * mib),
+    )
+
+    claim = await scheduler.claim_platform_job()
+
+    assert claim is not None
+    assert claim.id == job.id
 
 
 @pytest.mark.asyncio

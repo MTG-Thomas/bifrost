@@ -11,7 +11,6 @@ what end users see (the Solution is invisible to them — criterion 16).
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import json
 import logging
@@ -29,13 +28,14 @@ from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import noload
+from sqlalchemy.orm import defer, noload
 from starlette.background import BackgroundTask
 
 from bifrost.solution_jobs import (
     DEPLOY_JOB_TIMEOUT_ERROR,
     DEPLOY_JOB_TIMEOUT_SECONDS,
 )
+from shared.logo_processing import is_logo_thumbnail_version
 from src.core.auth import Context, CurrentSuperuser
 from src.models.contracts.solutions import (
     Solution as SolutionDTO,
@@ -95,6 +95,7 @@ from src.jobs.platform.solution_deploy import (
     SolutionDeployPayload,
 )
 from src.services.platform_jobs import enqueue_platform_job, publish_platform_job_update
+from src.services.platform_job_memory_profiles import build_solution_memory_profile_key
 from src.services.solutions.deploy_job_storage import SolutionDeployJobStorage
 from src.services.solutions.deploy import (
     SolutionDeployConflict,
@@ -175,6 +176,7 @@ async def _enqueue_solution_deploy_job(
     requested_by_name: str,
     input_path: Path | None = None,
     input_bytes: bytes | None = None,
+    memory_profile_key: str | None = None,
 ) -> SolutionDeployJob:
     """Stage one validated input and atomically expose its central job row."""
     if (input_path is None) == (input_bytes is None):
@@ -195,6 +197,9 @@ async def _enqueue_solution_deploy_job(
         raise SolutionCandidateMismatch(
             expected_candidate_id, f"sha256:{digest}"
         )
+    # Every durable deploy job carries the exact staged-byte identity. Callers
+    # may supply it as a compare-and-swap guard; repo installs derive it here.
+    options = {**options, "candidate_id": f"sha256:{digest}"}
 
     projection = SolutionDeployJob(
         id=job_id,
@@ -225,6 +230,7 @@ async def _enqueue_solution_deploy_job(
             title=f"Solution {kind.replace('_', ' ')}",
             action_url=(f"/solutions/{install_id}" if install_id else "/solutions"),
             job_id=job_id,
+            memory_profile_key=memory_profile_key,
         )
         await db.commit()
         await db.refresh(projection)
@@ -309,13 +315,32 @@ async def _solution_entity_counts(
 
 @router.get("", response_model=SolutionsList, summary="List Solution installs (admin only)")
 async def list_solutions(ctx: Context, user: CurrentSuperuser) -> SolutionsList:
-    rows = (await ctx.db.execute(select(SolutionORM).order_by(SolutionORM.slug))).scalars().all()
+    rows = (
+        (
+            await ctx.db.execute(
+                select(SolutionORM)
+                .options(
+                    defer(SolutionORM.logo_data),
+                    defer(SolutionORM.logo_thumbnail_data),
+                )
+                .order_by(SolutionORM.slug)
+            )
+        )
+        .scalars()
+        .all()
+    )
     ids = [row.id for row in rows]
     counts = await _solution_entity_counts(ctx, ids)
     return SolutionsList(
         solutions=[
             SolutionDTO.model_validate(row).model_copy(
-                update={"entity_counts": counts.get(row.id, SolutionEntityCounts())}
+                update={
+                    "entity_counts": counts.get(row.id, SolutionEntityCounts()),
+                    "logo_url": _entity_logo_url(
+                        "solutions", row.id, row.logo_thumbnail_version
+                    ),
+                    "logo_version": _entity_logo_version(row.logo_thumbnail_version),
+                }
             )
             for row in rows
         ]
@@ -327,14 +352,30 @@ async def get_solution(solution_id: UUID, ctx: Context, user: CurrentSuperuser) 
     row = await ctx.db.get(SolutionORM, solution_id)
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Solution not found")
-    return SolutionDTO.model_validate(row)
+    counts = await _solution_entity_counts(ctx, [row.id])
+    return SolutionDTO.model_validate(row).model_copy(
+        update={
+            "entity_counts": counts.get(row.id, SolutionEntityCounts()),
+            "logo_url": _entity_logo_url(
+                "solutions", row.id, row.logo_thumbnail_version
+            ),
+            "logo_version": _entity_logo_version(row.logo_thumbnail_version),
+        }
+    )
 
 
 @router.get(
     "/{solution_id}/logo",
     summary="Get Solution icon",
     responses={
-        200: {"content": {"image/png": {}, "image/jpeg": {}, "image/svg+xml": {}}},
+        200: {
+            "content": {
+                "image/webp": {},
+                "image/png": {},
+                "image/jpeg": {},
+                "image/svg+xml": {},
+            }
+        },
         404: {"description": "No icon set"},
     },
 )
@@ -347,9 +388,23 @@ async def get_solution_logo(
     row = await ctx.db.get(SolutionORM, solution_id)
     if row is None or not row.logo_data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Icon not set")
+    thumbnail_ready = bool(row.logo_thumbnail_data and row.logo_thumbnail_version)
+    headers = (
+        {
+            "Cache-Control": "private, max-age=31536000, immutable",
+            "ETag": f'"{row.logo_thumbnail_version}"',
+        }
+        if thumbnail_ready
+        else {"Cache-Control": "no-store"}
+    )
     return Response(
-        content=row.logo_data,
-        media_type=row.logo_content_type or "application/octet-stream",
+        content=row.logo_thumbnail_data or row.logo_data,
+        media_type=(
+            row.logo_thumbnail_content_type
+            or row.logo_content_type
+            or "application/octet-stream"
+        ),
+        headers=headers,
     )
 
 
@@ -789,12 +844,16 @@ def _enum_to_str(value: object) -> str | None:
     return str(getattr(value, "value", value))
 
 
-def _logo_data_url(data: bytes | None, content_type: str | None) -> str | None:
-    """Encode a binary entity logo as a data URL for list-card rendering."""
-    if not data:
+def _entity_logo_url(
+    entity_type: str, entity_id: UUID, version: str | None
+) -> str | None:
+    if not is_logo_thumbnail_version(version):
         return None
-    mime = content_type or "application/octet-stream"
-    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+    return f"/api/{entity_type}/{entity_id}/logo?v={version}"
+
+
+def _entity_logo_version(version: str | None) -> str | None:
+    return version if is_logo_thumbnail_version(version) else None
 
 
 async def _access_details_by_entity(
@@ -880,7 +939,17 @@ async def _workflow_summaries(ctx: Context, *where) -> list[SolutionEntitySummar
 
 
 async def _app_summaries(ctx: Context, *where) -> list[SolutionEntitySummary]:
-    rows = (await ctx.db.execute(select(Application).where(*where).order_by(Application.name))).scalars().all()
+    rows = (
+        await ctx.db.execute(
+            select(Application)
+            .options(
+                defer(Application.logo_data),
+                defer(Application.logo_thumbnail_data),
+            )
+            .where(*where)
+            .order_by(Application.name)
+        )
+    ).scalars().all()
     access = await _access_details_by_entity(ctx, AppRole, "app_id", [row.id for row in rows])
     summaries: list[SolutionEntitySummary] = []
     for row in rows:
@@ -895,7 +964,11 @@ async def _app_summaries(ctx: Context, *where) -> list[SolutionEntitySummary]:
                 path=row.repo_path,
                 access_level=row.access_level,
                 app_model=row.app_model,
-                logo=_logo_data_url(row.logo_data, row.logo_content_type),
+                logo=None,
+                logo_url=_entity_logo_url(
+                    "applications", row.id, row.logo_thumbnail_version
+                ),
+                logo_version=_entity_logo_version(row.logo_thumbnail_version),
                 created_at=row.created_at,
                 role_ids=role_ids,
                 role_names=role_names,
@@ -931,7 +1004,17 @@ async def _form_summaries(ctx: Context, *where) -> list[SolutionEntitySummary]:
 
 
 async def _agent_summaries(ctx: Context, *where) -> list[SolutionEntitySummary]:
-    rows = (await ctx.db.execute(select(Agent).where(*where).order_by(Agent.name))).scalars().all()
+    rows = (
+        await ctx.db.execute(
+            select(Agent)
+            .options(
+                defer(Agent.logo_data),
+                defer(Agent.logo_thumbnail_data),
+            )
+            .where(*where)
+            .order_by(Agent.name)
+        )
+    ).scalars().all()
     access = await _access_details_by_entity(ctx, AgentRole, "agent_id", [row.id for row in rows])
     summaries: list[SolutionEntitySummary] = []
     for row in rows:
@@ -944,6 +1027,11 @@ async def _agent_summaries(ctx: Context, *where) -> list[SolutionEntitySummary]:
                 organization_id=row.organization_id,
                 access_level=_enum_to_str(row.access_level),
                 is_active=row.is_active,
+                logo=None,
+                logo_url=_entity_logo_url(
+                    "agents", row.id, row.logo_thumbnail_version
+                ),
+                logo_version=_entity_logo_version(row.logo_thumbnail_version),
                 created_at=row.created_at,
                 role_ids=role_ids,
                 role_names=role_names,
@@ -1365,6 +1453,7 @@ async def _run_deploy_job(
     *,
     force: bool,
     candidate_id: str = "",
+    accountability_organization_id: UUID | None = None,
 ) -> None:
     """Execute the deploy under a fresh session (background task).
 
@@ -1416,7 +1505,12 @@ async def _run_deploy_job(
                 solution = await db.get(SolutionORM, solution_id)
                 if solution is None:
                     raise SolutionDeployConflict("Solution not found")
-                await _set_phase("parsing workspace zip and building app dist")
+                # Snapshot scalar identity before commit. AsyncSession commit
+                # expires ORM attributes by default; reading solution.slug
+                # afterwards can attempt implicit async IO and raise
+                # MissingGreenlet after the deploy has already become durable.
+                solution_slug = solution.slug
+                await _set_phase("validating bundle and applying resources")
                 result = await deploy_zip_to_solution_path(
                     db, solution, zip_path, force=force
                 )
@@ -1425,6 +1519,50 @@ async def _run_deploy_job(
                 # code (P1-c). Still inside the lock so finalize can't race another deploy.
                 await _set_phase("storing source artifact and runtime files")
                 await result.finalize_s3()
+                accountability = {"state": "not_tracked"}
+                if accountability_organization_id is not None:
+                    from src.services.solution_deploy_obligations import (
+                        reconcile_solution_deploy_obligation,
+                    )
+                    from src.services.solutions.source_artifact import (
+                        SolutionSourceArtifactStorage,
+                    )
+
+                    stored_artifact = await SolutionSourceArtifactStorage(solution_id).read()
+                    if stored_artifact is None:
+                        raise SolutionFinalizeIncomplete(str(solution_id))
+                    try:
+                        accountability = await reconcile_solution_deploy_obligation(
+                            db,
+                            solution_id=solution_id,
+                            solution_slug=solution_slug,
+                            accountability_organization_id=accountability_organization_id,
+                            deploy_job_id=job_id,
+                            candidate_id=candidate_id,
+                            artifact=stored_artifact,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - deploy is durable
+                        logger.exception(
+                            "Solution deploy job %s accountability reconciliation failed",
+                            job_id,
+                        )
+                        # Reconciliation owns only post-deploy evidence. Clear a
+                        # potentially failed transaction without rolling back the
+                        # already committed Solution resources.
+                        try:
+                            await db.rollback()
+                        except Exception:  # noqa: BLE001 - preserve deploy truth
+                            logger.exception(
+                                "Solution deploy job %s accountability rollback failed",
+                                job_id,
+                            )
+                        accountability = {
+                            "state": "attention_required",
+                            "reason": "post-deploy accountability reconciliation failed",
+                            "error_type": type(exc).__name__,
+                        }
+                    else:
+                        await db.commit()
                 deploy_result = {
                     "solution_id": str(solution_id),
                     "candidate_id": candidate_id,
@@ -1442,6 +1580,7 @@ async def _run_deploy_job(
                     "claims_deleted": result.claims_deleted,
                     "integrations_shell_created": result.integrations_shell_created,
                     "roles_created": list(result.roles_created),
+                    "source_release_accountability": accountability,
                 }
     try:
         await asyncio.wait_for(
@@ -1493,6 +1632,8 @@ async def _run_install_job(
     replace_secrets: bool,
     replace_data: bool,
     reactivate: bool,
+    candidate_id: str = "",
+    accountability_organization_id: UUID | None = None,
 ) -> None:
     """Execute a zip install under a fresh session (background task).
 
@@ -1559,7 +1700,34 @@ async def _run_install_job(
                 replace_data=replace_data,
                 reactivate=reactivate,
             )
-            install_result = {"solution_id": str(solution.id), "slug": solution.slug}
+            accountability = {"state": "not_tracked"}
+            if accountability_organization_id is not None:
+                from src.services.solution_deploy_obligations import (
+                    reconcile_solution_deploy_obligation,
+                )
+                from src.services.solutions.source_artifact import (
+                    SolutionSourceArtifactStorage,
+                )
+
+                stored_artifact = await SolutionSourceArtifactStorage(solution.id).read()
+                if stored_artifact is None:
+                    raise SolutionFinalizeIncomplete(str(solution.id))
+                accountability = await reconcile_solution_deploy_obligation(
+                    db,
+                    solution_id=solution.id,
+                    solution_slug=solution.slug,
+                    accountability_organization_id=accountability_organization_id,
+                    deploy_job_id=job_id,
+                    candidate_id=candidate_id,
+                    artifact=stored_artifact,
+                )
+                await db.commit()
+            install_result = {
+                "solution_id": str(solution.id),
+                "slug": solution.slug,
+                "candidate_id": candidate_id,
+                "source_release_accountability": accountability,
+            }
     try:
         await asyncio.wait_for(
             _execute(),
@@ -1697,17 +1865,25 @@ async def deploy_solution(
                 ),
             )
 
+    memory_profile_key = build_solution_memory_profile_key(preview)
     try:
         job = await _enqueue_solution_deploy_job(
             ctx.db,
             kind="deploy",
             install_id=solution_id,
             organization_id=solution.organization_id,
-            options={"force": force, "candidate_id": actual_candidate_id},
+            options={
+                "force": force,
+                "candidate_id": actual_candidate_id,
+                "accountability_organization_id": (
+                    str(ctx.org_id) if ctx.org_id is not None else None
+                ),
+            },
             requested_by_user_id=user.user_id,
             requested_by_email=user.email,
             requested_by_name=user.name or user.email or "Unknown",
             input_path=zip_path,
+            memory_profile_key=memory_profile_key,
         )
     except SolutionCandidateMismatch as exc:
         raise HTTPException(
@@ -2124,6 +2300,7 @@ async def install_from_repo(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Repo has no valid bifrost.solution.yaml (missing slug)",
             )
+        memory_profile_key = build_solution_memory_profile_key(parsed)
 
         # Install kind comes from the REQUEST (unified --org standard), not the
         # descriptor: HOME (organization_id absent) => the caller's own org;
@@ -2186,11 +2363,17 @@ async def install_from_repo(
             kind="install_from_repo",
             install_id=solution.id,
             organization_id=solution.organization_id,
-            options={"force": True},
+            options={
+                "force": True,
+                "accountability_organization_id": (
+                    str(ctx.org_id) if ctx.org_id is not None else None
+                ),
+            },
             requested_by_user_id=user.user_id,
             requested_by_email=user.email,
             requested_by_name=user.name or user.email or "Unknown",
             input_bytes=archive,
+            memory_profile_key=memory_profile_key,
         )
         return SolutionDeployEnqueued(deploy_job_id=job.id)
     finally:
@@ -2311,6 +2494,7 @@ async def install_solution(
                 },
             )
 
+    memory_profile_key = build_solution_memory_profile_key(preview)
     try:
         job = await _enqueue_solution_deploy_job(
             ctx.db,
@@ -2326,11 +2510,15 @@ async def install_solution(
                 "replace_secrets": replace_secrets,
                 "replace_data": replace_data,
                 "reactivate": reactivate,
+                "accountability_organization_id": (
+                    str(ctx.org_id) if ctx.org_id is not None else None
+                ),
             },
             requested_by_user_id=user.user_id,
             requested_by_email=user.email,
             requested_by_name=user.name or user.email or "Unknown",
             input_path=zip_path,
+            memory_profile_key=memory_profile_key,
         )
     finally:
         _cleanup_file(zip_path)

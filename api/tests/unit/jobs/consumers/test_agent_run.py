@@ -37,9 +37,18 @@ async def test_durable_agent_run_claim_serializes_with_publisher(
         consumer = AgentRunConsumer()
     consumer._session_factory = MagicMock(return_value=db_context)
 
-    result = await consumer._claim_durable_run(str(uuid4()))
+    attempt = SimpleNamespace(id=uuid4())
+    with patch(
+        "src.jobs.consumers.agent_run.start_execution_attempt",
+        new=AsyncMock(return_value=attempt),
+    ):
+        result = await consumer._claim_durable_run(
+            str(uuid4()),
+            organization_id=None,
+            message_id=None,
+        )
 
-    assert result is claimable
+    assert (result is not None) is claimable
     assert "bifrost:agent-run:" in str(db.execute.await_args.args[0])
     if claimable:
         assert row.status == "running"

@@ -57,14 +57,18 @@ def test_required_e2e_gate_includes_playwright_and_mcp_conformance() -> None:
     ]
 
 
-def test_main_verification_waits_for_immutable_ci_test_images() -> None:
+def test_ci_test_image_consumers_use_the_exact_published_tag() -> None:
     ci = _load_yaml(".github/workflows/ci.yml")
     jobs = ci["jobs"]
     image_jobs = {"test-unit", "mcp-conformance", "test-e2e", "test-client-e2e"}
 
-    assert ci["env"]["CI_TEST_IMAGE_TAG"] == (
-        "${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || "
-        "inputs.queue_post_merge) && format('sha-{0}', github.sha) || 'main' }}"
+    assert ci["env"]["CI_TEST_IMAGE_TAG"] == "${{ format('sha-{0}', github.sha) }}"
+    assert "github.event_name == 'pull_request'" in jobs["publish-ci-test-images"][
+        "if"
+    ]
+    assert (
+        "github.event.pull_request.head.repo.full_name == github.repository"
+        in jobs["publish-ci-test-images"]["if"]
     )
     for job_name in image_jobs:
         assert set(jobs[job_name]["needs"]) == {
@@ -76,7 +80,9 @@ def test_main_verification_waits_for_immutable_ci_test_images() -> None:
         "test-unit": "bash api/scripts/ci/prepare-test-images.sh api client",
         "mcp-conformance": "bash api/scripts/ci/prepare-test-images.sh api client",
         "test-e2e": "bash api/scripts/ci/prepare-test-images.sh api client",
-        "test-client-e2e": "bash api/scripts/ci/prepare-test-images.sh api client playwright",
+        "test-client-e2e": (
+            "bash api/scripts/ci/prepare-test-images.sh api client client-e2e playwright"
+        ),
     }
     for job_name, expected_command in expected_commands.items():
         prepare = next(
@@ -93,6 +99,21 @@ def test_main_verification_waits_for_immutable_ci_test_images() -> None:
     )
     assert 'image_tag="${CI_TEST_IMAGE_TAG:?CI_TEST_IMAGE_TAG is required}"' in image_script
     assert 'remote_ref="${registry}/${remote_image}:${image_tag}"' in image_script
+
+
+def test_feature_branch_dispatch_cannot_overwrite_main_ci_test_images() -> None:
+    ci = _load_yaml(".github/workflows/ci.yml")
+    publish_steps = ci["jobs"]["publish-ci-test-images"]["steps"]
+    image_steps = [
+        step for step in publish_steps if step["name"].startswith("Build and push")
+    ]
+
+    assert len(image_steps) == 3
+    for step in image_steps:
+        tags = step["with"]["tags"]
+        assert "github.ref == 'refs/heads/main'" in tags
+        assert ":main" in tags
+        assert ":sha-${{ github.sha }}" in tags
 
 
 def test_playwright_suite_has_no_retries_or_skipped_tests() -> None:

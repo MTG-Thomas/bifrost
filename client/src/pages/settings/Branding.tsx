@@ -412,7 +412,7 @@ export function Branding() {
 					</CardDescription>
 				</CardHeader>
 				<CardContent className="space-y-4">
-					<div>
+					<div className="space-y-2">
 						<Label htmlFor="applicationName">Name</Label>
 						<Input
 							id="applicationName"
@@ -471,7 +471,7 @@ export function Branding() {
 				</CardHeader>
 				<CardContent className="space-y-4">
 					<div className="flex items-center gap-4">
-						<div>
+						<div className="space-y-2">
 							<Label htmlFor="primaryColor">Color (Hex)</Label>
 							<Input
 								id="primaryColor"
@@ -484,7 +484,7 @@ export function Branding() {
 								className="w-32 font-mono"
 							/>
 						</div>
-						<div>
+						<div className="space-y-2">
 							<Label>Preview</Label>
 							<div
 								className="h-10 w-20 rounded-md ring-1 ring-foreground/10"
@@ -534,13 +534,13 @@ export function Branding() {
 								key={row.key}
 								className="grid gap-3 md:grid-cols-[minmax(0,1fr)_160px_160px]"
 							>
-								<div>
+								<div className="space-y-1">
 									<Label>{row.label}</Label>
 									<p className="text-sm text-muted-foreground">
 										{row.description}
 									</p>
 								</div>
-								<div>
+								<div className="space-y-2">
 									<Label htmlFor={`${row.key}-singular`}>
 										Singular
 									</Label>
@@ -556,7 +556,7 @@ export function Branding() {
 										}
 									/>
 								</div>
-								<div>
+								<div className="space-y-2">
 									<Label htmlFor={`${row.key}-plural`}>
 										Plural
 									</Label>

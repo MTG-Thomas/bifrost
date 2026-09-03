@@ -9,8 +9,8 @@ TemplateProcess via os.fork) use to run an execution:
   filesystem, so installing once in the parent is sufficient.
 - _clear_workspace_modules(): called before each execution so workflow
   code changes are picked up from Redis.
-- _execute_sync() / _execute_async(): run a single execution given an
-  execution_id (context is read from Redis, result is returned).
+- _execute_sync() / _execute_async(): run a single execution using context
+  assembled by the parent consumer and delivered over a private pipe.
 - _get_process_rss() / _get_pss_bytes() / _capture_resource_metrics():
   per-process memory/resource reporting used by the pool for recycling
   bloated children.
@@ -24,7 +24,6 @@ template_process.fork() and communicate via pipe-backed send/recv queues.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import resource
@@ -194,15 +193,30 @@ def _workspace_module_maps(
     module_index: set[str],
 ) -> tuple[set[str], dict[str, str]]:
     """Map cached workspace paths to import names and namespace prefixes."""
+    from src.core.module_cache_sync import get_workspace_release_context
+
+    release_ctx = get_workspace_release_context()
+    release_prefix = (
+        release_ctx.runtime_storage_prefix if release_ctx is not None else None
+    )
     workspace_names: set[str] = set()
     name_to_path: dict[str, str] = {}
     for path in module_index:
-        mod_name = path.replace("/", ".").removesuffix(".py").removesuffix(".__init__")
+        logical_path = (
+            path[len(release_prefix) :]
+            if release_prefix and path.startswith(release_prefix)
+            else path
+        )
+        mod_name = (
+            logical_path.replace("/", ".")
+            .removesuffix(".py")
+            .removesuffix(".__init__")
+        )
         parts = mod_name.split(".")
         for i in range(1, len(parts) + 1):
             prefix = ".".join(parts[:i])
             workspace_names.add(prefix)
-        name_to_path[mod_name] = path
+        name_to_path[mod_name] = logical_path
     return workspace_names, name_to_path
 
 
@@ -373,7 +387,11 @@ def _clear_workspace_modules() -> WorkspaceModuleRefresh:
     )
 
 
-def _execute_sync(execution_id: str, worker_id: str) -> dict[str, Any]:
+def _execute_sync(
+    execution_id: str,
+    worker_id: str,
+    context: dict[str, Any],
+) -> dict[str, Any]:
     """
     Synchronous wrapper that runs async execution.
 
@@ -383,6 +401,7 @@ def _execute_sync(execution_id: str, worker_id: str) -> dict[str, Any]:
     Args:
         execution_id: Unique execution identifier
         worker_id: Worker identifier (for logging/tracking)
+        context: Execution context assembled by the parent consumer
 
     Returns:
         Result dict with success, result, error, duration_ms, etc.
@@ -392,7 +411,7 @@ def _execute_sync(execution_id: str, worker_id: str) -> dict[str, Any]:
     configure_opentelemetry("bifrost-worker", span_processor="simple")
 
     try:
-        result = asyncio.run(_execute_async(execution_id, worker_id))
+        result = asyncio.run(_execute_async(execution_id, worker_id, context))
         return result
     except Exception as e:
         logger.exception(f"Execution {execution_id} failed: {e}")
@@ -406,12 +425,16 @@ def _execute_sync(execution_id: str, worker_id: str) -> dict[str, Any]:
         }
 
 
-async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:
+async def _execute_async(
+    execution_id: str,
+    worker_id: str,
+    context: dict[str, Any],
+) -> dict[str, Any]:
     """
-    Read context from Redis, execute workflow, return result.
+    Execute a workflow from parent-supplied context and return its result.
 
     This is the core async execution logic. It:
-    1. Reads execution context from Redis
+    1. Applies the execution's Solution import scope
     2. Builds an ExecutionRequest
     3. Calls the existing execute() engine
     4. Formats and returns the result
@@ -419,34 +442,33 @@ async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:
     Args:
         execution_id: Unique execution identifier
         worker_id: Worker identifier (for logging/tracking)
+        context: Execution context assembled by the parent consumer
 
     Returns:
         Result dict with execution outcome
     """
     start_time = datetime.now(timezone.utc)
 
-    # 1. Read context from Redis
-    context = await _read_context_from_redis(execution_id)
-    if context is None:
-        return {
-            "execution_id": execution_id,
-            "success": False,
-            "error": "Execution context not found in Redis",
-            "error_type": "ContextNotFound",
-            "duration_ms": 0,
-            "worker_id": worker_id,
-        }
-
-    # 1b. Activate THIS execution's Solution import root, THEN evict workspace
+    # Activate THIS execution's Solution import root, THEN evict workspace
     # modules — in that order. The cross-solution eviction in
     # _clear_workspace_modules keys off the active install (get_solution_context);
     # if it ran with no context (as the template_process fork path did), a prior
     # install's same-name module could survive the hash check and shadow this
     # install's file, breaking multi-install isolation (Codex #9). This context is
     # temporary: _run_execution activates it again after credential bootstrap.
-    from src.core.module_cache_sync import clear_solution_context, set_solution_context
+    from src.core.module_cache_sync import (
+        clear_solution_context,
+        clear_workspace_release_context,
+        set_solution_context,
+        set_workspace_release_context,
+    )
 
     _exec_solution_id = context.get("solution_id")
+    _workspace_release_id = context.get("workspace_release_id")
+    if _exec_solution_id and _workspace_release_id:
+        raise RuntimeError(
+            "execution cannot pin a Solution and Workspace release together"
+        )
     if _exec_solution_id:
         context_options = {
             "runtime_storage_prefix": context.get("runtime_storage_prefix"),
@@ -463,12 +485,21 @@ async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:
                 _exec_solution_id,
                 global_repo_access=bool(context.get("solution_global_repo_access", False)),
             )
+    if _workspace_release_id:
+        set_workspace_release_context(
+            _workspace_release_id,
+            runtime_storage_prefix=str(
+                context.get("workspace_release_runtime_storage_prefix") or ""
+            ),
+            source_hashes=dict(context.get("workspace_release_source_hashes") or {}),
+        )
     try:
         workspace_refresh = _clear_workspace_modules()
     finally:
         # Credential backend imports must run without Solution namespace probing;
         # otherwise their own API credential lookup can recursively import them.
         clear_solution_context()
+        clear_workspace_release_context()
 
     context["workspace_generation"] = workspace_refresh.generation
 
@@ -535,43 +566,6 @@ async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:
             "duration_ms": duration_ms,
             "worker_id": worker_id,
         }
-
-
-async def _read_context_from_redis(execution_id: str) -> dict[str, Any] | None:
-    """
-    Read execution context from Redis.
-
-    Args:
-        execution_id: Unique execution identifier
-
-    Returns:
-        Context dict or None if not found
-    """
-    import redis.asyncio as redis
-    from src.config import get_settings
-
-    settings = get_settings()
-
-    redis_client = redis.from_url(
-        settings.redis_url,
-        decode_responses=True,
-        socket_timeout=5.0,
-    )
-
-    try:
-        key = f"bifrost:exec:{execution_id}:context"
-        data = await redis_client.get(key)
-
-        if data is None:
-            logger.warning(f"Context not found in Redis: {execution_id}")
-            return None
-
-        return json.loads(data)
-    except Exception as e:
-        logger.error(f"Failed to read context from Redis: {e}")
-        return None
-    finally:
-        await redis_client.aclose()
 
 
 def _get_pss_bytes() -> int:

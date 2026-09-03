@@ -297,6 +297,12 @@ class SearchResponse(BaseModel):
     results: list[SearchResult] = Field(..., description="Array of search results")
     truncated: bool = Field(..., description="Whether results were truncated")
     search_time_ms: int = Field(..., description="Search duration in milliseconds")
+    source_authority: str = Field(
+        default="repo-v1", description="Authoritative source used for Workspace code"
+    )
+    workspace_release_id: str | None = Field(
+        default=None, description="Immutable Live release when source_authority is release-v1"
+    )
 
     model_config = ConfigDict(from_attributes=True)
 

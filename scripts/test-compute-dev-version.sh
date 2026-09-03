@@ -10,10 +10,11 @@ COMPUTE="$SCRIPT_DIR/compute-dev-version.sh"
 pass=0
 fail=0
 
-# run_test <name> <setup_block> <expected_stdout> <expected_exit>
+# run_test <name> <setup_block> <expected_stdout> <expected_exit> [arguments]
 run_test() {
-  local name="$1" setup="$2" want_stdout="$3" want_exit="$4"
+  local name="$1" setup="$2" want_stdout="$3" want_exit="$4" args="${5:-}"
   local tmp got_stdout got_exit
+  local -a argv=()
   tmp=$(mktemp -d)
   (
     cd "$tmp"
@@ -21,8 +22,11 @@ run_test() {
     git config user.email t@t && git config user.name t
     eval "$setup"
   )
+  if [[ -n "$args" ]]; then
+    read -r -a argv <<< "$args"
+  fi
   set +e
-  got_stdout=$(cd "$tmp" && "$COMPUTE" 2>/dev/null)
+  got_stdout=$(cd "$tmp" && "$COMPUTE" "${argv[@]}" 2>/dev/null)
   got_exit=$?
   set -e
   rm -rf "$tmp"
@@ -85,6 +89,16 @@ run_test "lightweight release tag is accepted" \
 run_test "latest lightweight tag beats older annotated tag" \
   'git commit --allow-empty -m init -q && git tag -a v1.0.0 -m v1.0.0 && git commit --allow-empty -m c1 -q && git tag v1.1.0 && git commit --allow-empty -m c2 -q' \
   '1.1.1-dev.1' 0
+
+run_test "candidate version predicts one squash commit after base" \
+  'git commit --allow-empty -m init -q && git tag v1.0.0 && git branch candidate-base && git commit --allow-empty -m c1 -q && git commit --allow-empty -m c2 -q' \
+  '1.0.1-dev.1' 0 \
+  '--next-after candidate-base'
+
+run_test "candidate version rejects an unknown base" \
+  'git commit --allow-empty -m init -q' \
+  '' 2 \
+  '--next-after does-not-exist'
 
 echo
 echo "$pass passed, $fail failed"

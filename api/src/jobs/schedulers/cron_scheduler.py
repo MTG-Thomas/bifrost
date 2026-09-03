@@ -12,8 +12,6 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
 import sqlalchemy as sa
 from croniter import croniter
 from sqlalchemy import select
@@ -23,19 +21,13 @@ from src.core.database import get_db_context
 from src.models.enums import EventDeliveryStatus, EventSourceType, EventStatus, ScheduleOverlapPolicy
 from src.models.orm.events import Event, EventDelivery, EventSource
 from src.repositories.events import EventSubscriptionRepository
+from src.services.cron_parser import get_schedule_zone
 
 logger = logging.getLogger(__name__)
 
 
-def _get_schedule_zone(timezone_name: str) -> ZoneInfo:
-    try:
-        return ZoneInfo(timezone_name)
-    except ZoneInfoNotFoundError as exc:
-        raise ValueError(f"Unknown timezone: {timezone_name}") from exc
-
-
 def _next_interval_seconds(cron_expression: str, now_utc: datetime, timezone_name: str) -> float:
-    zone = _get_schedule_zone(timezone_name)
+    zone = get_schedule_zone(timezone_name)
     local_now = now_utc.astimezone(zone)
     cron = croniter(cron_expression, local_now)
     first_run = cron.get_next(datetime)
@@ -51,7 +43,7 @@ def _latest_due_run_utc(
     now_utc: datetime,
     timezone_name: str,
 ) -> datetime | None:
-    zone = _get_schedule_zone(timezone_name)
+    zone = get_schedule_zone(timezone_name)
     local_now = now_utc.astimezone(zone)
     cron_iter = croniter(cron_expression, local_now)
     prev_run = cron_iter.get_prev(datetime)
@@ -253,13 +245,9 @@ async def process_schedule_sources() -> dict[str, Any]:
                                 )
                                 continue
 
-                        delivery = EventDelivery(
-                            id=uuid.uuid4(),
-                            event_id=event.id,
-                            event_subscription_id=sub.id,
-                            workflow_id=sub.workflow_id,  # None for agent targets
-                            status=EventDeliveryStatus.PENDING,
-                        )
+                        from src.services.events.processor import build_event_delivery
+
+                        delivery = build_event_delivery(event=event, subscription=sub)
                         db.add(delivery)
                         deliveries_for_event += 1
 
@@ -276,8 +264,8 @@ async def process_schedule_sources() -> dict[str, Any]:
                     queued = await processor.queue_event_deliveries(event.id)
                     results["deliveries_queued"] += queued
 
-                    # Source has been processed and its deliveries queued (if any).
-                    event.status = EventStatus.COMPLETED
+                    # queue_event_deliveries derives the terminal event status,
+                    # including criteria-only skips and evaluator failures.
 
                 except Exception as source_error:
                     error_info = {

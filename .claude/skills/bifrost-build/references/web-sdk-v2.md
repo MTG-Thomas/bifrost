@@ -2,6 +2,16 @@
 
 The instance-served `bifrost` package is the runtime SDK for `standalone_v2` Solution apps. Use `../generated/web-sdk-surface.md` for the exact export/type surface. Read `apps-v2.md` for project structure and `app-quality.md` for UI completion.
 
+## Keeping an existing app current
+
+The web SDK is vendored into each app. A platform deployment does not update an existing app's installed SDK automatically. When a reported behavior is fixed in the web SDK, or an app predates the SDK behavior it now relies on, refresh that app before rebuilding it:
+
+```bash
+bifrost solution sdk update [PATH] --app <app-slug>
+```
+
+Omit `--app` for a single-app Solution. This command downloads the SDK from the connected Bifrost instance and reinstalls the vendored package; do not hand-edit the generated SDK files. After updating, run the app's typecheck, tests, and production build, then redeploy it. API-only execution fixes and host-shell asset fixes do not require an app SDK update.
+
 ## Provider and context
 
 Keep the scaffolded `BifrostProvider` wiring in `src/main.tsx`. The host supplies the API URL, viewer token, org scope, app ID, theme, logout handler, and mount basename.
@@ -79,6 +89,25 @@ await files.write("reports/status.txt", "ready", { location: "documents" });
 ```
 
 Solution locations must be declared. Render denied separately from empty, and use signed upload/download behavior for large binary data. Read `files.md`.
+
+## WebMCP progressive enhancement
+
+Standalone v2 apps can expose a small, page-local tool catalog to supported
+browser agents. WebMCP is experimental, so use `useWebMcpTool` or
+`useWebMcpWorkflowTool` from `bifrost` rather than accessing
+`document.modelContext` directly. The workflow helper uses the existing
+`BifrostProvider` transport and app/org scope; it does not call the platform's
+remote MCP server.
+
+Keep registrations scoped to the route and UI state where they are valid,
+prefer reviewable UI updates, and never expose generic administration, secrets,
+tokens, or hidden page data. Unsupported browsers are a no-op. WebMCP
+annotations are hints, not authorization; workflows and platform APIs remain
+authoritative.
+
+Treat workflow tools as side-effecting once invoked. A signal already aborted
+at invocation prevents submission, but a later browser-tool abort cannot stop
+or undo the workflow; use the platform's execution controls instead.
 
 ## Errors
 

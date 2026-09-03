@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import signal
@@ -16,10 +17,25 @@ from uuid import UUID, uuid4
 from sqlalchemy import func, or_, select, text
 
 from src.core.database import get_db_context
-from src.jobs.platform.base import PlatformJobPolicy
+from src.jobs.platform.base import PlatformJobDefinition, PlatformJobPolicy
 from src.jobs.platform.registry import get_platform_job_definition
 from src.models.orm.platform_jobs import PlatformJob
+from src.services.execution_attempts import (
+    start_execution_attempt,
+    transition_execution_attempt,
+)
 from src.services.execution.memory_monitor import get_cgroup_memory
+from src.services.execution_admission import (
+    AdmissionOutcome,
+    record_admission_decision,
+)
+from src.services.execution.fault_injection import (
+    FailurePoint,
+    execution_failure_checkpoint,
+)
+from src.services.platform_job_memory_profiles import (
+    record_platform_job_memory_profile,
+)
 from src.services.platform_jobs import (
     publish_platform_job_update,
 )
@@ -41,6 +57,14 @@ def _monotonic() -> float:
     return time.monotonic()
 
 
+def _runner_retry_delay(job_id: UUID, attempt: int) -> timedelta:
+    """Stable ±20% jitter prevents synchronized runner-loss retry waves."""
+
+    seed = hashlib.sha256(f"{job_id}:{attempt}".encode()).digest()[0]
+    factor = (0.8, 1.0, 1.2)[seed % 3]
+    return timedelta(seconds=RUNNER_RETRY_DELAY.total_seconds() * factor)
+
+
 def _clear_lease(job: PlatformJob) -> None:
     job.lease_owner = None
     job.lease_token = None
@@ -48,14 +72,18 @@ def _clear_lease(job: PlatformJob) -> None:
     job.lease_expires_at = None
 
 
-def _memory_allows_start(policy: PlatformJobPolicy) -> bool:
+def _memory_allows_start(
+    policy: PlatformJobPolicy,
+    *,
+    memory_required_bytes: int,
+) -> bool:
     current, limit = get_cgroup_memory()
     if current < 0 or limit <= 0:
         return True
-    headroom_mb = (limit - current) // (1024 * 1024)
+    headroom_bytes = max(limit - current, 0)
     return (
         current / limit <= policy.admission_memory_ratio
-        and headroom_mb >= policy.min_memory_headroom_mb
+        and headroom_bytes >= memory_required_bytes
     )
 
 
@@ -64,27 +92,45 @@ def _memory_exceeds_hard_limit(hard_ratio: float) -> bool:
     return current >= 0 and limit > 0 and current / limit >= hard_ratio
 
 
+def _record_platform_admission(
+    definition: PlatformJobDefinition,
+    outcome: AdmissionOutcome,
+    reason: str,
+) -> None:
+    record_admission_decision(
+        workload_class=definition.operations_policy.workload_class.value,
+        admission_policy=definition.operations_policy.admission_policy.value,
+        outcome=outcome,
+        reason=reason,
+    )
+
+
 async def recover_expired_platform_jobs() -> tuple[int, int]:
     """Recover leases after scheduler/container loss."""
     now = _now()
     recovered: list[PlatformJob] = []
     async with get_db_context() as db:
         jobs = (
-            await db.execute(
-                select(PlatformJob)
-                .where(
-                    PlatformJob.status.in_(("running", "cancel_requested")),
-                    or_(
-                        PlatformJob.lease_expires_at.is_(None),
-                        PlatformJob.lease_expires_at <= now,
-                    ),
+            (
+                await db.execute(
+                    select(PlatformJob)
+                    .where(
+                        PlatformJob.status.in_(("running", "cancel_requested")),
+                        or_(
+                            PlatformJob.lease_expires_at.is_(None),
+                            PlatformJob.lease_expires_at <= now,
+                        ),
+                    )
+                    .order_by(PlatformJob.lease_expires_at.asc())
+                    .with_for_update(skip_locked=True)
                 )
-                .order_by(PlatformJob.lease_expires_at.asc())
-                .with_for_update(skip_locked=True)
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         failed = 0
         for job in jobs:
+            lease_token = job.lease_token
             if job.status == "cancel_requested":
                 job.status = "cancelled"
                 job.phase = "Cancelled after runner stopped"
@@ -92,7 +138,7 @@ async def recover_expired_platform_jobs() -> tuple[int, int]:
             elif job.retry_on_runner_loss and job.attempt < job.max_attempts:
                 job.status = "queued"
                 job.phase = "Recovered after runner stopped"
-                job.available_at = now + RUNNER_RETRY_DELAY
+                job.available_at = now + _runner_retry_delay(job.id, job.attempt)
             else:
                 job.status = "failed"
                 job.phase = "Failed"
@@ -103,6 +149,27 @@ async def recover_expired_platform_jobs() -> tuple[int, int]:
                 job.error_retryable = False
                 job.completed_at = now
                 failed += 1
+            if lease_token is not None:
+                await transition_execution_attempt(
+                    db,
+                    logical_job_type="platform_job",
+                    logical_job_id=job.id,
+                    lease_token=lease_token,
+                    status=(
+                        "cancelled"
+                        if job.status == "cancelled"
+                        else "worker_lost"
+                    ),
+                    failure_code=(
+                        None if job.status == "cancelled" else "runner_lost"
+                    ),
+                    failure_message=(
+                        None
+                        if job.status == "cancelled"
+                        else "Platform-job runner lease expired."
+                    ),
+                )
+            await record_platform_job_memory_profile(db, job)
             _clear_lease(job)
             job.revision += 1
             recovered.append(job)
@@ -126,15 +193,19 @@ async def claim_platform_job() -> ClaimedPlatformJob | None:
     updated: list[PlatformJob] = []
     async with get_db_context() as db:
         candidate_ids = (
-            await db.execute(
-                select(PlatformJob.id)
-                .where(
-                    PlatformJob.status == "queued",
-                    PlatformJob.available_at <= _now(),
+            (
+                await db.execute(
+                    select(PlatformJob.id)
+                    .where(
+                        PlatformJob.status == "queued",
+                        PlatformJob.available_at <= _now(),
+                    )
+                    .order_by(PlatformJob.priority.desc(), PlatformJob.created_at.asc())
                 )
-                .order_by(PlatformJob.priority.desc(), PlatformJob.created_at.asc())
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         for candidate_id in candidate_ids:
             job = (
                 await db.execute(
@@ -168,6 +239,11 @@ async def claim_platform_job() -> ClaimedPlatformJob | None:
                     )
                 ).scalar_one()
                 if not handler_lock:
+                    _record_platform_admission(
+                        definition,
+                        AdmissionOutcome.DEFERRED,
+                        "concurrency_lock_busy",
+                    )
                     continue
                 running_count = (
                     await db.execute(
@@ -178,15 +254,27 @@ async def claim_platform_job() -> ClaimedPlatformJob | None:
                     )
                 ).scalar_one()
                 if running_count >= definition.policy.max_concurrency:
+                    _record_platform_admission(
+                        definition,
+                        AdmissionOutcome.DEFERRED,
+                        "class_concurrency_limit",
+                    )
                     continue
             if job.resource_lock_key is not None:
                 resource_lock = (
                     await db.execute(
                         text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"),
-                        {"key": f"bifrost:platform-job-resource:{job.resource_lock_key}"},
+                        {
+                            "key": f"bifrost:platform-job-resource:{job.resource_lock_key}"
+                        },
                     )
                 ).scalar_one()
                 if not resource_lock:
+                    _record_platform_admission(
+                        definition,
+                        AdmissionOutcome.DEFERRED,
+                        "resource_lock_busy",
+                    )
                     continue
                 resource_busy = (
                     await db.execute(
@@ -197,8 +285,21 @@ async def claim_platform_job() -> ClaimedPlatformJob | None:
                     )
                 ).scalar_one()
                 if resource_busy:
+                    _record_platform_admission(
+                        definition,
+                        AdmissionOutcome.DEFERRED,
+                        "resource_concurrency_limit",
+                    )
                     continue
-            if not _memory_allows_start(definition.policy):
+            if not _memory_allows_start(
+                definition.policy,
+                memory_required_bytes=job.memory_required_bytes,
+            ):
+                _record_platform_admission(
+                    definition,
+                    AdmissionOutcome.DEFERRED,
+                    "memory_pressure",
+                )
                 if job.phase != "Waiting for scheduler memory":
                     job.phase = "Waiting for scheduler memory"
                     job.revision += 1
@@ -206,6 +307,7 @@ async def claim_platform_job() -> ClaimedPlatformJob | None:
                 continue
 
             now = _now()
+            execution_failure_checkpoint(FailurePoint.PLATFORM_CLAIM)
             token = uuid4()
             job.status = "running"
             job.phase = "Starting"
@@ -223,6 +325,23 @@ async def claim_platform_job() -> ClaimedPlatformJob | None:
             job.memory_peak_bytes = current_memory if current_memory >= 0 else None
             job.memory_limit_bytes = memory_limit if memory_limit > 0 else None
             job.revision += 1
+            await start_execution_attempt(
+                db,
+                logical_job_type="platform_job",
+                logical_job_id=job.id,
+                organization_id=job.organization_id,
+                policy=definition.operations_policy,
+                status="running",
+                attempt_number=job.attempt,
+                worker_id=job.lease_owner,
+                process_id=os.getpid(),
+                lease_token=token,
+            )
+            _record_platform_admission(
+                definition,
+                AdmissionOutcome.ADMITTED,
+                "capacity_available",
+            )
             await db.commit()
             claimed = ClaimedPlatformJob(
                 id=job.id,
@@ -315,14 +434,16 @@ async def _handle_runner_loss(
         if job is None:
             return False
         now = _now()
+        terminal_attempt_status = "worker_lost"
         if job.status == "cancel_requested":
             job.status = "cancelled"
             job.phase = "Cancelled"
             job.completed_at = now
+            terminal_attempt_status = "cancelled"
         elif job.retry_on_runner_loss and job.attempt < job.max_attempts:
             job.status = "queued"
             job.phase = "Retrying after runner stopped"
-            job.available_at = now + RUNNER_RETRY_DELAY
+            job.available_at = now + _runner_retry_delay(job.id, job.attempt)
             job.error_code = error_code
             job.error_message = error_message
             job.error_retryable = True
@@ -333,6 +454,18 @@ async def _handle_runner_loss(
             job.error_message = error_message
             job.error_retryable = False
             job.completed_at = now
+        await transition_execution_attempt(
+            db,
+            logical_job_type="platform_job",
+            logical_job_id=job.id,
+            lease_token=lease_token,
+            status=terminal_attempt_status,
+            failure_code=None if terminal_attempt_status == "cancelled" else error_code,
+            failure_message=(
+                None if terminal_attempt_status == "cancelled" else error_message
+            ),
+        )
+        await record_platform_job_memory_profile(db, job)
         _clear_lease(job)
         job.revision += 1
         await db.commit()

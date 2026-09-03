@@ -21,6 +21,7 @@ import multiprocessing
 import os
 import signal
 import sys
+from collections.abc import Callable
 from multiprocessing.connection import Connection
 from typing import Any
 
@@ -78,6 +79,10 @@ class _RecvQueue:
         """Receive an item without blocking."""
         return self.get(block=False)
 
+    def fileno(self) -> int:
+        """Return the result pipe descriptor for event-loop readiness watches."""
+        return self._conn.fileno()
+
     def close(self) -> None:
         try:
             self._conn.close()
@@ -91,8 +96,10 @@ CMD_GET_EXIT_STATUSES = "get_exit_statuses"
 CMD_SHUTDOWN = "shutdown"
 
 
-def _load_execution_infrastructure(install_requirements_on_startup: bool) -> None:
-    """Load execution helpers and optionally install workspace requirements."""
+def _load_execution_infrastructure(
+    install_requirements_on_startup: bool,
+) -> Callable[[], Any]:
+    """Load execution helpers and return the deferred virtual-import installer."""
     from src.services.execution.virtual_import import install_virtual_import_hook
     from src.services.execution.simple_worker import install_requirements
 
@@ -108,7 +115,7 @@ def _load_execution_infrastructure(install_requirements_on_startup: bool) -> Non
         sys.path.insert(0, user_site)
         logger.info(f"Added user site-packages to sys.path: {user_site}")
 
-    install_virtual_import_hook()
+    return install_virtual_import_hook
 
 
 def _reap_children(exit_statuses: dict[int, int]) -> None:
@@ -156,6 +163,7 @@ def _template_main(
     # ----- Load heavy dependencies -----
     # These imports pull in the full transitive closure of each library.
     # After fork, children share these pages via COW.
+    install_virtual_import_hook = None
     try:
         # Core bifrost SDK and execution engine
         try:
@@ -167,6 +175,11 @@ def _template_main(
             import httpx  # noqa: F401
         except ImportError:
             logger.warning("httpx not available — skipping preload")
+
+        try:
+            import requests  # noqa: F401
+        except ImportError:
+            logger.warning("requests not available — skipping preload")
 
         try:
             import pydantic  # noqa: F401
@@ -185,7 +198,9 @@ def _template_main(
 
         # Execution infrastructure
         try:
-            _load_execution_infrastructure(install_requirements_on_startup)
+            install_virtual_import_hook = _load_execution_infrastructure(
+                install_requirements_on_startup
+            )
         except ImportError as e:
             logger.warning(f"Execution infrastructure not available: {e} — continuing without it")
 
@@ -230,6 +245,10 @@ def _template_main(
         "BIFROST_S3_ENDPOINT_URL",
         "BIFROST_S3_BUCKET",
         "BIFROST_S3_REGION",
+        # Execution children receive a freshly minted process-scoped SDK token
+        # only after fork. Never let ambient API credentials cross the template.
+        "BIFROST_ACCESS_TOKEN",
+        "BIFROST_REFRESH_TOKEN",
     ]
     scrubbed = []
     for key in _SCRUB_KEYS:
@@ -270,6 +289,12 @@ def _template_main(
     import src.sdk.context  # noqa: F401
     import src.services.execution.engine  # noqa: F401
     import src.services.execution.worker  # noqa: F401
+
+    # Platform priming must finish before the virtual finder is activated.
+    # Forked children inherit the hook and provide the execution-scoped module
+    # resolver needed for workspace and Solution imports.
+    if install_virtual_import_hook is not None:
+        install_virtual_import_hook()
 
     logger.info("Template process ready — all dependencies loaded")
     pipe.send({"status": "ready", "pid": os.getpid()})
@@ -398,20 +423,19 @@ def _run_forked_child(
     """
     Entry point for a forked child process.
 
-    The child inherits all loaded modules from the template via COW.
-    It creates its own event loop and Redis connection fresh.
+    The child inherits all loaded modules from the template via COW and creates
+    its own event loop. Its execution context arrives on the private work pipe;
+    SDK/module access may still use network clients during the workflow.
 
     Communication uses raw Connection objects (Pipe ends) that were
     inherited via fork — no pickling required.
 
     Args:
-        work_recv: Read end of work pipe; receives execution_ids via .recv().
+        work_recv: Read end of work pipe; receives ``(execution_id, context)``.
         result_send: Write end of result pipe; sends result dicts via .send().
         worker_id: Identifier for logging.
         persistent: If True, loop for multiple executions. If False, run once.
     """
-    import gc
-
     # Reconfigure logging for this child
     logging.basicConfig(
         level=logging.INFO,
@@ -440,10 +464,9 @@ def _run_forked_child(
             if not work_recv.poll(timeout=1.0):
                 continue
 
-            execution_id = work_recv.recv()
+            work_item = work_recv.recv()
 
-            if execution_id is None:
-                continue
+            execution_id, context = work_item
 
             logger.info(f"Worker {worker_id} processing execution: {execution_id[:8]}...")
 
@@ -456,7 +479,7 @@ def _run_forked_child(
             # Execute
             try:
                 from src.services.execution.simple_worker import _execute_sync
-                result = _execute_sync(execution_id, worker_id)
+                result = _execute_sync(execution_id, worker_id, context)
             except ImportError:
                 result = {
                     "execution_id": execution_id,
@@ -475,10 +498,10 @@ def _run_forked_child(
                 # bifrost._logging may not be importable; counter cleanup is best-effort
                 logger.debug(f"clear_sequence_counter failed for {execution_id}: {e}")
 
-            # Force GC before measuring RSS
-            gc.collect()
-
-            # Report current RSS
+            # Report current RSS without a full collection. This child is
+            # one-shot and exits immediately after sending the result, so a
+            # stop-the-world collection adds response latency but cannot
+            # reclaim memory for reuse.
             try:
                 from src.services.execution.simple_worker import _get_process_rss
                 process_rss = _get_process_rss()

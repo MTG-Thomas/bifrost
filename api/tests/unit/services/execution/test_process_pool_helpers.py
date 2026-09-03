@@ -44,6 +44,7 @@ def _handle(
     execution_id: str | None = "exec-1",
     result_reported: bool = False,
     killed_at: datetime | None = None,
+    exitcode: int = 9,
 ) -> ProcessHandle:
     current_execution = None
     if execution_id:
@@ -54,7 +55,7 @@ def _handle(
         )
     return ProcessHandle(
         id=process_id,
-        process=SimpleNamespace(is_alive=lambda: alive, exitcode=9),
+        process=SimpleNamespace(is_alive=lambda: alive, exitcode=exitcode),
         pid=123,
         state=state,
         work_queue=SimpleNamespace(put_nowait=lambda _item: None),
@@ -188,6 +189,9 @@ async def test_report_timeout_cancellation_crash_and_orphan_shape_results():
     assert all(item["success"] is False for item in observed)
     assert timeout_handle.result_reported is True
     assert orphan_handle.result_reported is True
+    assert observed[2]["exit_code"] == 9
+    assert observed[2]["signal"] is None
+    assert observed[2]["worker_identity"].endswith(":process-1")
 
 
 @pytest.mark.asyncio
@@ -211,6 +215,18 @@ async def test_handle_result_frees_slot_and_forwards_callback():
     assert pool.processes == {}
     assert observed == [{"execution_id": "exec-1", "success": True}]
     assert notified == [True]
+
+
+@pytest.mark.asyncio
+async def test_report_crash_classifies_signal_exit():
+    observed = []
+    pool = ProcessPoolManager(on_result=AsyncMock(side_effect=observed.append))
+
+    await pool._report_crash(_handle(execution_id="exec-sigkill", exitcode=-9))
+
+    assert observed[0]["exit_code"] == -9
+    assert observed[0]["signal"] == 9
+    assert "signal=9" in observed[0]["error"]
 
 
 @pytest.mark.asyncio
@@ -292,7 +308,7 @@ async def test_route_execution_records_success_and_sends_execution_id(monkeypatc
     pool._started = True
     pool._template = SimpleNamespace(is_alive=lambda: True)
     handle = _handle(execution_id=None)
-    sent: list[str] = []
+    sent: list[tuple[str, dict[str, object]]] = []
     handle.work_queue = SimpleNamespace(put_nowait=sent.append)
 
     monkeypatch.setattr(
@@ -303,6 +319,7 @@ async def test_route_execution_records_success_and_sends_execution_id(monkeypatc
     monkeypatch.setattr(process_pool, "has_sufficient_memory_cgroup", lambda threshold: True)
     pool._write_context_to_redis = AsyncMock()
     pool._fork_process = lambda: handle
+    pool._register_result_reader = Mock()
 
     await pool.route_execution("exec-route", {"timeout_seconds": 12})
 
@@ -310,7 +327,7 @@ async def test_route_execution_records_success_and_sends_execution_id(monkeypatc
         "exec-route",
         {"timeout_seconds": 12},
     )
-    assert sent == ["exec-route"]
+    assert sent == [("exec-route", {"timeout_seconds": 12})]
     assert handle.current_execution is not None
     assert handle.current_execution.execution_id == "exec-route"
     assert handle.current_execution.timeout_seconds == 12
@@ -382,6 +399,7 @@ async def test_route_fork_is_atomic_with_generation_recycle(monkeypatch):
 
     pool._write_context_to_redis = write_context  # type: ignore[method-assign]
     pool._fork_process = fork_process  # type: ignore[method-assign]
+    pool._register_result_reader = Mock()
     monkeypatch.setattr(
         process_pool,
         "get_settings",
@@ -434,6 +452,7 @@ async def test_normal_drain_waits_for_newly_forked_execution(monkeypatch):
         return handle
 
     pool._fork_process = fork_process  # type: ignore[method-assign]
+    pool._register_result_reader = Mock()
     monkeypatch.setattr(
         process_pool,
         "get_settings",
@@ -491,6 +510,7 @@ async def test_route_heals_dead_template_left_by_failed_restart(monkeypatch):
 
     pool._start_template = AsyncMock(side_effect=start_replacement)
     pool._fork_process = fork_process  # type: ignore[method-assign]
+    pool._register_result_reader = Mock()
     monkeypatch.setattr(
         process_pool,
         "get_settings",
@@ -636,7 +656,7 @@ async def test_route_execution_rejects_when_slot_wait_times_out(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_handle_command_dispatches_recycle_actions_and_ignores_unknown():
+async def test_handle_command_rejects_unaudited_controls_but_allows_generation_event():
     pool = ProcessPoolManager()
     process_commands: list[dict[str, object]] = []
     all_commands: list[dict[str, object]] = []
@@ -662,8 +682,8 @@ async def test_handle_command_dispatches_recycle_actions_and_ignores_unknown():
     await pool._handle_command(generation_changed)
     await pool._handle_command({"action": "unknown"})
 
-    assert process_commands == [recycle_process]
-    assert all_commands == [recycle_all]
+    assert process_commands == []
+    assert all_commands == []
     assert generation_commands == [generation_changed]
 
 

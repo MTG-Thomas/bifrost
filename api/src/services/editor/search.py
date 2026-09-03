@@ -221,7 +221,10 @@ def _search_content(
 async def search_files_db(
     db: AsyncSession,
     request: SearchRequest,
-    root_path: str = ""
+    root_path: str = "",
+    *,
+    immutable_overlay: dict[str, bytes] | None = None,
+    workspace_release_id: str | None = None,
 ) -> SearchResponse:
     """
     Search files for content matching the query using database queries.
@@ -267,6 +270,9 @@ async def search_files_db(
     fi_conditions = [
         FileIndex.content.isnot(None),
     ]
+    overlay = immutable_overlay or {}
+    if overlay:
+        fi_conditions.append(FileIndex.path.not_in(sorted(overlay)))
     if root_path:
         fi_conditions.append(FileIndex.path.like(f"{root_path}%"))
     if like_pattern:
@@ -276,6 +282,30 @@ async def search_files_db(
         .where(*fi_conditions)
         .limit(MAX_RESULTS_PER_TYPE)
     )
+    for path, raw in sorted(overlay.items()):
+        if root_path and not path.startswith(root_path):
+            continue
+        if like_pattern:
+            sql_pattern = re.escape(like_pattern).replace("%", ".*")
+            if re.fullmatch(sql_pattern, path) is None:
+                continue
+        try:
+            content = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        files_searched += 1
+        all_results.extend(
+            _search_content(
+                content,
+                path,
+                request.query,
+                request.case_sensitive,
+                request.is_regex,
+            )
+        )
+        if len(all_results) >= request.max_results:
+            break
+
     code_result = await db.execute(code_stmt)
     for row in code_result:
         files_searched += 1
@@ -304,5 +334,7 @@ async def search_files_db(
         files_searched=files_searched,
         results=results,
         truncated=truncated,
-        search_time_ms=search_time_ms
+        search_time_ms=search_time_ms,
+        source_authority=("workspace-release-v1" if overlay else "repo-v1"),
+        workspace_release_id=workspace_release_id,
     )

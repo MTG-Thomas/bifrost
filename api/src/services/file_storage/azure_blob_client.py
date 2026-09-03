@@ -8,6 +8,7 @@ at a time.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -142,7 +143,6 @@ class AzureBlobStorageClient:
             page = await anext(pager)
         except StopAsyncIteration:
             page = []
-        next_token = getattr(pager, "continuation_token", None)
 
         contents: list[dict] = []
         common_prefixes: set[str] = set()
@@ -150,6 +150,10 @@ class AzureBlobStorageClient:
             blobs = [blob async for blob in cast(AsyncIterator[Any], page)]
         else:
             blobs = list(cast(Iterable[Any], page))
+        # Azure's async pager advances ``continuation_token`` while the page is
+        # consumed. Reading it before iterating the page silently truncates
+        # listings at the first service page.
+        next_token = getattr(pager, "continuation_token", None)
 
         for blob in blobs:
             name = blob.name
@@ -199,6 +203,69 @@ class AzureBlobStorageClient:
             overwrite=IfNoneMatch != "*",
             content_settings=ContentSettings(content_type=ContentType),
         )
+
+    async def put_object_from_chunks(
+        self,
+        path: str,
+        chunks: AsyncIterator[bytes],
+        *,
+        content_type: str | None = None,
+        part_size: int = 8 * 1024 * 1024,
+    ) -> tuple[str, int]:
+        """Stream one object to Azure Blob while hashing the exact bytes."""
+        if part_size <= 0:
+            raise ValueError("part_size must be greater than zero")
+
+        from azure.storage.blob import ContentSettings
+
+        await self._ensure_client()
+        digest = hashlib.sha256()
+        total = 0
+
+        async def tracked_chunks() -> AsyncIterator[bytes]:
+            nonlocal total
+            buffer = bytearray()
+            async for chunk in chunks:
+                if not chunk:
+                    continue
+                digest.update(chunk)
+                total += len(chunk)
+                buffer.extend(chunk)
+                while len(buffer) >= part_size:
+                    yield bytes(buffer[:part_size])
+                    del buffer[:part_size]
+            if buffer:
+                yield bytes(buffer)
+
+        await self._container_client.upload_blob(
+            name=path,
+            data=tracked_chunks(),
+            overwrite=True,
+            content_settings=ContentSettings(content_type=content_type),
+        )
+        return digest.hexdigest(), total
+
+    async def iter_object_chunks(
+        self,
+        path: str,
+        *,
+        chunk_size: int = 8 * 1024 * 1024,
+    ) -> AsyncIterator[bytes]:
+        """Yield one Azure Blob object in bounded chunks."""
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be greater than zero")
+
+        from azure.core.exceptions import ResourceNotFoundError
+
+        await self._ensure_client()
+        try:
+            stream = await self._container_client.download_blob(path)
+        except ResourceNotFoundError as exc:
+            raise FileNotFoundError(f"File not found: {path}") from exc
+
+        async for chunk in stream.chunks():
+            for offset in range(0, len(chunk), chunk_size):
+                yield chunk[offset : offset + chunk_size]
 
     async def get_object(self, *, Bucket: str, Key: str) -> dict[str, _AsyncBody]:
         del Bucket

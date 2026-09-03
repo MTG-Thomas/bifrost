@@ -114,13 +114,16 @@ function workspaceZip(
 	]);
 }
 
-async function buildFixture(): Promise<BuiltFixture> {
+async function buildFixture(version = "default"): Promise<BuiltFixture> {
 	const root = resolve(import.meta.dirname, "fixtures/v2-lazy-app");
 	const outDir = mkdtempSync(join(tmpdir(), "bifrost-v2-lazy-"));
 	await build({
 		root,
 		base: "./",
 		plugins: [react()],
+		define: {
+			"import.meta.env.VITE_ASSET_FIXTURE": JSON.stringify(version),
+		},
 		build: { outDir, emptyOutDir: true },
 		logLevel: "silent",
 	});
@@ -212,8 +215,7 @@ test.describe("Apps v2 code splitting", () => {
 							`/api/solutions/deploy-jobs/${jobId}`,
 						);
 						const body = await response.json();
-						if (body.status === "failed")
-							throw new Error(body.error);
+						if (body.status === "failed") throw new Error(body.error);
 						return body.status;
 					},
 					{ timeout: 60_000 },
@@ -234,6 +236,32 @@ test.describe("Apps v2 code splitting", () => {
 			});
 			expect(entryRequests).toHaveLength(1);
 			expect(entryRequests[0]).not.toContain("?");
+
+			// An internal app URL change must not tear down and remount the v2 root.
+			// The host route still matches /apps/:slug/*, so the app owns this
+			// navigation and its runtime must remain continuous.
+			await page.getByTestId("v2-internal-route").click();
+			await expect(page).toHaveURL(
+				new RegExp(`/apps/${APP_SLUG}/details$`),
+			);
+			await expect(page.getByTestId("v2-details")).toHaveText(
+				"Details rendered",
+			);
+			expect(await page.evaluate(() => window.__v2LazyFixture)).toEqual({
+				entryExecutions: 1,
+				mounts: 1,
+				unmounts: 0,
+			});
+			await page.goBack();
+			await expect(page).toHaveURL(new RegExp(`/apps/${APP_SLUG}/?$`));
+			await expect(page.getByTestId("lazy-page")).toHaveText(
+				"Lazy chunk rendered",
+			);
+			expect(await page.evaluate(() => window.__v2LazyFixture)).toEqual({
+				entryExecutions: 1,
+				mounts: 1,
+				unmounts: 0,
+			});
 
 			// Leave and re-enter through the host SPA: the module stays evaluated once,
 			// while mount() and its returned teardown run for each visit.
@@ -262,6 +290,151 @@ test.describe("Apps v2 code splitting", () => {
 			});
 			expect(entryRequests).toHaveLength(1);
 			expect(errors, errors.join("\n")).toEqual([]);
+		} finally {
+			await api
+				.delete(`/api/solutions/${solutionId}`, {
+					params: { confirm: SOLUTION_SLUG },
+				})
+				.catch(() => {});
+		}
+	});
+
+	test("a stale deployed entry refreshes the manifest and mounts the new styled bundle", async ({
+		page,
+		api,
+	}) => {
+		test.setTimeout(180_000);
+		const stale = await buildFixture("stale-build");
+		const fresh = await buildFixture("recovered-build");
+		expect(fresh.entry).not.toBe(stale.entry);
+
+		const appId = crypto.randomUUID();
+		const solution = await api.post("/api/solutions", {
+			data: {
+				slug: SOLUTION_SLUG,
+				name: SOLUTION_SLUG,
+				scope: "global",
+				global_repo_access: false,
+			},
+		});
+		expect(solution.ok(), await solution.text()).toBeTruthy();
+		const solutionId = (await solution.json()).id;
+
+		const deploy = async (distFiles: Record<string, string>) => {
+			const response = await page
+				.context()
+				.request.post(`/api/solutions/${solutionId}/deploy`, {
+					headers: await api.csrfHeader(),
+					multipart: {
+						file: {
+							name: "solution.zip",
+							mimeType: "application/zip",
+							buffer: workspaceZip(appId, distFiles),
+						},
+					},
+				});
+			expect(response.status(), await response.text()).toBe(202);
+			const jobId = (await response.json()).deploy_job_id;
+			await expect
+				.poll(
+					async () => {
+						const job = await api.get(
+							`/api/solutions/deploy-jobs/${jobId}`,
+						);
+						const body = await job.json();
+						if (body.status === "failed")
+							throw new Error(body.error);
+						return body.status;
+					},
+					{ timeout: 60_000 },
+				)
+				.toBe("succeeded");
+		};
+
+		try {
+			await deploy(stale.distFiles);
+
+			let manifestRequests = 0;
+			let staleEntryFailures = 0;
+			let documentLoads = 0;
+			let resolveFirstManifest!: () => void;
+			let rejectFirstManifest!: (reason?: unknown) => void;
+			let releaseRecoveryManifest!: () => void;
+			const firstManifestHandled = new Promise<void>((resolve, reject) => {
+				resolveFirstManifest = resolve;
+				rejectFirstManifest = reject;
+			});
+			const recoveryManifestCanContinue = new Promise<void>((resolve) => {
+				releaseRecoveryManifest = resolve;
+			});
+			page.on("load", () => {
+				documentLoads += 1;
+			});
+			await page.route(`**/${stale.entry}`, async (route) => {
+				staleEntryFailures += 1;
+				await route.fulfill({ status: 404, body: "stale deployment asset" });
+			});
+			await page.route(
+				/\/api\/applications\/[^/]+\/bundle-manifest\?mode=live$/,
+				async (route) => {
+					manifestRequests += 1;
+					if (manifestRequests !== 1) {
+						await recoveryManifestCanContinue;
+						await route.continue();
+						return;
+					}
+
+					// Capture the old manifest, deploy the replacement, then release
+					// the old response. The browser now has the exact stale-tab race:
+					// old immutable URL + a server that only has the new bundle.
+					try {
+						const oldResponse = await route.fetch();
+						const oldBody = await oldResponse.body();
+						await deploy(fresh.distFiles);
+						await route.fulfill({
+							status: oldResponse.status(),
+							headers: oldResponse.headers(),
+							body: oldBody,
+						});
+						resolveFirstManifest();
+					} catch (error) {
+						rejectFirstManifest(error);
+						throw error;
+					}
+				},
+			);
+
+			await page.goto(`/apps/${APP_SLUG}`);
+			await firstManifestHandled;
+			await expect(
+				page.getByRole("heading", { name: "Application updated" }),
+			).toBeVisible();
+			await page.screenshot({
+				path: "playwright-results/application-update-transition.png",
+				fullPage: true,
+			});
+			releaseRecoveryManifest();
+			await expect(page.getByTestId("fixture-build")).toHaveText(
+				"recovered-build",
+			);
+			await expect(page.getByTestId("lazy-page")).toHaveText(
+				"Lazy chunk rendered",
+			);
+			await expect
+				.poll(() =>
+					page.getByTestId("fixture-build").evaluate((element) =>
+						getComputedStyle(element.closest("main")!).backgroundColor,
+					),
+				)
+				.toBe("rgb(219, 234, 254)");
+
+			expect(staleEntryFailures).toBe(1);
+			expect(manifestRequests).toBe(2);
+			expect(documentLoads).toBe(1);
+			await page.screenshot({
+				path: "playwright-results/stale-asset-recovered.png",
+				fullPage: true,
+			});
 		} finally {
 			await api
 				.delete(`/api/solutions/${solutionId}`, {

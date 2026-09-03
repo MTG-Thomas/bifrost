@@ -2,8 +2,8 @@
 Unit tests for ProcessPoolManager (on-demand / one-shot workers).
 
 Each route_execution call forks a fresh worker; the worker exits after
-returning its single result. The pool's only throttles are
-`max_workers` (concurrency cap) and the cgroup memory-pressure check.
+returning its single result. The pool's only throttles are `max_workers`
+(concurrency cap) and the cgroup memory-pressure check.
 
 NOTE: These tests use mocks to avoid spawning real processes.
 """
@@ -246,7 +246,6 @@ class TestProcessPoolManagerStart:
             with patch.object(pool, "_start_template", new_callable=AsyncMock), \
                  patch.object(pool, "_register_worker", new_callable=AsyncMock), \
                  patch.object(pool, "_monitor_loop", new_callable=AsyncMock), \
-                 patch.object(pool, "_result_loop", new_callable=AsyncMock), \
                  patch.object(pool, "_heartbeat_loop", new_callable=AsyncMock), \
                  patch.object(pool, "_cancel_listener_loop", new_callable=AsyncMock), \
                  patch.object(pool, "_command_listener_loop", new_callable=AsyncMock), \
@@ -259,8 +258,8 @@ class TestProcessPoolManagerStart:
 
         # Cleanup
         pool._shutdown = True
-        for task in [pool._monitor_task, pool._result_task, pool._heartbeat_task,
-                     pool._cancel_task, pool._command_task]:
+        for task in [pool._monitor_task, pool._heartbeat_task,
+                     pool._cancel_task, pool._command_task, *pool._result_tasks]:
             if task:
                 task.cancel()
                 try:
@@ -268,7 +267,6 @@ class TestProcessPoolManagerStart:
                 except asyncio.CancelledError:
                     # Expected — we just cancelled the task during cleanup
                     pass
-
 
 class TestProcessPoolManagerRouting:
     """Tests for execution routing."""
@@ -303,6 +301,7 @@ class TestProcessPoolManagerRouting:
         pool._fork_process = mock_spawn
 
         with patch.object(pool, "_write_context_to_redis", new_callable=AsyncMock), \
+             patch.object(pool, "_register_result_reader"), \
              patch("src.services.execution.process_pool.has_sufficient_memory_cgroup", return_value=True):
             await pool.route_execution("exec-123", {"timeout_seconds": 300})
 
@@ -311,7 +310,63 @@ class TestProcessPoolManagerRouting:
         assert h.state == ProcessState.BUSY
         assert h.current_execution is not None
         assert h.current_execution.execution_id == "exec-123"
-        h.work_queue.put_nowait.assert_called_once_with("exec-123")
+        h.work_queue.put_nowait.assert_called_once_with(
+            ("exec-123", {"timeout_seconds": 300})
+        )
+
+    @pytest.mark.asyncio
+    async def test_restart_cannot_begin_between_context_write_and_dispatch(self):
+        """A template restart must stay exclusive through child dispatch."""
+        pool = ProcessPoolManager(max_workers=1)
+        pool._started = True
+        pool._template = MagicMock(is_alive=MagicMock(return_value=True))
+        process = MagicMock()
+        process.is_alive.return_value = True
+        handle = ProcessHandle(
+            id="process-1",
+            process=process,
+            pid=12345,
+            state=ProcessState.BUSY,
+            work_queue=MagicMock(),
+            result_queue=MagicMock(),
+            started_at=datetime.now(timezone.utc),
+        )
+
+        def fork_process():
+            pool.processes[handle.id] = handle
+            return handle
+
+        context_write_started = asyncio.Event()
+        finish_context_write = asyncio.Event()
+
+        async def write_context(*_args, **_kwargs):
+            context_write_started.set()
+            await finish_context_write.wait()
+
+        with patch.object(pool, "_write_context_to_redis", side_effect=write_context), \
+             patch.object(pool, "_register_result_reader"), \
+             patch.object(pool, "_fork_process", side_effect=fork_process) as mock_fork, \
+             patch(
+                 "src.services.execution.process_pool.has_sufficient_memory_cgroup",
+                 return_value=True,
+             ):
+            route_task = asyncio.create_task(
+                pool.route_execution("exec-during-restart", {"timeout_seconds": 300})
+            )
+            await context_write_started.wait()
+
+            await pool._restart_lock.acquire()
+            finish_context_write.set()
+            await asyncio.sleep(0)
+            assert not route_task.done()
+            mock_fork.assert_not_called()
+            handle.work_queue.put_nowait.assert_not_called()
+
+            pool._restart_lock.release()
+            await asyncio.wait_for(route_task, timeout=1.0)
+
+        mock_fork.assert_called_once_with()
+        handle.work_queue.put_nowait.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_route_waits_for_slot_when_saturated(self):
@@ -356,6 +411,7 @@ class TestProcessPoolManagerRouting:
         pool._fork_process = mock_spawn
 
         with patch.object(pool, "_write_context_to_redis", new_callable=AsyncMock), \
+             patch.object(pool, "_register_result_reader"), \
              patch("src.services.execution.process_pool.has_sufficient_memory_cgroup", return_value=True):
             # Kick off the route — it should park on _slot_condition.
             route_task = asyncio.create_task(
@@ -374,6 +430,7 @@ class TestProcessPoolManagerRouting:
         assert len(forked) == 1
         assert forked[0].current_execution is not None
         assert forked[0].current_execution.execution_id == "exec-456"
+
 
 
 class TestProcessPoolManagerTimeouts:
@@ -419,6 +476,9 @@ class TestProcessPoolManagerTimeouts:
         async def mock_report_timeout(h: ProcessHandle) -> None:
             nonlocal timeout_reported
             timeout_reported = True
+            # Reporting owns the durable callback acknowledgement. The pool
+            # may release the handle only after that acknowledgement succeeds.
+            h.result_reported = True
 
         def mock_spawn() -> ProcessHandle:
             nonlocal spawned
@@ -480,6 +540,8 @@ class TestProcessPoolManagerCrashDetection:
         async def mock_report_crash(h: ProcessHandle) -> None:
             nonlocal crash_reported
             crash_reported = True
+            # Mirror _report_crash's successful callback contract.
+            h.result_reported = True
 
         def mock_spawn() -> ProcessHandle:
             nonlocal spawn_count
@@ -543,11 +605,14 @@ class TestProcessPoolManagerHeartbeat:
         assert heartbeat["type"] == "worker_heartbeat"
         assert heartbeat["worker_id"] == "test-worker-123"
         assert heartbeat["pool_size"] == 2
-        # In on-demand mode every running handle is BUSY; KILLED handles
-        # (process-1 above) are pending removal and never counted as busy.
-        # idle_count is always reported as 0 in this mode.
+        # KILLED handles are pending removal and never counted as idle/busy.
         assert heartbeat["idle_count"] == 0
         assert heartbeat["busy_count"] == 1
+        assert heartbeat["available_slots"] == pool.max_workers - 1
+        assert heartbeat["saturation_ratio"] == 1 / pool.max_workers
+        assert 0 <= heartbeat["estimated_drain_seconds"] <= 300
+        assert "wait_seconds_average" in heartbeat["admission"]
+        assert isinstance(heartbeat["health_reasons"], list)
         assert len(heartbeat["processes"]) == 2
 
         # Find busy process info
@@ -560,10 +625,59 @@ class TestProcessPoolManagerHeartbeat:
 class TestProcessPoolManagerResultHandling:
     """Tests for result handling."""
 
+    def test_register_result_reader_watches_child_pipe(self):
+        """Result delivery should use fd readiness instead of interval polling."""
+        pool = ProcessPoolManager()
+        result_queue = MagicMock()
+        result_queue.fileno.return_value = 42
+        handle = ProcessHandle(
+            id="process-1",
+            process=MagicMock(),
+            pid=12345,
+            state=ProcessState.BUSY,
+            work_queue=MagicMock(),
+            result_queue=result_queue,
+            started_at=datetime.now(timezone.utc),
+        )
+        loop = MagicMock()
+
+        with patch(
+            "src.services.execution.process_pool.asyncio.get_running_loop",
+            return_value=loop,
+        ):
+            pool._register_result_reader(handle)
+
+        assert handle.result_reader_fd == 42
+        loop.add_reader.assert_called_once_with(
+            42, pool._on_result_ready, "process-1", 42
+        )
+
+    @pytest.mark.asyncio
+    async def test_consume_ready_result_forwards_immediately(self):
+        pool = ProcessPoolManager()
+        result = {"type": "result", "execution_id": "exec-123", "success": True}
+        result_queue = MagicMock()
+        result_queue.get_nowait.return_value = result
+        handle = ProcessHandle(
+            id="process-1",
+            process=MagicMock(),
+            pid=12345,
+            state=ProcessState.BUSY,
+            work_queue=MagicMock(),
+            result_queue=result_queue,
+            started_at=datetime.now(timezone.utc),
+        )
+        pool.processes[handle.id] = handle
+
+        with patch.object(pool, "_handle_result", new_callable=AsyncMock) as handler:
+            await pool._consume_ready_result(handle.id)
+
+        handler.assert_awaited_once_with(handle, result)
+
     @pytest.mark.asyncio
     async def test_handle_result_removes_handle(self):
         """Should remove the handle (one-shot worker) after result."""
-        pool = ProcessPoolManager()
+        pool = ProcessPoolManager(on_result=AsyncMock())
 
         mock_process = MagicMock()
         mock_process.is_alive.return_value = True
@@ -601,7 +715,7 @@ class TestProcessPoolManagerResultHandling:
     @pytest.mark.asyncio
     async def test_handle_result_notifies_slot_waiters(self):
         """Removing a handle should wake any tasks waiting on a slot."""
-        pool = ProcessPoolManager(max_workers=1)
+        pool = ProcessPoolManager(max_workers=1, on_result=AsyncMock())
 
         mock_process = MagicMock()
         mock_process.is_alive.return_value = True
@@ -738,12 +852,15 @@ class TestProcessPoolManagerIntegration:
         pool._fork_process = mock_spawn
 
         with patch.object(pool, "_write_context_to_redis", new_callable=AsyncMock), \
+             patch.object(pool, "_register_result_reader"), \
              patch("src.services.execution.process_pool.has_sufficient_memory_cgroup", return_value=True):
             await pool.route_execution("exec-123", {"timeout_seconds": 300})
 
         handle = pool.processes["process-1"]
         assert handle.state == ProcessState.BUSY
-        mock_work_queue.put_nowait.assert_called_once_with("exec-123")
+        mock_work_queue.put_nowait.assert_called_once_with(
+            ("exec-123", {"timeout_seconds": 300})
+        )
 
         result_data = {
             "type": "result",
@@ -832,11 +949,25 @@ class TestAdmissionControl:
             return_value=True,
         ):
             with patch.object(pool, '_write_context_to_redis', new_callable=AsyncMock):
-                with patch.object(pool, '_fork_process', side_effect=mock_spawn):
-                    await pool.route_execution("exec-123", {"timeout_seconds": 300})
+                with patch.object(pool, '_fork_process', side_effect=mock_spawn), \
+                     patch.object(pool, "_register_result_reader"), \
+                     patch(
+                         "src.services.execution.attempts.mark_attempt_running_token",
+                         new_callable=AsyncMock,
+                         return_value=True,
+                     ):
+                    execution_id = "71d4f778-f0d6-4f77-b076-7989cc06a09c"
+                    await pool.route_execution(
+                        execution_id,
+                        {"timeout_seconds": 300},
+                        attempt_token="a91abfe2-1e2b-4ba7-a940-712245a12e8d",
+                    )
                     assert mock_handle.state == ProcessState.BUSY
                     assert mock_handle.current_execution is not None
-                    assert mock_handle.current_execution.execution_id == "exec-123"
+                    assert mock_handle.current_execution.execution_id == execution_id
+                    assert mock_handle.current_execution.attempt_token == (
+                        "a91abfe2-1e2b-4ba7-a940-712245a12e8d"
+                    )
 
 
 class TestOrphanedKilledHandleSweep:
@@ -857,6 +988,7 @@ class TestOrphanedKilledHandleSweep:
             execution_id="exec-orphan-123",
             started_at=datetime.now(timezone.utc) - timedelta(seconds=10),
             timeout_seconds=300,
+            attempt_token="a91abfe2-1e2b-4ba7-a940-712245a12e8d",
         )
 
         handle = ProcessHandle(
@@ -881,9 +1013,26 @@ class TestOrphanedKilledHandleSweep:
         assert call_args["success"] is False
         assert call_args["error_type"] == "OrphanedExecution"
         assert call_args["execution_id"] == "exec-orphan-123"
+        assert call_args["attempt_token"] == exec_info.attempt_token
 
         # Handle must be removed from pool
         assert "process-1" not in pool.processes
+
+    @pytest.mark.asyncio
+    async def test_result_callback_retries_before_releasing_ownership(self):
+        callback = AsyncMock(
+            side_effect=[RuntimeError("database unavailable"), None]
+        )
+        pool = ProcessPoolManager(max_workers=1, on_result=callback)
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as sleep:
+            delivered = await pool._deliver_result(
+                {"execution_id": "exec-retry", "success": True}
+            )
+
+        assert delivered is True
+        assert callback.await_count == 2
+        sleep.assert_awaited_once_with(0.1)
 
     @pytest.mark.asyncio
     async def test_check_process_health_orphan_idempotent_when_already_reported(self):
@@ -1522,7 +1671,7 @@ class TestProcessPoolCoverageBranches:
         assert calls == [(12345, signal.SIGTERM), (12345, signal.SIGKILL)]
 
     @pytest.mark.asyncio
-    async def test_handle_command_dispatches_recycle_actions_and_ignores_unknown(self):
+    async def test_handle_command_rejects_unaudited_recycle_actions(self):
         pool = ProcessPoolManager()
         pool._handle_recycle_process_command = AsyncMock()  # type: ignore[method-assign]
         pool._handle_recycle_all_command = AsyncMock()  # type: ignore[method-assign]
@@ -1531,12 +1680,18 @@ class TestProcessPoolCoverageBranches:
         await pool._handle_command({"action": "recycle_all"})
         await pool._handle_command({"action": "resize"})
 
-        pool._handle_recycle_process_command.assert_awaited_once_with(
-            {"action": "recycle_process", "pid": 10}
-        )
-        pool._handle_recycle_all_command.assert_awaited_once_with(
-            {"action": "recycle_all"}
-        )
+        pool._handle_recycle_process_command.assert_not_awaited()
+        pool._handle_recycle_all_command.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_handle_command_allows_identifierless_workspace_generation_event(self):
+        pool = ProcessPoolManager()
+        pool._handle_workspace_generation_changed_command = AsyncMock()  # type: ignore[method-assign]
+
+        command = {"action": "workspace_generation_changed", "generation": 7}
+        await pool._handle_command(command)
+
+        pool._handle_workspace_generation_changed_command.assert_awaited_once_with(command)
 
     @pytest.mark.asyncio
     async def test_recycle_commands_delegate_to_drain_with_default_and_custom_reason(self):
@@ -1589,7 +1744,7 @@ class TestProcessPoolCoverageBranches:
         pool._notify_slot_free.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_report_cancellation_noops_and_swallows_callback_errors(self):
+    async def test_report_cancellation_retains_failed_callback_ownership(self):
         pool = ProcessPoolManager(on_result=None)
         handle = ProcessHandle(
             id="proc-noop",
@@ -1614,5 +1769,74 @@ class TestProcessPoolCoverageBranches:
 
         await pool._report_cancellation(handle)
 
+        assert callback.await_count == 3
+        assert handle.result_reported is False
+
+    @pytest.mark.asyncio
+    async def test_stop_durably_reports_active_attempt_before_clearing_handle(self):
+        callback = AsyncMock()
+        pool = ProcessPoolManager(on_result=callback)
+        pool._started = True
+        pool._shutdown = False
+        pool._terminate_process = AsyncMock()  # type: ignore[method-assign]
+        pool._unregister_worker = AsyncMock()  # type: ignore[method-assign]
+        handle = ProcessHandle(
+            id="proc-shutdown",
+            process=MagicMock(),
+            pid=123,
+            state=ProcessState.BUSY,
+            work_queue=MagicMock(),
+            result_queue=MagicMock(),
+            started_at=datetime.now(timezone.utc),
+            current_execution=ExecutionInfo(
+                execution_id="exec-shutdown",
+                started_at=datetime.now(timezone.utc),
+                timeout_seconds=300,
+                attempt_token="attempt-token",
+            ),
+        )
+        pool.processes[handle.id] = handle
+
+        await pool.stop()
+
         callback.assert_awaited_once()
-        assert handle.result_reported is True
+        payload = callback.await_args.args[0]
+        assert payload["execution_id"] == "exec-shutdown"
+        assert payload["attempt_token"] == "attempt-token"
+        assert payload["error_type"] == "WorkerShutdownError"
+        pool._terminate_process.assert_awaited_once_with(handle)
+        assert pool.processes == {}
+
+    @pytest.mark.asyncio
+    async def test_stop_retains_token_when_durable_surrender_fails(self):
+        callback = AsyncMock(side_effect=RuntimeError("database unavailable"))
+        pool = ProcessPoolManager(on_result=callback)
+        pool._started = True
+        pool._shutdown = False
+        pool._terminate_process = AsyncMock()  # type: ignore[method-assign]
+        handle = ProcessHandle(
+            id="proc-retry-shutdown",
+            process=MagicMock(),
+            pid=124,
+            state=ProcessState.BUSY,
+            work_queue=MagicMock(),
+            result_queue=MagicMock(),
+            started_at=datetime.now(timezone.utc),
+            current_execution=ExecutionInfo(
+                execution_id="exec-retry-shutdown",
+                started_at=datetime.now(timezone.utc),
+                timeout_seconds=300,
+                attempt_token="attempt-token",
+            ),
+        )
+        pool.processes[handle.id] = handle
+
+        with pytest.raises(RuntimeError, match="durably surrender"):
+            await pool.stop()
+
+        assert callback.await_count == 3
+        assert pool.processes[handle.id].current_execution is not None
+        assert (
+            pool.processes[handle.id].current_execution.attempt_token
+            == "attempt-token"
+        )

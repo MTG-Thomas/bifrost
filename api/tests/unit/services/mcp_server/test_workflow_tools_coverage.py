@@ -8,6 +8,15 @@ import pytest
 from src.services.mcp_server.tools import workflow
 
 
+@pytest.fixture(autouse=True)
+def _legacy_workspace_authority(monkeypatch):
+    monkeypatch.setattr(
+        workflow,
+        "active_workspace_release_file_view",
+        AsyncMock(return_value=None),
+    )
+
+
 def _content_text(result) -> str:
     content = result.content
     if isinstance(content, list):
@@ -58,6 +67,26 @@ def _workflow(**overrides):
     for key, value in overrides.items():
         setattr(row, key, value)
     return row
+
+
+@pytest.mark.asyncio
+async def test_authoritative_workflow_read_uses_immutable_live(monkeypatch):
+    path = "workflows/governed.py"
+    view = MagicMock()
+    view.governs.return_value = True
+    view.read = AsyncMock(return_value=b"reviewed = True\n")
+    monkeypatch.setattr(
+        workflow,
+        "active_workspace_release_file_view",
+        AsyncMock(return_value=view),
+    )
+
+    content = await workflow._read_authoritative_workspace_file(
+        object(), _context(), path
+    )
+
+    assert content == b"reviewed = True\n"
+    view.read.assert_awaited_once_with(path)
 
 
 class TestWorkflowListAndGet:

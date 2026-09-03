@@ -3,10 +3,11 @@
 import sys
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
-from uuid import uuid4
+from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID, uuid4
 
 import pytest
+from redis.exceptions import ConnectionError as RedisConnectionError
 
 sys.modules.setdefault(
     "resource",
@@ -16,8 +17,10 @@ sys.modules.setdefault(
     ),
 )
 
+from src.jobs.consumers import workflow_execution  # noqa: E402
 from src.jobs.consumers.workflow_execution import WorkflowExecutionConsumer, workflow_prefetch_count  # noqa: E402
 from src.jobs.rabbitmq import (  # noqa: E402
+    DeliveryContext,
     DomainFailureHandled,
     DuplicateMessage,
     MalformedMessage,
@@ -31,8 +34,18 @@ def make_consumer() -> WorkflowExecutionConsumer:
     with patch.object(WorkflowExecutionConsumer, "__init__", lambda self: None):
         consumer = WorkflowExecutionConsumer()
 
+    consumer._workflow_operations_policy = workflow_execution.broker_execution_policies()[
+        workflow_execution.QUEUE_NAME
+    ]
+    consumer.queue_name = workflow_execution.QUEUE_NAME
     consumer._redis_client = AsyncMock()
-    consumer._claim_durable_execution = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    consumer._pool = SimpleNamespace(
+        worker_id="worker-test",
+        worker_incarnation_id=uuid4(),
+    )
+    # Empty token represents the legacy inline path without a durable
+    # PostgreSQL execution row. Registered workflows return a UUID token.
+    consumer._claim_durable_execution = AsyncMock(return_value="")  # type: ignore[method-assign]
     consumer._release_durable_execution_claim = AsyncMock()  # type: ignore[method-assign]
     consumer._fail_missing_pending_execution = AsyncMock(return_value=None)  # type: ignore[method-assign]
     return consumer
@@ -48,9 +61,57 @@ def pending_context() -> dict[str, object]:
     }
 
 
+@pytest.mark.asyncio
+async def test_derived_step_retries_without_replaying_durable_callback() -> None:
+    operation = AsyncMock(side_effect=[RuntimeError("redis down"), None])
+
+    with patch("asyncio.sleep", new_callable=AsyncMock) as sleep:
+        accepted = await WorkflowExecutionConsumer._run_derived_step(
+            "sync-result", operation
+        )
+
+    assert accepted is True
+    assert operation.await_count == 2
+    sleep.assert_awaited_once_with(0.1)
+
+
+@pytest.mark.asyncio
+async def test_derived_step_exhaustion_is_non_authoritative() -> None:
+    operation = AsyncMock(side_effect=RuntimeError("pubsub down"))
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        accepted = await WorkflowExecutionConsumer._run_derived_step(
+            "execution-update", operation
+        )
+
+    assert accepted is False
+    assert operation.await_count == 3
+
+
+def delivery_context(execution_id: str, *, sync: bool = False) -> DeliveryContext:
+    return DeliveryContext(
+        queue_name="workflow-executions",
+        body={"execution_id": execution_id, "sync": sync},
+        message_id="message-1",
+        correlation_id="correlation-1",
+        headers={},
+        redelivered=False,
+        delivery_tag=1,
+        routing_key="workflow-executions",
+        exchange="",
+        retry_count=4,
+        replay_count=0,
+        idempotency_key=execution_id,
+        enqueued_at="2026-08-26T18:00:00Z",
+    )
+
+
 class _Session:
     def __init__(self) -> None:
         self.commit = AsyncMock()
+        self.execute = AsyncMock()
+        self.scalar = AsyncMock(return_value=None)
+        self.rollback = AsyncMock()
 
     async def __aenter__(self):
         return self
@@ -158,6 +219,267 @@ async def test_process_message_retries_missing_pending_context() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure_point", ["queue_tracker", "pending_context"])
+async def test_process_message_retries_redis_connectivity_failures(
+    failure_point: str,
+) -> None:
+    consumer = make_consumer()
+    execution_id = str(uuid4())
+    consumer._redis_client.get_pending_execution.return_value = pending_context()
+    if failure_point == "pending_context":
+        consumer._redis_client.get_pending_execution.side_effect = RedisConnectionError(
+            "DNS unavailable"
+        )
+
+    remove_error = (
+        RedisConnectionError("DNS unavailable")
+        if failure_point == "queue_tracker"
+        else None
+    )
+    with patch(
+        "src.services.execution.queue_tracker.remove_from_queue",
+        new_callable=AsyncMock,
+        side_effect=remove_error,
+    ) as remove_from_queue:
+        with pytest.raises(RetryableConsumerError, match="Redis pending execution state"):
+            await consumer.process_message({"execution_id": execution_id})
+
+    remove_from_queue.assert_awaited_once_with(execution_id)
+    consumer._claim_durable_execution.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_poison_finalization_atomically_records_terminal_execution_and_reason() -> None:
+    from src.models.enums import ExecutionStatus
+
+    consumer = make_consumer()
+    execution_id = str(uuid4())
+    row = SimpleNamespace(
+        status=ExecutionStatus.PENDING,
+        error_message=None,
+        completed_at=None,
+        executed_by=uuid4(),
+        executed_by_name="Test User",
+        workflow_name="Poisoned workflow",
+        organization_id=uuid4(),
+        started_at=None,
+    )
+    db = AsyncMock()
+    db.add = MagicMock()
+    db.get.return_value = row
+
+    @asynccontextmanager
+    async def db_context():
+        yield db
+
+    consumer._redis_client.delete_pending_execution = AsyncMock()
+    with (
+        patch(
+            "src.services.execution.poison.get_db_context",
+            side_effect=db_context,
+        ),
+        patch(
+            "src.services.execution.poison.get_redis_client",
+            return_value=consumer._redis_client,
+        ),
+        patch(
+            "src.services.execution.queue_tracker.remove_from_queue",
+            new_callable=AsyncMock,
+        ) as remove_from_queue,
+        patch(
+            "src.services.execution.poison.publish_execution_update",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "src.services.execution.poison.publish_history_update",
+            new_callable=AsyncMock,
+        ),
+    ):
+        await consumer._finalize_poison_delivery(
+            delivery_context(execution_id),
+            reason="retry attempts exhausted: Redis DNS unavailable",
+        )
+
+    assert row.status == ExecutionStatus.FAILED
+    assert row.completed_at is not None
+    assert "Redis DNS unavailable" in row.error_message
+    db.commit.assert_awaited_once()
+    log = db.add.call_args.args[0]
+    assert log.log_metadata == {
+        "schema": "bifrost.execution-poison/v1",
+        "operation": "consumer_poison",
+        "queue": "workflow-executions",
+        "reason": "retry attempts exhausted: Redis DNS unavailable",
+        "retry_count": 4,
+        "replay_count": 0,
+        "message_id": "message-1",
+        "original_status": "Pending",
+        "final_status": "Failed",
+    }
+    remove_from_queue.assert_awaited_once_with(execution_id)
+    consumer._redis_client.delete_pending_execution.assert_awaited_once_with(
+        execution_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_poison_finalization_preserves_existing_terminal_state() -> None:
+    from src.models.enums import ExecutionStatus
+
+    consumer = make_consumer()
+    execution_id = str(uuid4())
+    row = SimpleNamespace(status=ExecutionStatus.SUCCESS)
+    db = AsyncMock()
+    db.add = MagicMock()
+    db.get.return_value = row
+
+    @asynccontextmanager
+    async def db_context():
+        yield db
+
+    consumer._redis_client.delete_pending_execution = AsyncMock()
+    with (
+        patch(
+            "src.services.execution.poison.get_db_context",
+            side_effect=db_context,
+        ),
+        patch(
+            "src.services.execution.poison.get_redis_client",
+            return_value=consumer._redis_client,
+        ),
+        patch(
+            "src.services.execution.queue_tracker.remove_from_queue",
+            new_callable=AsyncMock,
+        ),
+    ):
+        await consumer._finalize_poison_delivery(
+            delivery_context(execution_id),
+            reason="duplicate poison delivery",
+        )
+
+    assert row.status == ExecutionStatus.SUCCESS
+    db.commit.assert_not_awaited()
+    db.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_operator_poison_finalization_rejects_different_terminal_evidence() -> None:
+    from src.models.enums import ExecutionStatus
+    from src.services.execution.poison import (
+        PoisonFinalizationConflict,
+        finalize_poisoned_execution,
+    )
+
+    execution_id = str(uuid4())
+    row = SimpleNamespace(
+        status=ExecutionStatus.SUCCESS,
+        error_message=None,
+    )
+    db = AsyncMock()
+    db.add = MagicMock()
+    db.get.return_value = row
+
+    @asynccontextmanager
+    async def db_context():
+        yield db
+
+    with patch(
+        "src.services.execution.poison.get_db_context",
+        side_effect=db_context,
+    ):
+        with pytest.raises(PoisonFinalizationConflict, match="different evidence"):
+            await finalize_poisoned_execution(
+                execution_id=execution_id,
+                queue="workflow-executions",
+                reason="retry attempts exhausted: Redis DNS unavailable",
+                retry_count=4,
+                replay_count=0,
+                message_id="message-1",
+                sync=False,
+                operation="operator_reconcile_discard",
+                require_matching_terminal=True,
+                require_transient_cleanup=True,
+            )
+
+    db.commit.assert_not_awaited()
+    db.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_poison_finalization_survives_deferred_redis_cleanup() -> None:
+    from src.models.enums import ExecutionStatus
+
+    consumer = make_consumer()
+    execution_id = str(uuid4())
+    row = SimpleNamespace(
+        status=ExecutionStatus.PENDING,
+        error_message=None,
+        completed_at=None,
+        executed_by=uuid4(),
+        executed_by_name="Test User",
+        workflow_name="Poisoned workflow",
+        organization_id=None,
+        started_at=None,
+    )
+    db = AsyncMock()
+    db.add = MagicMock()
+    db.get.return_value = row
+
+    @asynccontextmanager
+    async def db_context():
+        yield db
+
+    with (
+        patch(
+            "src.services.execution.poison.get_db_context",
+            side_effect=db_context,
+        ),
+        patch(
+            "src.services.execution.poison.get_redis_client",
+            return_value=consumer._redis_client,
+        ),
+        patch(
+            "src.services.execution.queue_tracker.remove_from_queue",
+            new_callable=AsyncMock,
+            side_effect=RedisConnectionError("DNS unavailable"),
+        ),
+        patch(
+            "src.services.execution.poison.publish_execution_update",
+            new_callable=AsyncMock,
+            side_effect=RedisConnectionError("DNS unavailable"),
+        ),
+    ):
+        await consumer._finalize_poison_delivery(
+            delivery_context(execution_id),
+            reason="retry attempts exhausted: Redis DNS unavailable",
+        )
+
+    assert row.status == ExecutionStatus.FAILED
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("execution_id", [None, "not-a-uuid"])
+async def test_poison_finalization_skips_messages_without_durable_execution_id(
+    execution_id: str | None,
+) -> None:
+    consumer = make_consumer()
+    context = delivery_context(str(uuid4()))
+    context.body["execution_id"] = execution_id
+
+    with patch(
+        "src.services.execution.poison.finalize_poisoned_execution",
+        new_callable=AsyncMock,
+    ) as finalize:
+        await consumer._finalize_poison_delivery(
+            context,
+            reason="malformed workflow delivery",
+        )
+
+    finalize.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("status", "expected_status", "failed"),
     [
@@ -229,19 +551,35 @@ async def test_durable_execution_claim_serializes_with_publisher(
         yield db
 
     execution_id = str(uuid4())
-    with patch(
-        "src.core.database.get_db_context",
-        side_effect=db_context,
+    claim_token = uuid4()
+    claim = SimpleNamespace(claim_token=claim_token)
+    with (
+        patch(
+            "src.core.database.get_db_context",
+            side_effect=db_context,
+        ),
+        patch(
+            "src.services.execution.attempts.create_claimed_attempt",
+            new_callable=AsyncMock,
+            return_value=claim,
+        ) as create_claimed_attempt,
     ):
         result = await consumer._claim_durable_execution(execution_id)
 
-    assert result is claimable
+    assert result == (str(claim_token) if claimable else None)
     assert "bifrost:workflow-execution:" in str(db.execute.await_args.args[0])
     if claimable:
         assert row.status == ExecutionStatus.RUNNING
         db.commit.assert_awaited_once()
+        create_claimed_attempt.assert_awaited_once_with(
+            db,
+            row,
+            worker_id="worker-test",
+            worker_incarnation_id=consumer._pool.worker_incarnation_id,
+        )
     else:
         db.commit.assert_not_awaited()
+        create_claimed_attempt.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -300,8 +638,8 @@ async def test_process_message_records_cancelled_before_start_for_sync_execution
             "src.services.execution.queue_tracker.remove_from_queue",
             new_callable=AsyncMock,
         ) as remove_from_queue,
-        patch("src.repositories.executions.create_execution", new_callable=AsyncMock) as create_execution,
-        patch("src.repositories.executions.update_execution", new_callable=AsyncMock) as update_execution,
+        patch.object(workflow_execution, "create_execution", new_callable=AsyncMock) as create_execution,
+        patch.object(workflow_execution, "update_execution", new_callable=AsyncMock) as update_execution,
         patch(
             "src.jobs.consumers.workflow_execution.publish_execution_update",
             new_callable=AsyncMock,
@@ -354,8 +692,8 @@ async def test_process_message_retries_pool_admission_memory_pressure_without_de
             "src.services.execution.queue_tracker.remove_from_queue",
             new_callable=AsyncMock,
         ),
-        patch("src.repositories.executions.create_execution", new_callable=AsyncMock) as create_execution,
-        patch("src.repositories.executions.update_execution", new_callable=AsyncMock) as update_execution,
+        patch.object(workflow_execution, "create_execution", new_callable=AsyncMock) as create_execution,
+        patch.object(workflow_execution, "update_execution", new_callable=AsyncMock) as update_execution,
         patch(
             "src.jobs.consumers.workflow_execution.publish_execution_update",
             new_callable=AsyncMock,
@@ -385,18 +723,116 @@ async def test_process_message_retries_pool_admission_memory_pressure_without_de
 
 
 @pytest.mark.asyncio
+async def test_workspace_release_routes_with_verified_immutable_duration_bound() -> None:
+    consumer = make_consumer()
+    consumer._pool = AsyncMock()
+    execution_id = str(uuid4())
+    workflow_id = str(uuid4())
+    release_id = "sha256:" + "a" * 64
+    runtime_evidence = {"workspace_release_id": release_id}
+    pending = pending_context()
+    pending.update(
+        {
+            "runtime_mode": "workspace-release-v1",
+            "runtime_evidence": runtime_evidence,
+        }
+    )
+    consumer._redis_client.get_pending_execution.return_value = pending
+
+    durable_execution = SimpleNamespace(
+        runtime_mode="workspace-release-v1",
+        runtime_evidence=runtime_evidence,
+        runtime_evidence_hash="sha256:" + "b" * 64,
+    )
+    db = AsyncMock()
+    db.get.return_value = durable_execution
+
+    @asynccontextmanager
+    async def db_context():
+        yield db
+
+    pinned = SimpleNamespace(queue_evidence=lambda: runtime_evidence)
+    workflow_data = {
+        "name": "Immutable release workflow",
+        "function_name": "run",
+        "path": "features/demo.py",
+        "type": "workflow",
+        "cache_ttl_seconds": 0,
+        "timeout_seconds": 11,
+        "time_saved": 0,
+        "value": 0,
+        "content_hash": "c" * 64,
+        "organization_id": None,
+        "workspace_release_id": release_id,
+        "workspace_release_source_hashes": {"features/demo.py": "c" * 64},
+        "workspace_release_runtime_storage_prefix": (
+            "_workspace_releases/org/release/files/"
+        ),
+        "workflow_runtime_bounds": {
+            "max_duration_seconds": 47,
+            "max_external_calls": 1,
+            "max_records_read": 10,
+            "max_output_bytes": 2048,
+        },
+        "workspace_release_max_output_bytes": 2048,
+    }
+
+    with (
+        patch(
+            "src.services.execution.queue_tracker.remove_from_queue",
+            new_callable=AsyncMock,
+        ),
+        patch.object(workflow_execution, "get_db_context", side_effect=db_context),
+        patch(
+            "src.services.workspace_release_runtime.resolve_pinned_workspace_runtime",
+            new=AsyncMock(return_value=pinned),
+        ),
+        patch(
+            "src.services.workspace_release_runtime.verify_workspace_runtime_evidence"
+        ),
+        patch(
+            "src.services.workspace_release_runtime.workflow_data_from_workspace_evidence",
+            return_value=workflow_data,
+        ),
+        patch.object(workflow_execution, "create_execution", new_callable=AsyncMock),
+        patch.object(workflow_execution, "update_execution", new_callable=AsyncMock),
+        patch(
+            "src.jobs.consumers.workflow_execution.publish_execution_update",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "src.jobs.consumers.workflow_execution.publish_history_update",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "src.core.security.mint_engine_token",
+            return_value=("engine-token", "2099-01-01T00:00:00Z"),
+        ),
+    ):
+        await consumer.process_message(
+            {"execution_id": execution_id, "workflow_id": workflow_id}
+        )
+
+    routed_context = consumer._pool.route_execution.await_args.kwargs["context"]
+    assert routed_context["timeout_seconds"] == 11
+    assert routed_context["runtime_max_duration_seconds"] == 47
+    assert routed_context["runtime_max_output_bytes"] == 2048
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("status", "released"),
+    ("status", "expected_status", "committed"),
     [
-        ("Running", True),
-        ("Cancelling", False),
-        ("Cancelled", False),
-        ("Success", False),
+        ("Running", "Pending", True),
+        ("Cancelling", "Cancelled", True),
+        ("Cancelled", "Cancelled", False),
+        ("Success", "Success", False),
     ],
 )
 async def test_release_execution_claim_preserves_concurrent_terminal_state(
     status: str,
-    released: bool,
+    expected_status: str,
+    committed: bool,
 ) -> None:
     from src.models.enums import ExecutionStatus
 
@@ -405,20 +841,68 @@ async def test_release_execution_claim_preserves_concurrent_terminal_state(
     row = SimpleNamespace(status=ExecutionStatus(status))
     db = AsyncMock()
     db.get.return_value = row
+    attempt_token = uuid4()
+    finalize_attempt = AsyncMock(return_value=True)
 
     @asynccontextmanager
     async def db_context():
         yield db
 
-    with patch("src.core.database.get_db_context", side_effect=db_context):
-        await consumer._release_durable_execution_claim(str(uuid4()))
+    execution_id = str(uuid4())
+    with (
+        patch("src.core.database.get_db_context", side_effect=db_context),
+        patch(
+            "src.services.execution.attempts.finalize_attempt",
+            new=finalize_attempt,
+        ),
+    ):
+        await consumer._release_durable_execution_claim(
+            execution_id,
+            attempt_token=str(attempt_token),
+        )
 
-    if released:
-        assert row.status == ExecutionStatus.PENDING
+    assert row.status == ExecutionStatus(expected_status)
+    if committed:
         db.commit.assert_awaited_once()
+        finalize_attempt.assert_awaited_once()
+        assert finalize_attempt.await_args.args[:3] == (
+            db,
+            UUID(execution_id),
+            attempt_token,
+        )
     else:
-        assert row.status == ExecutionStatus(status)
         db.commit.assert_not_awaited()
+        finalize_attempt.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_release_execution_claim_rejects_stale_attempt_token() -> None:
+    from src.models.enums import ExecutionStatus
+
+    consumer = make_consumer()
+    del consumer._release_durable_execution_claim
+    row = SimpleNamespace(status=ExecutionStatus.RUNNING)
+    db = AsyncMock()
+    db.get.return_value = row
+
+    @asynccontextmanager
+    async def db_context():
+        yield db
+
+    with (
+        patch("src.core.database.get_db_context", side_effect=db_context),
+        patch(
+            "src.services.execution.attempts.finalize_attempt",
+            new=AsyncMock(return_value=False),
+        ),
+    ):
+        await consumer._release_durable_execution_claim(
+            str(uuid4()),
+            attempt_token=str(uuid4()),
+        )
+
+    assert row.status == ExecutionStatus.RUNNING
+    db.commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -436,8 +920,8 @@ async def test_process_message_acknowledges_recorded_setup_failure_as_domain_han
             "src.services.execution.queue_tracker.remove_from_queue",
             new_callable=AsyncMock,
         ),
-        patch("src.repositories.executions.create_execution", new_callable=AsyncMock),
-        patch("src.repositories.executions.update_execution", new_callable=AsyncMock) as update_execution,
+        patch.object(workflow_execution, "create_execution", new_callable=AsyncMock),
+        patch.object(workflow_execution, "update_execution", new_callable=AsyncMock) as update_execution,
         patch(
             "src.jobs.consumers.workflow_execution.publish_execution_update",
             new_callable=AsyncMock,
@@ -490,8 +974,9 @@ async def test_process_success_updates_storage_metrics_pubsub_and_sync_result() 
 
     with (
         patch("src.core.database.get_session_factory", return_value=_session_factory(session)),
-        patch(
-            "src.repositories.executions.update_execution",
+        patch.object(
+            workflow_execution,
+            "update_execution",
             new_callable=AsyncMock,
             return_value=ExecutionStatus.SUCCESS,
         ) as update_execution,
@@ -524,9 +1009,9 @@ async def test_process_success_updates_storage_metrics_pubsub_and_sync_result() 
     assert update_execution.await_args.kwargs["result"] == {"ok": True}
     assert update_execution.await_args.kwargs["time_saved"] == 4
     assert update_execution.await_args.kwargs["value"] == 12.5
-    update_delivery.assert_awaited_once_with(execution_id, "Success", session=session)
+    update_delivery.assert_not_awaited()
     flush_changes.assert_awaited_once_with(execution_id, session=session)
-    flush_logs.assert_awaited_once_with(execution_id, session=session)
+    flush_logs.assert_not_awaited()
     update_daily_metrics.assert_awaited_once()
     assert update_daily_metrics.await_args.kwargs["peak_memory_bytes"] == 10
     update_workflow_roi_daily.assert_awaited_once_with(
@@ -537,7 +1022,7 @@ async def test_process_success_updates_storage_metrics_pubsub_and_sync_result() 
         value=12.5,
         db=session,
     )
-    session.commit.assert_awaited_once()
+    assert session.commit.await_count == 2
     publish_execution_update.assert_awaited_once_with(
         execution_id,
         "Success",
@@ -585,8 +1070,9 @@ async def test_process_failure_maps_cancelled_status_and_emits_failure_event() -
 
     with (
         patch("src.core.database.get_session_factory", return_value=_session_factory(session)),
-        patch(
-            "src.repositories.executions.update_execution",
+        patch.object(
+            workflow_execution,
+            "update_execution",
             new_callable=AsyncMock,
             return_value=ExecutionStatus.CANCELLED,
         ) as update_execution,
@@ -634,10 +1120,14 @@ async def test_process_failure_maps_cancelled_status_and_emits_failure_event() -
         org_id="org-1",
         status="Cancelled",
         duration_ms=50,
+        peak_memory_bytes=None,
+        cpu_total_seconds=None,
+        time_saved=0,
+        value=0.0,
         workflow_id="wf-1",
         db=session,
     )
-    session.commit.assert_awaited_once()
+    assert session.commit.await_count == 2
     assert call_order[:2] == ["commit", "push_result"]
     assert call_order.index("push_result") < call_order.index("publish_execution")
     assert call_order.index("push_result") < call_order.index("publish_history")

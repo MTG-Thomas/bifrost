@@ -53,6 +53,8 @@ def _pricing_entry(**overrides: object) -> SimpleNamespace:
         "model": "GPT 4o",
         "input_price_per_million": 5.0,
         "output_price_per_million": 15.0,
+        "cache_read_price_per_million": None,
+        "cache_write_price_per_million": None,
         "effective_date": date(2026, 7, 5),
         "created_at": datetime(2026, 7, 5, tzinfo=timezone.utc),
         "updated_at": datetime(2026, 7, 5, tzinfo=timezone.utc),

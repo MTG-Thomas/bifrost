@@ -96,6 +96,59 @@ class Settings(BaseSettings):
             "This flag does not enable activation."
         ),
     )
+    workspace_rapid_promotion_draft_upload_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable inert, expiring local Workspace draft storage. Drafts cannot "
+            "be prepared, canaried, registered, or activated."
+        ),
+    )
+    workspace_release_prepare_canary_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable immutable reviewed-artifact preparation and bounded canaries. "
+            "This flag does not enable activation."
+        ),
+    )
+    workspace_release_activation_enabled: bool = Field(
+        default=False,
+        description="Enable atomic activation of prepared Workspace releases.",
+    )
+    workspace_promotion_diagnostics_mode: Literal["off", "shadow", "enforce"] = Field(
+        default="off",
+        description=(
+            "Control differential Workspace promotion diagnostics. Off and shadow "
+            "retain legacy blocker enforcement; shadow records both decisions; "
+            "enforce accepts only valid immutable differential evidence."
+        ),
+    )
+    workspace_source_release_oidc_repository: str | None = Field(
+        default=None,
+        description=(
+            "Exact GitHub owner/repository allowed to declare protected-main "
+            "Workspace source releases with GitHub Actions OIDC."
+        ),
+    )
+    workspace_source_release_oidc_repository_id: int | None = Field(
+        default=None,
+        gt=0,
+        description="Immutable GitHub repository ID allowed by source-release OIDC.",
+    )
+    workspace_source_release_oidc_repository_owner_id: int | None = Field(
+        default=None,
+        gt=0,
+        description="Immutable GitHub repository owner ID allowed by source-release OIDC.",
+    )
+    workspace_source_release_oidc_workflow_ref: str | None = Field(
+        default=None,
+        description=(
+            "Exact GitHub Actions workflow_ref allowed to declare source releases."
+        ),
+    )
+    workspace_source_release_oidc_organization_id: str | None = Field(
+        default=None,
+        description="Bifrost organization UUID receiving source-release declarations.",
+    )
     deferred_execution_promoter_interval_seconds: int = Field(
         default=60,
         ge=1,

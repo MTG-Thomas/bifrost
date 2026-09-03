@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 
 MODULE_KEY_PREFIX = "bifrost:module:"
 MODULE_INDEX_KEY = "bifrost:module:index"
+MODULE_RESOLUTION_KEY_PREFIX = "bifrost:module:resolution:"
+MODULE_RESOLUTION_TTL = 86400
+MODULE_RESOLUTION_NEGATIVE_TTL = 30
 MODULE_INDEX_GENERATION_KEY = "bifrost:module:index:generation"
 WORKSPACE_GENERATION_KEY = "bifrost:workspace:generation"
 WORKSPACE_GENERATION_CHANNEL = "bifrost:workspace:generation:events"
@@ -37,9 +40,21 @@ WORKSPACE_UPDATE_LOCK_SECONDS = 300
 WORKSPACE_UPDATE_LOCK_WAIT_SECONDS = 10
 WORKSPACE_UPDATE_LOCK_RENEW_SECONDS = WORKSPACE_UPDATE_LOCK_SECONDS / 3
 SOLUTIONS_ROOT = "_solutions"
+WORKSPACE_RELEASES_ROOT = "_workspace_releases"
 _workspace_update_depth: ContextVar[int] = ContextVar(
     "workspace_update_depth", default=0
 )
+
+
+def module_resolution_cache_key(
+    name: str,
+    *,
+    solution_id: str | None,
+    global_repo_access: bool,
+) -> str:
+    """Build the shared Redis key suffix for one scoped import name."""
+    dotted_name = name.strip().replace("/", ".").strip(".")
+    return f"{solution_id or '-'}:{int(global_repo_access)}:{dotted_name}"
 
 
 class CachedModule(TypedDict):
@@ -53,6 +68,75 @@ class CachedModule(TypedDict):
 
 class WorkspacePropagationError(RuntimeError):
     """Durable workspace bytes changed but runtime cache proof did not converge."""
+
+
+async def get_module_resolution_cache(cache_key: str) -> dict | None:
+    """Read a targeted module resolver result from Redis."""
+    redis = get_redis_client()
+    data = await redis.get(f"{MODULE_RESOLUTION_KEY_PREFIX}{cache_key}")
+    return json.loads(data) if data else None
+
+
+async def set_module_resolution_cache(cache_key: str, result: dict) -> None:
+    """Cache a targeted module resolver result."""
+    ttl = (
+        MODULE_RESOLUTION_NEGATIVE_TTL
+        if result.get("kind") == "not_found"
+        else MODULE_RESOLUTION_TTL
+    )
+    redis = get_redis_client()
+    await redis.setex(
+        f"{MODULE_RESOLUTION_KEY_PREFIX}{cache_key}",
+        ttl,
+        json.dumps(result),
+    )
+
+
+async def _scan_keys(redis_conn, pattern: str) -> list[str]:
+    """Collect Redis keys from both real and lightweight test clients."""
+    iterator = redis_conn.scan_iter(pattern)
+    if hasattr(iterator, "__await__"):
+        iterator = await iterator
+    if not hasattr(iterator, "__aiter__"):
+        return []
+    return [key async for key in iterator]
+
+
+def _resolver_names_for_path(path: str) -> set[str]:
+    """Logical names and ancestor namespace names affected by a module path."""
+    parts = path.split("/", 2)
+    if len(parts) == 3 and parts[0] == SOLUTIONS_ROOT:
+        path = parts[2]
+
+    if path.endswith("/__init__.py"):
+        logical = path.removesuffix("/__init__.py")
+    elif path.endswith(".py"):
+        logical = path.removesuffix(".py")
+    else:
+        logical = path
+
+    dotted = logical.replace("/", ".").strip(".")
+    if not dotted:
+        return set()
+    name_parts = dotted.split(".")
+    return {".".join(name_parts[:i]) for i in range(1, len(name_parts) + 1)}
+
+
+async def invalidate_module_resolution_cache(path: str) -> None:
+    """Invalidate resolver metadata for a changed module and its namespaces."""
+    names = _resolver_names_for_path(path)
+    if not names:
+        return
+
+    redis = get_redis_client()
+    redis_conn = await redis._get_redis()
+    keys: list[str] = []
+    for name in sorted(names):
+        keys.extend(
+            await _scan_keys(redis_conn, f"{MODULE_RESOLUTION_KEY_PREFIX}*:{name}")
+        )
+    if keys:
+        await cast(Awaitable[int], redis_conn.delete(*dict.fromkeys(keys)))
 
 
 @dataclass(frozen=True)
@@ -86,6 +170,20 @@ def _cached_module_is_current(module: object, generation: str) -> bool:
         and isinstance(content_hash, str)
         and module.get("generation") == generation
         and hashlib.sha256(content.encode("utf-8")).hexdigest() == content_hash
+    )
+
+
+def _cached_module_content_matches_hash(module: object) -> bool:
+    """Verify immutable cache bytes instead of trusting their hash label."""
+    if not isinstance(module, dict):
+        return False
+    content = module.get("content")
+    content_hash = module.get("hash")
+    return (
+        isinstance(content, str)
+        and isinstance(content_hash, str)
+        and hashlib.sha256(content.encode("utf-8")).hexdigest()
+        == content_hash.removeprefix("sha256:")
     )
 
 
@@ -394,6 +492,15 @@ async def _read_module_from_storage(path: str) -> bytes:
         solution_id, relative_path = parts[1], parts[2]
         return await SolutionStorage(solution_id).read(relative_path)
 
+    if path.startswith(f"{WORKSPACE_RELEASES_ROOT}/"):
+        from src.services.workspace_release_storage import (
+            WorkspaceReleaseStorage,
+            split_workspace_release_storage_path,
+        )
+
+        runtime_prefix, relative_path = split_workspace_release_storage_path(path)
+        return await WorkspaceReleaseStorage(runtime_prefix).read(relative_path)
+
     return await RepoStorage().read(path)
 
 
@@ -414,16 +521,22 @@ async def get_module(path: str) -> CachedModule | None:
     """
     redis = get_redis_client()
     key = f"{MODULE_KEY_PREFIX}{path}"
-    solution_module = path.startswith(f"{SOLUTIONS_ROOT}/")
+    immutable_module = path.startswith(
+        (f"{SOLUTIONS_ROOT}/", f"{WORKSPACE_RELEASES_ROOT}/")
+    )
 
     # A generation is captured before object-storage fallback and rechecked
     # afterwards. A cold read that overlaps a source update can therefore never
     # repopulate Redis with old bytes labelled as the new generation.
     for _attempt in range(3):
-        generation = None if solution_module else await wait_for_workspace_generation()
+        generation = None if immutable_module else await wait_for_workspace_generation()
         cached = _decode_cached_module(await redis.get(key))
         if cached is not None and (
-            solution_module or _cached_module_is_current(cached, generation or "")
+            (
+                immutable_module
+                and _cached_module_content_matches_hash(cached)
+            )
+            or _cached_module_is_current(cached, generation or "")
         ):
             return cast(CachedModule, cached)
 
@@ -433,7 +546,7 @@ async def get_module(path: str) -> CachedModule | None:
             logger.debug(f"Module not in cache or S3: {log_safe(path)}")
             return None
 
-        if not solution_module and await wait_for_workspace_generation() != generation:
+        if not immutable_module and await wait_for_workspace_generation() != generation:
             continue
         module = _module_from_bytes(
             path=path, content=content_bytes, generation=generation
@@ -451,7 +564,7 @@ async def get_module(path: str) -> CachedModule | None:
             logger.warning(
                 "Failed to re-cache object-storage module: %s", log_safe(exc)
             )
-        if solution_module or await wait_for_workspace_generation() == generation:
+        if immutable_module or await wait_for_workspace_generation() == generation:
             return module
 
     raise RuntimeError("workspace generation did not stabilize during module read")
@@ -477,7 +590,9 @@ async def set_module(
     redis = get_redis_client()
     key = f"{MODULE_KEY_PREFIX}{path}"
 
-    if not path.startswith(f"{SOLUTIONS_ROOT}/") and generation is None:
+    if not path.startswith(
+        (f"{SOLUTIONS_ROOT}/", f"{WORKSPACE_RELEASES_ROOT}/")
+    ) and generation is None:
         generation = _ready_generation_value(await get_workspace_generation())
     cached = CachedModule(
         content=content,
@@ -492,6 +607,7 @@ async def set_module(
     await cast(Awaitable[int], redis_conn.sadd(MODULE_INDEX_KEY, path))
     if generation:
         await redis_conn.set(MODULE_INDEX_GENERATION_KEY, generation)
+    await invalidate_module_resolution_cache(path)
 
     logger.debug(f"Cached module: {log_safe(path)}")
 
@@ -509,6 +625,7 @@ async def invalidate_module(path: str) -> None:
     key = f"{MODULE_KEY_PREFIX}{path}"
 
     await redis.delete(key)
+    await invalidate_module_resolution_cache(path)
 
     # Remove from index set
     redis_conn = await redis._get_redis()
@@ -773,6 +890,12 @@ async def clear_module_cache() -> int:
 
     # Clear the index
     await cast(Awaitable[int], redis_conn.delete(MODULE_INDEX_KEY))
+
+    # Resolver metadata can otherwise outlive the source cache and turn a
+    # deliberate cold-cache reset into a partially warm lookup.
+    resolution_keys = await _scan_keys(redis_conn, f"{MODULE_RESOLUTION_KEY_PREFIX}*")
+    if resolution_keys:
+        await cast(Awaitable[int], redis_conn.delete(*resolution_keys))
 
     logger.info(f"Cleared {count} modules from cache")
     return count

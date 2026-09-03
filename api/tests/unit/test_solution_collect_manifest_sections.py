@@ -277,13 +277,13 @@ def test_solution_scaffold_app_creates_app_manifest_and_sample_workflow(tmp_path
 
     result = CliRunner().invoke(
         solution_group,
-        ["scaffold-app", "portal", "--api-url", "https://bifrost.example"],
+        ["scaffold-app", "portal"],
     )
 
     assert result.exit_code == 0, result.output
     assert (tmp_path / "apps" / "portal" / "package.json").is_file()
     package = json.loads((tmp_path / "apps" / "portal" / "package.json").read_text())
-    assert package["dependencies"]["bifrost"] == "https://bifrost.example/api/sdk/download"
+    assert "bifrost" not in package["dependencies"]
 
     apps_yaml = yaml.safe_load((tmp_path / ".bifrost" / "apps.yaml").read_text())
     app_entry = next(iter(apps_yaml["apps"].values()))
@@ -843,8 +843,8 @@ def test_entities_in_manifest_reports_pull_ack_entities(tmp_path):
     ]
 
 
-def test_v2_scaffold_files_are_wired_for_instance_sdk_and_runtime_config():
-    files = _v2_scaffold_files("desk", "https://bifrost.example/")
+def test_v2_scaffold_files_are_wired_for_transient_instance_sdk_and_runtime_config():
+    files = _v2_scaffold_files("desk")
 
     assert {
         "package.json",
@@ -857,7 +857,7 @@ def test_v2_scaffold_files_are_wired_for_instance_sdk_and_runtime_config():
     }.issubset(files)
     package = json.loads(files["package.json"])
     assert package["name"] == "desk"
-    assert package["dependencies"]["bifrost"] == "https://bifrost.example/api/sdk/download"
+    assert "bifrost" not in package["dependencies"]
     assert package["dependencies"]["lucide-react"]
     assert "window.__BIFROST_APP_MODULES__" in files["src/main.tsx"]
     assert "BIFROST_ACCESS_TOKEN" in files["vite.config.ts"]
@@ -895,6 +895,7 @@ async def test_poll_deploy_job_reports_success_failure_and_read_errors(capsys):
         def __init__(self, responses):
             self.responses = list(responses)
             self.paths: list[str] = []
+            self.api_url = "https://bifrost.example"
 
         async def get(self, path):
             self.paths.append(path)
@@ -909,7 +910,9 @@ async def test_poll_deploy_job_reports_success_failure_and_read_errors(capsys):
         "/api/solutions/deploy-jobs/job-1",
         "/api/solutions/deploy-jobs/job-1",
     ]
-    assert "Still deploying" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "Still deploying" not in output
+    assert "Deploy complete" in output
 
     mismatched = Client(
         [

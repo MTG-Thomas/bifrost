@@ -67,10 +67,11 @@ If `DOWN` → `./test.sh stack up`. Each worktree runs its own isolated stack (C
 - React component behavior → `./test.sh client unit` (vitest on host, no stack needed)
 - Full user flow through UI → `./test.sh client e2e`
 - All available suites (manual broad run) → `./test.sh all` (backend) + `./test.sh client unit` + `./test.sh client e2e`
+- Exact clean commit before opening or queueing a PR → `./test.sh pre-pr`
 
 State is auto-reset before every test subcommand. If migrations changed, run `./test.sh stack reset` once — that rebuilds the template DB.
 
-### 3. Before declaring done: scoped verification
+### 3. Before declaring implementation done: scoped verification
 
 Run the smallest test set that gives direct evidence for the change:
 
@@ -79,7 +80,7 @@ Run the smallest test set that gives direct evidence for the change:
 - The relevant contract tripwires when DTOs, CLI/MCP surfaces, manifests, permissions, storage, scheduling, or other shared boundaries change.
 - One targeted live-service or Playwright happy path when the behavior crosses that boundary.
 
-The full backend, Vitest, and Playwright suites are **not** a default local completion requirement. They are broad integration-gate checks unless the user explicitly requests them or the change is so cross-cutting that no honest bounded selection exists. Until every broad suite is wired into that gate, targeted coverage for changed behavior remains mandatory; never assume an unrun suite is covered elsewhere. In the handoff, list the exact commands run and any broader suites not run. Never imply unrun suites are green.
+The full backend, Vitest, and Playwright suites are **not** the default iteration loop. Targeted coverage remains mandatory because the broad gate cannot prove the changed behavior was exercised intentionally. In the handoff, list the exact targeted commands run and never imply an unrun suite is green.
 
 Verify the authoring rules above are satisfied for any new code.
 
@@ -97,7 +98,7 @@ If VM-backed validation was requested or is warranted by the change, run it on t
 
 **Skip when:** bugfixes, backend changes, routine pre-merge sanity checks. Most runs do not need a UX review.
 
-### 5. Known failures outside the scoped run
+### 6. Known failures outside the scoped run
 
 A scoped change may be complete without running every suite. If a broader local run or CI later finds another failure, however, the failure becomes owned work and must be classified from evidence:
 
@@ -118,7 +119,7 @@ Diagnostics:
 - JUnit: `/tmp/bifrost/test-results.xml`.
 - To isolate a test, run it alone: `./test.sh tests/e2e/path/test_foo.py::TestClass::test_method -v`.
 
-### 6. Prefer simple tests
+### 7. Prefer simple tests
 
 Test complexity is a liability, not evidence of rigor. Prefer one observable contract, minimal fixtures, deterministic state, explicit cleanup, and the lowest test layer that can catch the regression. An end-to-end test should prove the primary integration or user journey, not reproduce every validation rule and edge case already covered below it.
 
@@ -133,6 +134,7 @@ Before declaring work complete, every box must be checked:
 - [ ] Backend logic has a unit test; endpoint/workflow changes have an e2e test
 - [ ] No new `skip`, `xfail`, `.only`, or commented-out tests introduced
 - [ ] Targeted suite green
+- [ ] `./test.sh pre-pr` green for the exact clean `HEAD` before any PR is opened or queued
 - [ ] Exact test commands and unrun broader suites reported honestly
 - [ ] Every known out-of-scope failure has a durable fix or a dedicated blocking repair change
 - [ ] UX review done if new UI was built

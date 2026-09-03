@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 from sqlalchemy import desc, func, literal_column, or_, select, text
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -22,7 +22,6 @@ from src.core.db_deps import DbSession
 from src.core.log_safety import log_safe
 from src.services.agent_run_access import (
     apply_agent_run_access,
-    load_agent_by_name_for_user,
     load_agent_for_user,
     load_agent_run_for_user,
 )
@@ -34,6 +33,8 @@ from src.models.contracts.agent_runs import (
     AgentRunCreateRequest,
     AgentRunChildResponse,
     AgentRunDetailResponse,
+    AgentRunEnqueueRequest,
+    AgentRunEnqueueResponse,
     AgentRunListResponse,
     AgentRunRerunResponse,
     AgentRunResponse,
@@ -45,6 +46,7 @@ from src.models.contracts.agent_runs import (
     DryRunResponse,
     MetadataKeysResponse,
     MetadataValuesResponse,
+    PausedResponse,
     SummaryBackfillJobListResponse,
     SummaryBackfillJobResponse,
     VerdictRequest,
@@ -54,12 +56,12 @@ from src.models.contracts.executions import AIUsagePublicSimple, AIUsageTotalsSi
 from src.models.orm.agent_run_verdict_history import AgentRunVerdictHistory
 from src.models.orm.agent_runs import AgentRun
 from src.models.orm.ai_usage import AIUsage
-from src.models.orm.solutions import Solution
 from src.models.orm.summary_backfill_job import SummaryBackfillJob
 from src.core.redis_client import get_redis_client
 from src.services.execution.agent_run_access import agent_run_visibility_conditions
 from src.services.execution.agent_run_service import (
     enqueue_agent_run,
+    get_executable_agent,
     wait_for_agent_run_result,
 )
 from src.services.execution.dry_run import evaluate_against_prompt
@@ -480,6 +482,9 @@ async def get_agent_run(
                 model=entry.model,
                 input_tokens=entry.input_tokens,
                 output_tokens=entry.output_tokens,
+                cache_read_tokens=entry.cache_read_tokens,
+                cache_write_tokens=entry.cache_write_tokens,
+                provider_cost=(str(entry.provider_cost) if entry.provider_cost is not None else None),
                 cost=str(entry.cost) if entry.cost else None,
                 duration_ms=entry.duration_ms,
                 timestamp=entry.timestamp.isoformat(),
@@ -493,6 +498,9 @@ async def get_agent_run(
             select(
                 func.sum(AIUsage.input_tokens).label("total_input"),
                 func.sum(AIUsage.output_tokens).label("total_output"),
+                func.sum(AIUsage.cache_read_tokens).label("total_cache_read"),
+                func.sum(AIUsage.cache_write_tokens).label("total_cache_write"),
+                func.sum(AIUsage.provider_cost).label("total_provider_cost"),
                 func.sum(AIUsage.cost).label("total_cost"),
                 func.sum(AIUsage.duration_ms).label("total_duration"),
                 func.count(AIUsage.id).label("call_count"),
@@ -502,6 +510,9 @@ async def get_agent_run(
         ai_totals_response = AIUsageTotalsSimple(
             total_input_tokens=int(totals_row.total_input or 0),
             total_output_tokens=int(totals_row.total_output or 0),
+            total_cache_read_tokens=int(totals_row.total_cache_read or 0),
+            total_cache_write_tokens=int(totals_row.total_cache_write or 0),
+            total_provider_cost=str(totals_row.total_provider_cost or Decimal("0")),
             total_cost=str(totals_row.total_cost or Decimal("0")),
             total_duration_ms=int(totals_row.total_duration or 0),
             call_count=int(totals_row.call_count or 0),
@@ -711,7 +722,7 @@ async def cancel_agent_run(
         agent_run.completed_at = datetime.now(timezone.utc)
         await db.commit()
 
-        # Also mark the Redis context so worker skips if it picks up concurrently
+        # Also mark the Redis context so a worker holding the message skips it.
         from src.core.cache.redis_client import get_redis
         redis_key = f"bifrost:agent_run:{run_id}:context"
         async with get_redis() as r:
@@ -978,6 +989,41 @@ async def dry_run_agent_run(
     )
 
 
+@router.post(
+    "/enqueue",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=AgentRunEnqueueResponse | PausedResponse,
+)
+async def enqueue_agent_run_request(
+    request: AgentRunEnqueueRequest,
+    response: Response,
+    db: DbSession,
+    user: CurrentActiveUser,
+) -> AgentRunEnqueueResponse | PausedResponse:
+    """Queue an agent run and return without waiting for execution."""
+    agent = await get_executable_agent(db, request.agent_name, user)
+
+    if not agent.is_active:
+        response.status_code = status.HTTP_200_OK
+        return PausedResponse(
+            message=f"Agent '{agent.name}' is paused. Request not processed.",
+            agent_id=agent.id,
+        )
+
+    run_id = await enqueue_agent_run(
+        agent_id=str(agent.id),
+        trigger_type="api",
+        input_data=request.input,
+        output_schema=request.output_schema,
+        org_id=str(user.organization_id) if user.organization_id else None,
+        caller_user_id=str(user.user_id),
+        caller_email=user.email,
+        caller_name=getattr(user, "name", None),
+        sync=False,
+    )
+    return AgentRunEnqueueResponse(run_id=UUID(run_id))
+
+
 @router.post("/execute")
 async def execute_agent_run(
     request: AgentRunCreateRequest,
@@ -985,13 +1031,7 @@ async def execute_agent_run(
     user: CurrentActiveUser,
 ) -> dict:
     """Execute an agent synchronously via the SDK."""
-    agent = await load_agent_by_name_for_user(db, request.agent_name, user)
-
-    if not agent:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Agent '{request.agent_name}' not found",
-        )
+    agent = await get_executable_agent(db, request.agent_name, user)
 
     # Paused agents short-circuit gracefully — HTTP 200 with structured body.
     # Downstream consumers (webhook senders, SDK) discriminate on status="paused".
@@ -1002,22 +1042,6 @@ async def execute_agent_run(
             "message": f"Agent '{agent.name}' is paused. Request not processed.",
             "agent_id": str(agent.id),
         }
-
-    # Inactive-solution gate: an agent belonging to an inactive solution must not
-    # execute (mirrors the worker-side gate in get_workflow_for_execution).
-    if agent.solution_id is not None:
-        sol_result = await db.execute(
-            select(Solution.status).where(Solution.id == agent.solution_id)
-        )
-        sol_status = sol_result.scalar_one_or_none()
-        if sol_status != "active":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    f"Agent '{agent.name}' belongs to an inactive solution. "
-                    "Reinstall the solution to execute this agent."
-                ),
-            )
 
     # Enqueue the agent run for sync execution
     run_id = await enqueue_agent_run(

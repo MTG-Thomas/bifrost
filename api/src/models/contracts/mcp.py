@@ -90,6 +90,8 @@ class MCPGatewayToolSummary(BaseModel):
     name: str
     description: str
     source: str
+    supports_async: bool
+    default_async: bool
     input_schema: dict[str, Any] | None = None
     schema_included: bool = False
 
@@ -204,8 +206,11 @@ class MCPGatewayExecutionResponse(BaseModel):
     """Compact, ownership-checked execution status and paged result."""
 
     execution_id: str
+    execution_type: Literal["workflow", "agent_run"]
     workflow_id: str | None = None
     workflow_name: str | None = None
+    agent_id: str | None = None
+    agent_name: str | None = None
     status: str
     created_at: datetime | None = None
     started_at: datetime | None = None

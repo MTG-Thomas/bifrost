@@ -245,7 +245,13 @@ class FakeTablesClient:
         self.responses = responses
         self.calls: list[tuple[str, str, dict[str, Any] | None]] = []
 
-    async def post(self, url: str, json: dict[str, Any] | None = None) -> FakeResponse:
+    async def post(
+        self,
+        url: str,
+        json: dict[str, Any] | None = None,
+        *,
+        retry_safe: bool = False,
+    ) -> FakeResponse:
         self.calls.append(("POST", url, json))
         return self.responses.pop(0)
 

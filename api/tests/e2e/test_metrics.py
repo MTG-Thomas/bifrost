@@ -7,6 +7,7 @@ for both org-specific and global metrics.
 
 import pytest
 import pytest_asyncio
+import asyncio
 from datetime import date
 from uuid import uuid4
 
@@ -17,6 +18,8 @@ from src.models import ExecutionMetricsDaily
 from src.models.orm import Organization
 from src.models.enums import ExecutionStatus
 from src.core.metrics import _upsert_daily_metrics
+
+METRICS_TEST_DATE = date(2000, 1, 1)
 
 
 @pytest_asyncio.fixture
@@ -37,7 +40,7 @@ async def test_organization(db_session: AsyncSession) -> Organization:
 @pytest_asyncio.fixture
 async def clean_metrics(db_session: AsyncSession):
     """Clean up metrics table before and after test."""
-    today = date.today()
+    today = METRICS_TEST_DATE
     # Clean before test
     await db_session.execute(
         delete(ExecutionMetricsDaily).where(ExecutionMetricsDaily.date == today)
@@ -69,7 +72,7 @@ class TestDailyMetricsUpsert:
             db_session.bind.sync_engine.url
         )
 
-        today = date.today()
+        today = METRICS_TEST_DATE
 
         # First update - success
         await _upsert_daily_metrics(
@@ -138,6 +141,7 @@ class TestDailyMetricsUpsert:
         assert row.success_count == 2
         assert row.failed_count == 1
         assert row.total_duration_ms == 3500  # 1000 + 2000 + 500
+        assert row.avg_duration_ms == 1166
         assert row.max_duration_ms == 2000
         assert row.peak_memory_bytes == 200_000_000
         assert row.total_cpu_seconds == pytest.approx(1.7, rel=0.01)
@@ -149,7 +153,7 @@ class TestDailyMetricsUpsert:
         Multiple updates for an org on the same day should result in
         exactly one row with accumulated values.
         """
-        today = date.today()
+        today = METRICS_TEST_DATE
 
         # First update
         await _upsert_daily_metrics(
@@ -204,6 +208,7 @@ class TestDailyMetricsUpsert:
         assert row.success_count == 1
         assert row.timeout_count == 1
         assert row.total_duration_ms == 31500
+        assert row.avg_duration_ms == 15750
         assert row.max_duration_ms == 30000
         assert row.peak_memory_bytes == 500_000_000
 
@@ -213,7 +218,7 @@ class TestDailyMetricsUpsert:
         """
         Org-specific and global metrics should be tracked separately.
         """
-        today = date.today()
+        today = METRICS_TEST_DATE
 
         # Update org-specific metrics
         await _upsert_daily_metrics(
@@ -271,7 +276,7 @@ class TestDailyMetricsUpsert:
         """
         Average duration should be calculated as total_duration_ms / execution_count.
         """
-        today = date.today()
+        today = METRICS_TEST_DATE
 
         # Three updates with different durations
         await _upsert_daily_metrics(
@@ -325,3 +330,39 @@ class TestDailyMetricsUpsert:
         assert row.avg_duration_ms == 2000
         assert row.total_duration_ms == 6000
         assert row.execution_count == 3
+
+    async def test_concurrent_global_updates_preserve_count_and_average(
+        self, db_session: AsyncSession, async_session_factory, clean_metrics
+    ):
+        """Concurrent completions atomically update the shared global row."""
+        today = METRICS_TEST_DATE
+        durations = [101, 202, 303, 404]
+
+        async def record(duration_ms: int) -> None:
+            async with async_session_factory() as session:
+                await _upsert_daily_metrics(
+                    db=session,
+                    today=today,
+                    org_id=None,
+                    status=ExecutionStatus.SUCCESS.value,
+                    duration_ms=duration_ms,
+                    peak_memory_bytes=None,
+                    cpu_total_seconds=None,
+                    time_saved=0,
+                    value=0.0,
+                )
+                await session.commit()
+
+        await asyncio.gather(*(record(duration) for duration in durations))
+        db_session.expire_all()
+
+        result = await db_session.execute(
+            select(ExecutionMetricsDaily).where(
+                ExecutionMetricsDaily.date == today,
+                ExecutionMetricsDaily.organization_id.is_(None),
+            )
+        )
+        row = result.scalar_one()
+        assert row.execution_count == len(durations)
+        assert row.total_duration_ms == sum(durations)
+        assert row.avg_duration_ms == sum(durations) // len(durations)

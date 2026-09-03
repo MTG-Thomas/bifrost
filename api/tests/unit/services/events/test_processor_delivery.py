@@ -55,6 +55,7 @@ def _make_delivery(
         status=status,
         error_message=None,
         attempt_count=0,
+        attempt_started_at=None,
         completed_at=None,
     )
 
@@ -70,6 +71,107 @@ def _make_processor(event: SimpleNamespace | None, deliveries: list[SimpleNamesp
     return processor, session
 
 
+def test_build_event_delivery_records_match_and_queues_target():
+    event = _make_event()
+    event.data = {"priority": "high"}
+    subscription = SimpleNamespace(
+        id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        criteria={
+            "version": 1,
+            "root": {
+                "kind": "condition",
+                "field": "event.body.priority",
+                "operator": "equals",
+                "value": "high",
+            },
+        },
+    )
+
+    delivery = p.build_event_delivery(event=event, subscription=subscription)
+
+    assert delivery.status is EventDeliveryStatus.PENDING
+    assert delivery.rule_decision == {
+        "criteria_version": 1,
+        "outcome": "matched",
+        "code": "criteria_matched",
+    }
+    assert delivery.completed_at is None
+
+
+def test_build_event_delivery_records_non_match_as_terminal_skip():
+    event = _make_event()
+    event.data = {"priority": "low"}
+    subscription = SimpleNamespace(
+        id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        criteria={
+            "version": 1,
+            "root": {
+                "kind": "condition",
+                "field": "event.body.priority",
+                "operator": "equals",
+                "value": "high",
+            },
+        },
+    )
+
+    delivery = p.build_event_delivery(event=event, subscription=subscription)
+
+    assert delivery.status is EventDeliveryStatus.SKIPPED
+    assert delivery.rule_decision["outcome"] == "not_matched"
+    assert delivery.execution_id is None
+    assert delivery.agent_run_id is None
+    assert delivery.completed_at is not None
+
+
+def test_build_event_delivery_fails_closed_without_copying_payload():
+    event = _make_event()
+    event.data = {"count": "secret-value"}
+    subscription = SimpleNamespace(
+        id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        criteria={
+            "version": 1,
+            "root": {
+                "kind": "condition",
+                "field": "event.body.count",
+                "operator": "greater_than",
+                "value": 10,
+            },
+        },
+    )
+
+    delivery = p.build_event_delivery(event=event, subscription=subscription)
+
+    assert delivery.status is EventDeliveryStatus.SKIPPED
+    assert delivery.rule_decision["outcome"] == "evaluation_error"
+    assert delivery.error_message == "Rule criteria could not be evaluated"
+    assert "secret-value" not in repr(delivery.rule_decision)
+
+
+@pytest.mark.asyncio
+async def test_retry_delivery_records_current_attempt_and_queue_failure():
+    event = _make_event()
+    delivery = _make_delivery(status=EventDeliveryStatus.FAILED, event=event)
+    delivery.error_message = "previous failure"
+    delivery.completed_at = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    processor, session = _make_processor(event=event, deliveries=[delivery])
+    processor.queue_event_deliveries = AsyncMock(side_effect=RuntimeError("queue down"))
+
+    message = await processor.retry_delivery(delivery)
+
+    assert message == "Failed to queue retry: queue down"
+    assert delivery.status is EventDeliveryStatus.FAILED
+    assert delivery.error_message == "queue down"
+    assert delivery.execution_id is None
+    assert delivery.attempt_started_at is not None
+    assert delivery.completed_at is not None
+    assert delivery.completed_at >= delivery.attempt_started_at
+    assert session.flush.await_count == 2
+    processor.queue_event_deliveries.assert_awaited_once_with(event.id)
+
+
 @pytest.mark.asyncio
 async def test_queue_event_deliveries_returns_zero_when_event_missing():
     delivery = _make_delivery()
@@ -81,6 +183,26 @@ async def test_queue_event_deliveries_returns_zero_when_event_missing():
     assert delivery.status == EventDeliveryStatus.PENDING
     session.flush.assert_not_awaited()
     processor._broadcast_event_update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_queue_event_deliveries_never_executes_recorded_non_match():
+    event = _make_event()
+    delivery = _make_delivery(status=EventDeliveryStatus.SKIPPED, event=event)
+    delivery.rule_decision = {
+        "criteria_version": 1,
+        "outcome": "not_matched",
+        "code": "criteria_not_matched",
+    }
+    processor, _ = _make_processor(event=event, deliveries=[delivery])
+    processor._queue_workflow_execution = AsyncMock()
+
+    queued = await processor.queue_event_deliveries(event.id)
+
+    assert queued == 0
+    processor._queue_workflow_execution.assert_not_awaited()
+    processor._delivery_repo.update_event_status.assert_awaited_once_with(event.id)
+    processor._broadcast_event_update.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -104,6 +226,8 @@ async def test_queue_event_deliveries_marks_failed_when_queueing_raises():
         update_type="deliveries_queued",
         success_count=0,
         failed_count=1,
+        skipped_count=0,
+        evaluation_error_count=0,
         queued_count=0,
         pending_count=0,
     )
@@ -140,6 +264,8 @@ async def test_queue_event_deliveries_routes_pending_workflow_and_agent_deliveri
         update_type="deliveries_queued",
         success_count=1,
         failed_count=0,
+        skipped_count=0,
+        evaluation_error_count=0,
         queued_count=2,
         pending_count=0,
     )

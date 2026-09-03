@@ -15,7 +15,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Awaitable, Callable, cast
+from typing import TYPE_CHECKING, Awaitable, Callable, Iterable, cast
 from uuid import UUID
 
 from sqlalchemy import text
@@ -59,6 +59,10 @@ from src.services.workflow_registration import (
     WorkflowRegistrationConflict,
     apply_workspace_registration_plan,
     plan_workspace_registrations,
+)
+from src.services.workspace_release_files import (
+    WorkspaceReleasePathGoverned,
+    reject_release_governed_paths,
 )
 
 if TYPE_CHECKING:
@@ -153,6 +157,14 @@ class WorkspaceRepoChangesetService:
             )
         return value
 
+    async def _reject_release_governed(self, paths: Iterable[str]) -> None:
+        try:
+            await reject_release_governed_paths(
+                self.db, self.organization_id, paths
+            )
+        except WorkspaceReleasePathGoverned as exc:
+            raise ChangesetInvalid(str(exc)) from exc
+
     async def _snapshot(self, scope: str) -> tuple[str, dict[str, str]]:
         paths = sorted(await self.repo.list(f"{scope}/"))
         if await self.repo.exists(scope):
@@ -231,6 +243,7 @@ class WorkspaceRepoChangesetService:
         row = await self._required(changeset_id, for_update=True)
         self._ensure_active(row)
         path = self.normalize_path(request.path, row.scope)
+        await self._reject_release_governed([path])
         before_hash = row.base_files.get(path)
         if request.expected_hash is not None and request.expected_hash != before_hash:
             raise ChangesetConflict(
@@ -306,6 +319,9 @@ class WorkspaceRepoChangesetService:
     async def validate(self, changeset_id: UUID) -> WorkspaceRepoValidationResponse:
         row = await self._required(changeset_id, for_update=True)
         self._ensure_active(row)
+        await self._reject_release_governed(
+            item["path"] for item in row.mutations
+        )
         diagnostics: list[dict] = []
         pending: list[dict] = []
         registration_candidates: list[WorkspaceRegistrationCandidate] = []
@@ -469,6 +485,9 @@ class WorkspaceRepoChangesetService:
             )
         )
         row = await self._required(changeset_id, for_update=True)
+        await self._reject_release_governed(
+            item["path"] for item in row.mutations
+        )
         has_source_mutations = any(
             item["operation"] != "verify" for item in row.mutations
         )

@@ -20,6 +20,12 @@ cold read captures the generation before object-storage access and rechecks it
 afterward, so a read that overlaps a source write cannot label old bytes as the
 new generation.
 
+`file_index` is a derived search index, never a recovery copy of source. The
+scheduled reconciler may rebuild missing or stale index rows from `_repo/` and
+remove orphaned rows, but it must never write indexed content back to object
+storage. Storage listings must consume every provider page before deciding that
+an indexed path is absent; a partial listing is not deletion evidence.
+
 Python writes run behind `workspace_source_update`. The writer first publishes
 an `updating:<token>` barrier, writes durable/index/cache state, publishes the
 same token as the ready generation, and then proves the changed paths coherent.

@@ -11,6 +11,10 @@ import {
 
 const API_URL = process.env.TEST_API_URL || "http://api:8000";
 const BIFROST_URL = process.env.TEST_BASE_URL || "http://client:80";
+const ALLOWED_ORIGIN =
+	process.env.TEST_ALLOWED_ORIGIN || "http://allowed-origin";
+const BLOCKED_ORIGIN =
+	process.env.TEST_BLOCKED_ORIGIN || "http://blocked-origin";
 const UNIQUE = `${Date.now()}_${Math.floor(Math.random() * 10_000)}`;
 const PROVIDER_PATH = `e2e_public_provider_${UNIQUE}.py`;
 const PROVIDER_FN = `e2e_public_provider_${UNIQUE}`;
@@ -201,7 +205,7 @@ test.describe.serial("Public form iframe", () => {
 			{
 				data: {
 					reviewed_fingerprint: review.fingerprint,
-					allowed_origins: ["http://allowed-origin"],
+					allowed_origins: [ALLOWED_ORIGIN],
 				},
 			},
 		);
@@ -288,7 +292,7 @@ test.describe.serial("Public form iframe", () => {
 			.click();
 		await adminPage
 			.getByLabel("Allowed Website Origins")
-			.fill("http://allowed-origin");
+			.fill(ALLOWED_ORIGIN);
 		await adminPage.getByRole("switch", { name: "Not Published" }).click();
 		await expect(
 			adminPage.getByRole("heading", {
@@ -321,48 +325,50 @@ test.describe.serial("Public form iframe", () => {
 		);
 		await admin.close();
 
-		const publication = await api.get(`/api/forms/${formId}/publication`);
-		await expectOk(publication);
-		publicKey = ((await publication.json()) as { public_key: string })
-			.public_key;
+			const publication = await api.get(
+				`/api/forms/${formId}/publication`,
+			);
+			await expectOk(publication);
+			publicKey = ((await publication.json()) as { public_key: string })
+				.public_key;
 
-		const forbiddenRequests: string[] = [];
-		let documentCsp: string | null = null;
-		let submissionBody: Record<string, unknown> | null = null;
-		page.on("request", (request) => {
-			const pathname = new URL(request.url()).pathname;
-			if (
-				pathname === "/api/workflows/execute" ||
-				pathname.startsWith("/api/executions/") ||
-				pathname === "/ws"
-			) {
-				forbiddenRequests.push(pathname);
-			}
-		});
-		page.on("response", async (response) => {
-			const pathname = new URL(response.url()).pathname;
-			if (pathname === `/embedded/forms/public/${publicKey}`) {
-				documentCsp =
-					response.headers()["content-security-policy"] || null;
-			}
-			if (pathname === `/api/forms/${formId}/submissions`) {
-				submissionBody = (await response.json()) as Record<
-					string,
-					unknown
-				>;
-			}
-		});
+			const forbiddenRequests: string[] = [];
+			let documentCsp: string | null = null;
+			let submissionBody: Record<string, unknown> | null = null;
+			page.on("request", (request) => {
+				const pathname = new URL(request.url()).pathname;
+				if (
+					pathname === "/api/workflows/execute" ||
+					pathname.startsWith("/api/executions/") ||
+					pathname === "/ws"
+				) {
+					forbiddenRequests.push(pathname);
+				}
+			});
+			page.on("response", async (response) => {
+				const pathname = new URL(response.url()).pathname;
+				if (pathname === `/embedded/forms/public/${publicKey}`) {
+					documentCsp =
+						response.headers()["content-security-policy"] || null;
+				}
+				if (pathname === `/api/forms/${formId}/submissions`) {
+					submissionBody = (await response.json()) as Record<
+						string,
+						unknown
+					>;
+				}
+			});
 
 		// Load a real document from the second Docker-network origin so Chromium
 		// classifies both hosts in the same local address space. Block only that
 		// parent's SPA scripts, then replace its HTML with the customer iframe.
 		// The embedded client uses the separate `client` host and remains intact.
-		await page.route("http://allowed-origin/**", (route) =>
+		await page.route(`${ALLOWED_ORIGIN}/**`, (route) =>
 			route.request().resourceType() === "script"
 				? route.abort()
 				: route.continue(),
 		);
-		await page.goto("http://allowed-origin/");
+		await page.goto(`${ALLOWED_ORIGIN}/`);
 		await page.setContent(
 			`<iframe title="Public form" style="width:100%;height:800px" src="${BIFROST_URL}/embed/forms/public/${publicKey}"></iframe>`,
 		);
@@ -389,52 +395,55 @@ test.describe.serial("Public form iframe", () => {
 		).toBeVisible();
 		await submit.click();
 
-		const confirmation = frame.getByRole("status");
-		await expect(confirmation).toBeVisible();
-		await expect(
-			frame.getByRole("heading", { name: "Thank you" }),
-		).toBeVisible();
-		await expect(frame.getByText("Your form was submitted.")).toBeVisible();
-		await expect(
-			frame.getByRole("img", { name: "Bifrost mark" }),
-		).toHaveAttribute("referrerpolicy", "no-referrer");
-		expect(
-			await confirmation.evaluate(
-				(element) => element === document.activeElement,
-			),
-		).toBe(true);
-		expect(documentCsp).toBe("frame-ancestors http://allowed-origin");
-		expect(submissionBody).toEqual({
-			mode: "confirmation",
-			status: "accepted",
-			confirmation_markdown:
-				"## Thank you\n\n**Your form was submitted.**\n\n![Bifrost mark](/vite.svg)",
-		});
-		expect(forbiddenRequests).toEqual([]);
-		await expect(frame.getByText(/execution|history/i)).toHaveCount(0);
-		await page.screenshot({
-			path: "playwright-results/public-form-confirmation.png",
-			fullPage: true,
-		});
+			const confirmation = frame.getByRole("status");
+			await expect(confirmation).toBeVisible();
+			await expect(
+				frame.getByRole("heading", { name: "Thank you" }),
+			).toBeVisible();
+			await expect(
+				frame.getByText("Your form was submitted."),
+			).toBeVisible();
+			await expect(
+				frame.getByRole("img", { name: "Bifrost mark" }),
+			).toHaveAttribute("referrerpolicy", "no-referrer");
+			expect(
+				await confirmation.evaluate(
+					(element) => element === document.activeElement,
+				),
+			).toBe(true);
+			expect(documentCsp).toBe(`frame-ancestors ${ALLOWED_ORIGIN}`);
+			expect(submissionBody).toEqual({
+				mode: "confirmation",
+				status: "accepted",
+				confirmation_markdown:
+					"## Thank you\n\n**Your form was submitted.**\n\n![Bifrost mark](/vite.svg)",
+			});
+			expect(forbiddenRequests).toEqual([]);
+			await expect(frame.getByText(/execution|history/i)).toHaveCount(0);
+			await page.screenshot({
+				path: "playwright-results/public-form-confirmation.png",
+				fullPage: true,
+			});
 
-		const hmacSecret = await api.post(
-			`/api/forms/${formId}/embed-secrets`,
-			{
-				data: { name: "Browser result test", secret: HMAC_SECRET },
-			},
-		);
-		await expectOk(hmacSecret);
-	});
+			const hmacSecret = await api.post(
+				`/api/forms/${formId}/embed-secrets`,
+				{
+					data: { name: "Browser result test", secret: HMAC_SECRET },
+				},
+			);
+			await expectOk(hmacSecret);
+		},
+	);
 
 	test("keeps the host page fixed while opening consecutive form dropdowns", async ({
 		page,
 	}) => {
-		await page.route("http://allowed-origin/**", (route) =>
+		await page.route(`${ALLOWED_ORIGIN}/**`, (route) =>
 			route.request().resourceType() === "script"
 				? route.abort()
 				: route.continue(),
 		);
-		await page.goto("http://allowed-origin/");
+		await page.goto(`${ALLOWED_ORIGIN}/`);
 		await page.setContent(`
 			<div style="height:1200px"></div>
 			<iframe
@@ -453,17 +462,27 @@ test.describe.serial("Public form iframe", () => {
 		await page.evaluate(() =>
 			window.scrollTo(0, document.body.scrollHeight),
 		);
-		const bottom = await page.evaluate(() => window.scrollY);
 		const clickVisibleControl = async (control: Locator) => {
+			const baseline = await page.evaluate(async () => {
+				window.scrollTo(0, document.body.scrollHeight);
+				await new Promise<void>((resolve) =>
+					requestAnimationFrame(() => resolve()),
+				);
+				return window.scrollY;
+			});
 			const bounds = await control.boundingBox();
 			expect(bounds).not.toBeNull();
 			expect(bounds!.y).toBeGreaterThanOrEqual(0);
 			expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(
 				page.viewportSize()!.height,
 			);
-			await control.click();
+			await page.mouse.click(
+				bounds!.x + bounds!.width / 2,
+				bounds!.y + bounds!.height / 2,
+			);
+			return baseline;
 		};
-		const expectParentToRemainFixed = async () => {
+		const expectParentToRemainFixed = async (baseline: number) => {
 			const positions = await page.evaluate(async () => {
 				const samples: number[] = [];
 				for (let frame = 0; frame < 5; frame += 1) {
@@ -474,22 +493,23 @@ test.describe.serial("Public form iframe", () => {
 				}
 				return samples;
 			});
-			expect(positions).toEqual(Array(5).fill(bottom));
+			expect(positions).toEqual(Array(5).fill(baseline));
 		};
 
-		await clickVisibleControl(
+		const companySizeBaseline = await clickVisibleControl(
 			frame.getByRole("combobox", { name: "Company size" }),
 		);
-		await expect(
-			frame.getByRole("option", { name: "1–10 people" }),
-		).toBeVisible();
-		await expectParentToRemainFixed();
+		const companySizeOption = frame.getByRole("option", {
+			name: "1–10 people",
+		});
+		await expect(companySizeOption).toBeVisible();
+		await expectParentToRemainFixed(companySizeBaseline);
 		await page.keyboard.press("Escape");
 		await expect(
 			frame.getByRole("option", { name: "1–10 people" }),
 		).not.toBeVisible();
 
-		await clickVisibleControl(
+		const referralBaseline = await clickVisibleControl(
 			frame.getByRole("combobox", {
 				name: "How did you hear about us",
 			}),
@@ -497,7 +517,7 @@ test.describe.serial("Public form iframe", () => {
 		await expect(
 			frame.getByRole("option", { name: "Search engine" }),
 		).toBeVisible();
-		await expectParentToRemainFixed();
+		await expectParentToRemainFixed(referralBaseline);
 	});
 
 	test("shows only the signed session's execution result after an HMAC submission", async ({
@@ -512,12 +532,12 @@ test.describe.serial("Public form iframe", () => {
 			.update(message)
 			.digest("hex");
 
-		await page.route("http://allowed-origin/**", (route) =>
+		await page.route(`${ALLOWED_ORIGIN}/**`, (route) =>
 			route.request().resourceType() === "script"
 				? route.abort()
 				: route.continue(),
 		);
-		await page.goto("http://allowed-origin/");
+		await page.goto(`${ALLOWED_ORIGIN}/`);
 		await page.setContent(
 			`<iframe title="HMAC form" style="width:100%;height:900px" src="${BIFROST_URL}/embed/forms/${formId}?agent_id=42&hmac=${signature}"></iframe>`,
 		);
@@ -560,7 +580,7 @@ test.describe.serial("Public form iframe", () => {
 	test("blocks a disallowed browser ancestor on the final document", async ({
 		page,
 	}) => {
-		await page.route("http://blocked-origin/**", (route) =>
+		await page.route(`${BLOCKED_ORIGIN}/**`, (route) =>
 			route.request().resourceType() === "script"
 				? route.abort()
 				: route.continue(),
@@ -570,7 +590,7 @@ test.describe.serial("Public form iframe", () => {
 				message.type() === "error" &&
 				message.text().includes("frame-ancestors"),
 		});
-		await page.goto("http://blocked-origin/");
+		await page.goto(`${BLOCKED_ORIGIN}/`);
 		await page.setContent(
 			`<iframe title="Blocked form" src="${BIFROST_URL}/embed/forms/public/${publicKey}"></iframe>`,
 		);

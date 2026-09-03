@@ -24,6 +24,7 @@ import re
 
 import yaml
 
+
 def _find_compose() -> pathlib.Path:
     """Locate docker-compose.test.yml in-container (mounted at /app) or on host.
 
@@ -107,6 +108,21 @@ def test_api_shares_fixture_subdir_for_install_from_repo():
     )
 
 
+def test_stack_up_reconciles_running_containers_with_current_compose_config():
+    """A healthy long-lived stack may still have stale mounts or environment."""
+    script = _find_repo_file("test.sh").read_text()
+    already_running = script.split(
+        'if stack_is_up "$COMPOSE_PROJECT_NAME" "$COMPOSE_FILE"; then', 1
+    )[1].split('echo "Stack already up."', 1)[0]
+
+    assert (
+        'docker compose -f "$COMPOSE_FILE" --profile e2e up -d --no-build'
+        in already_running
+    ), "stack up must reconcile healthy containers before returning"
+    assert 'expected_fixture_source="$LOG_DIR/solution-repo-fixtures"' in already_running
+    assert "--force-recreate api" in already_running
+
+
 def test_test_runner_mounts_pyright_inputs():
     """The Dockerized quality lane needs the same API config CI uses."""
     compose = yaml.safe_load(_COMPOSE.read_text())
@@ -114,6 +130,40 @@ def test_test_runner_mounts_pyright_inputs():
     assert "./api/pyrightconfig.json:/app/pyrightconfig.json:ro" in volumes
     assert "./test.sh:/app/test.sh:ro" in volumes
     assert "./api/Dockerfile.dev:/app/api/Dockerfile.dev:ro" in volumes
+
+
+def test_hardened_test_runner_writes_coverage_to_results_mount():
+    """pytest-cov data must be writable by the uid-1000 test runner."""
+    compose = yaml.safe_load(_COMPOSE.read_text())
+    runner = compose["services"]["test-runner"]
+
+    assert runner["environment"]["COVERAGE_FILE"] == "/tmp/bifrost/.coverage"
+    assert all("/coverage" not in str(volume) for volume in runner["volumes"])
+
+
+def test_coverage_export_combines_service_data_outside_test_runner():
+    """Service coverage stays on its named volume and exports through LOG_DIR."""
+    script = _find_repo_file("test.sh").read_text()
+    coverage_function = script.split("cmd_coverage() {", 1)[1].split(
+        "\n}\n\ncmd_quality()", 1
+    )[0]
+
+    assert '-v "$LOG_DIR:/results" api' in coverage_function
+    assert "coverage combine --append --keep /coverage" in coverage_function
+    assert 'cp "$LOG_DIR/$basename_target" "$target"' in coverage_function
+
+
+def test_client_e2e_always_starts_local_origin_proxies():
+    """Every Playwright path must provide the localhost secure contexts it declares."""
+    script = _find_repo_file("test.sh").read_text()
+    client_e2e_function = script.split("client_e2e() {", 1)[1].split(
+        "\n}\n\nclient_smoke()", 1
+    )[0]
+
+    assert client_e2e_function.count(
+        "playwright-runner node e2e/support/run-playwright.mjs"
+    ) == 2
+    assert "playwright-runner npx playwright test" not in client_e2e_function
 
 
 def test_dev_image_installs_pyright_from_hash_pinned_lock():
@@ -131,6 +181,33 @@ def test_test_sh_advertises_dockerized_api_quality_lane():
     assert "./test.sh quality api" in script
     assert "cmd_quality" in script
     assert "sh /app/scripts/quality_api.sh" in script
+
+
+def test_pytest_runner_releases_worktree_lock_between_pre_pr_phases():
+    """Sequential unit and e2e phases must not reject their own parent process."""
+    script = _find_repo_file("test.sh").read_text()
+    run_pytest = script.split("run_pytest() {", 1)[1].split(
+        "\n}\n\n# `unit`", 1
+    )[0]
+
+    assert 'runner_status="${PIPESTATUS[0]}"' in run_pytest
+    assert 'exec {runner_lock_fd}>&-' in run_pytest
+    assert run_pytest.index('runner_status="${PIPESTATUS[0]}"') < run_pytest.rindex(
+        'exec {runner_lock_fd}>&-'
+    )
+
+
+def test_production_candidate_smoke_supplies_required_secret_key():
+    """Importing the production app must satisfy required runtime settings."""
+    script = _find_repo_file("test.sh").read_text()
+    candidate_build = script.split("build_local_api_candidate() {", 1)[1].split(
+        "\n}\n\nstart_test_client()", 1
+    )[0]
+
+    assert (
+        '--env "BIFROST_SECRET_KEY=local-production-candidate-smoke-key"'
+        in candidate_build
+    )
 
 
 def test_test_harness_waits_for_both_api_replicas():

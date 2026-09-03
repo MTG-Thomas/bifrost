@@ -94,6 +94,9 @@ async def test_start_scheduler_adds_core_jobs_and_starts_scheduler(
     assert "schedule_processor" in job_ids
     assert "deferred_execution_promoter" in job_ids
     assert "execution_cleanup" in job_ids
+    from src.scheduler.registry import SCHEDULED_TASKS_BY_ID
+
+    assert job_ids == set(SCHEDULED_TASKS_BY_ID)
     promoter = next(
         job for job in fake.jobs if job["id"] == "deferred_execution_promoter"
     )

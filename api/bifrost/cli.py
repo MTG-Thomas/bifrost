@@ -288,7 +288,8 @@ def _check_cli_version() -> None:
                 f"Your CLI is incompatible with this server "
                 f"(CLI contract v{CONTRACT_VERSION}, server contract "
                 f"v{server_contract}). You must upgrade:\n"
-                f"  pipx install --force {api_url}/api/cli/download"
+                f"  pipx install --force "
+                f"{api_url}/api/cli/download/bifrost-cli.tar.gz"
             )
             sys.exit(1)
         # Gate 2 — build drift (SOFT, deduped). Contract is fine; just nudge.
@@ -300,7 +301,8 @@ def _check_cli_version() -> None:
                     f"A newer Bifrost CLI is available "
                     f"({installed} → {server_version}); your current CLI is still "
                     f"compatible. Update when convenient:\n"
-                    f"  pipx install --force {api_url}/api/cli/download"
+                    f"  pipx install --force "
+                    f"{api_url}/api/cli/download/bifrost-cli.tar.gz"
                 )
                 _version_notice.mark_notified(api_url, server_version)
         return
@@ -312,12 +314,11 @@ def _check_cli_version() -> None:
             f"(server reported no version). Continuing."
         )
         return
-    if server_version != installed:
-        _warn(
-            f"Could not verify contract compatibility — {api_url} predates "
-            f"contract versioning (CLI {installed}, server {server_version}). "
-            f"Continuing; consider upgrading the server."
-        )
+    _warn(
+        f"Could not verify contract compatibility — {api_url} predates "
+        f"contract versioning (CLI {installed}, server {server_version}). "
+        f"Continuing; consider upgrading the server."
+    )
 
 
 def _resolve_login_api_url(api_url: str | None) -> str | None:
@@ -952,7 +953,7 @@ Usage:
 Commands:
   sync        Bidirectional sync between local files and Bifrost platform
   run         Run a workflow directly (silent JSON output) or interactively via browser
-  promote     Compile an immutable Workspace promotion preview (activation disabled)
+  promote     Build a local-only draft or preview exact protected-main bytes
   git         Git source control operations (fetch, status, commit, push, resolve, diff, discard)
   push        Push local files to Bifrost platform (alias for sync)
   pull        Pull files from Bifrost platform to local directory (alias for sync)
@@ -1013,7 +1014,8 @@ Direct files vs bulk local sync:
 
 Examples:
   bifrost run workflow.py -w greet
-  bifrost promote workflow.py -w greet --preview
+  bifrost promote draft workflow.py -w greet
+  bifrost promote preview workflow.py -w greet
   bifrost run workflow.py -w greet -p '{"name": "World"}'
   bifrost run workflow.py -w greet | jq .
   bifrost run workflow.py --interactive
@@ -1123,7 +1125,7 @@ Examples:
         return 1
 
     resolved_url = resolved_url.rstrip("/")
-    download_url = f"{resolved_url}/api/cli/download"
+    download_url = f"{resolved_url}/api/cli/download/bifrost-cli.tar.gz"
     try:
         command = _update_install_command(download_url)
     except RuntimeError as exc:
@@ -1684,19 +1686,48 @@ def _run_direct(
         else:
             print(json.dumps(result, default=str))
         if promotion_evidence is not None and workflow_file is not None:
-            from bifrost.promotion import build_promotion_bundle
+            from bifrost.promotion import (
+                build_promotion_bundle,
+                sha256_bytes,
+            )
+            from bifrost.workspace_release import workspace_closure_id
 
             root = pathlib.Path.cwd().resolve()
             selected_path = pathlib.Path(workflow_file)
             if selected_path.is_absolute():
                 selected_path = selected_path.resolve().relative_to(root)
             bundle = build_promotion_bundle(root, selected_path.as_posix())
+            canonical_params = json.dumps(
+                params, sort_keys=True, separators=(",", ":"), default=str
+            ).encode("utf-8")
+            canonical_result = json.dumps(
+                result, sort_keys=True, separators=(",", ":"), default=str
+            ).encode("utf-8")
             evidence = {
+                "schema_version": "bifrost.workspace-local-run-evidence/v1",
+                "authority": "local_only",
+                "activatable": False,
                 "succeeded": True,
                 "snapshot_id": bundle.snapshot_id,
+                "closure_id": workspace_closure_id(
+                    {
+                        "path": selected_path.as_posix(),
+                        "function": selected_workflow,
+                    },
+                    {
+                        str(item["path"]): str(item["sha256"])
+                        for item in bundle.files
+                    },
+                ),
+                "entry": {
+                    "path": selected_path.as_posix(),
+                    "function": selected_workflow,
+                },
                 "evidence_id": f"local:{uuid.uuid4()}",
                 "completed_at": datetime.now(timezone.utc).isoformat(),
                 "duration_ms": int((time.monotonic() - started_at) * 1000),
+                "input_sha256": sha256_bytes(canonical_params),
+                "result_sha256": sha256_bytes(canonical_result),
                 "observed_effects": [],
             }
             temporary = promotion_evidence.with_suffix(

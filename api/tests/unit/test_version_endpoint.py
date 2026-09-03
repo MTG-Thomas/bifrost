@@ -1,8 +1,8 @@
-"""The /api/version endpoint must report the server's contract_version.
+"""The /api/version endpoint reports contract and legacy compatibility data.
 
 The CLI's contract gate reads ``contract_version`` from this response to decide
 compatibility, so the endpoint must surface it and it must equal the server-side
-source of truth.
+source of truth. ``min_cli_version`` remains frozen for already-shipped clients.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import time
 import pytest
 
 from shared.contract_version import CONTRACT_VERSION
+from shared.version import LEGACY_MIN_CLI_VERSION
 
 
 @pytest.mark.asyncio
@@ -22,6 +23,7 @@ async def test_version_endpoint_reports_contract_version() -> None:
     result = await get_version_info()
 
     assert result.contract_version == CONTRACT_VERSION
+    assert result.min_cli_version == LEGACY_MIN_CLI_VERSION
     # The build version string is still present (unchanged behavior).
     assert isinstance(result.version, str)
 

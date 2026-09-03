@@ -1,5 +1,6 @@
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -70,6 +71,9 @@ class _FakeLLMClient:
             model="response-model",
             input_tokens=17,
             output_tokens=11,
+            cache_read_tokens=3,
+            cache_write_tokens=2,
+            provider_cost=None,
         )
         self.calls = []
 
@@ -124,6 +128,7 @@ async def test_evaluate_against_prompt_shapes_transcript_and_records_usage(monke
         return llm_client, "resolved-model"
 
     monkeypatch.setattr(dry_run, "get_tuning_client", fake_get_tuning_client)
+    monkeypatch.setattr(dry_run, "get_shared_redis", AsyncMock(return_value=object()))
 
     result = await dry_run.evaluate_against_prompt(
         run_id=run_id,
@@ -192,6 +197,7 @@ async def test_evaluate_against_prompt_fails_closed_on_unusable_model_output(
         return llm_client, "fallback-model"
 
     monkeypatch.setattr(dry_run, "get_tuning_client", fake_get_tuning_client)
+    monkeypatch.setattr(dry_run, "get_shared_redis", AsyncMock(return_value=object()))
 
     result = await dry_run.evaluate_against_prompt(
         run_id=run.id,
@@ -236,6 +242,7 @@ async def test_evaluate_against_prompt_normalizes_empty_optional_fields(monkeypa
         return llm_client, "resolved-model"
 
     monkeypatch.setattr(dry_run, "get_tuning_client", fake_get_tuning_client)
+    monkeypatch.setattr(dry_run, "get_shared_redis", AsyncMock(return_value=object()))
 
     result = await dry_run.evaluate_against_prompt(
         run_id=run.id,

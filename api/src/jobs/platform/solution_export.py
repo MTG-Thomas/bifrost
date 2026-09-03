@@ -4,6 +4,10 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from src.jobs.execution_policy import (
+    WorkloadClass,
+    platform_job_operations_policy,
+)
 from src.jobs.platform.base import (
     PlatformJobContext,
     PlatformJobDefinition,
@@ -46,5 +50,9 @@ SOLUTION_EXPORT_DEFINITION = PlatformJobDefinition(
         timeout_seconds=60 * 60,
         max_attempts=2,
         min_memory_headroom_mb=512,
+    ),
+    operations_policy=platform_job_operations_policy(
+        "solution.export",
+        workload_class=WorkloadClass.PLATFORM_INTERACTIVE,
     ),
 )

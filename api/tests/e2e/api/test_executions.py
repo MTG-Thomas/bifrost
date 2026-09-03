@@ -46,7 +46,6 @@ from bifrost import workflow, context
 @workflow(
     name="e2e_exec_sync_workflow",
     description="Sync workflow for execution tests",
-    execution_mode="sync"
 )
 async def e2e_exec_sync_workflow(message: str, count: int = 1):
     return {
@@ -84,7 +83,6 @@ from bifrost import workflow, context
 @workflow(
     name="e2e_exec_async_workflow",
     description="Async workflow for execution tests",
-    execution_mode="async"
 )
 async def e2e_exec_async_workflow(delay_seconds: int = 1):
     time.sleep(delay_seconds)
@@ -324,7 +322,6 @@ from bifrost import workflow
 @workflow(
     name="e2e_cancellation_workflow",
     description="Async workflow for cancellation testing",
-    execution_mode="async"
 )
 async def e2e_cancellation_workflow(sleep_seconds: int = 30):
     time.sleep(sleep_seconds)
@@ -503,6 +500,35 @@ async def e2e_cancellation_workflow(sleep_seconds: int = 30):
 @pytest.mark.e2e
 class TestExecutionDetails:
     """Test execution details retrieval with access control."""
+
+    def test_completed_execution_exposes_durable_attempt_history(
+        self, e2e_client, platform_admin, sync_workflow
+    ):
+        """Execution detail converges to the terminal durable attempt projection."""
+        data = execute_workflow_sync(
+            e2e_client,
+            platform_admin.headers,
+            sync_workflow["id"],
+            {"message": "Attempt history", "count": 1},
+        )
+        execution_id = data.get("execution_id") or data.get("executionId")
+
+        response = e2e_client.get(
+            f"/api/executions/{execution_id}",
+            headers=platform_admin.headers,
+        )
+        assert response.status_code == 200, response.text
+        history = response.json()["attempt_history"]
+        assert history["coverage"] == "recorded"
+        assert [attempt["attempt_number"] for attempt in history["attempts"]] == [1]
+        attempt = history["attempts"][0]
+        assert attempt["status"] == "succeeded"
+        assert attempt["phase"] == "terminal"
+        assert attempt["published_at"] is not None
+        assert attempt["claimed_at"] is not None
+        assert attempt["started_at"] is not None
+        assert attempt["completed_at"] is not None
+        assert "claim_token" not in attempt
 
     def test_org_user_gets_own_execution_details(self, e2e_client, org1_user):
         """Org user can retrieve details of their own execution."""
@@ -856,7 +882,6 @@ from bifrost import workflow
 @workflow(
     name="{workflow_name}",
     description="Hot reload test workflow",
-    execution_mode="sync"
 )
 async def {workflow_name}():
     return {{"message": "Hello World", "version": 1}}
@@ -893,7 +918,6 @@ from bifrost import workflow
 @workflow(
     name="{workflow_name}",
     description="Hot reload test workflow - updated",
-    execution_mode="sync"
 )
 async def {workflow_name}():
     return {{"message": "Hello World Again", "version": 2}}
@@ -975,7 +999,6 @@ import {module_name}
 @workflow(
     name="{workflow_name}",
     description="Workflow that imports module",
-    execution_mode="sync"
 )
 async def {workflow_name}():
     value = {module_name}.get_value()
@@ -1108,7 +1131,6 @@ from bifrost import workflow
 @workflow(
     name="{workflow_name}",
     description="Workflow testing package availability",
-    execution_mode="sync"
 )
 async def {workflow_name}(number: int = 1000000):
     import humanize
@@ -1258,7 +1280,6 @@ from {pkg_name}.utils import get_data, CONSTANT
 @workflow(
     name="{workflow_name}",
     description="Workflow importing nested package",
-    execution_mode="sync"
 )
 async def {workflow_name}():
     data = get_data()
@@ -1500,7 +1521,6 @@ from bifrost import workflow
 @workflow(
     name="{name}",
     description="Target for workflows.execute() by-UUID test",
-    execution_mode="sync",
 )
 async def {name}(ping: str = "default"):
     return {{"pong": ping}}
@@ -1537,7 +1557,6 @@ from bifrost import workflow, workflows
 @workflow(
     name="{name}",
     description="Calls another workflow by UUID via SDK",
-    execution_mode="sync",
 )
 async def {name}(target_id: str = "{target_id}"):
     try:

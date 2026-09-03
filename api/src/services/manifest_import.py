@@ -537,7 +537,7 @@ def _agent_has_inline_content(magent) -> bool:
             "knowledge_sources",
             "system_tools",
             "mcp_connection_ids",
-            "llm_model",
+            "llm_profile",
             "llm_max_tokens",
         )
     )
@@ -3096,7 +3096,11 @@ class ManifestResolver:
                 workflow_id=wf_id,
                 agent_id=agent_id,
                 event_type=msub.event_type,
-                filter_expression=msub.filter_expression,
+                criteria=(
+                    msub.criteria.model_dump(mode="json")
+                    if msub.criteria is not None
+                    else None
+                ),
                 input_mapping=msub.input_mapping,
                 is_active=msub.is_active,
                 created_by="git-sync",
@@ -3108,7 +3112,11 @@ class ManifestResolver:
                     "workflow_id": wf_id,
                     "agent_id": agent_id,
                     "event_type": msub.event_type,
-                    "filter_expression": msub.filter_expression,
+                    "criteria": (
+                        msub.criteria.model_dump(mode="json")
+                        if msub.criteria is not None
+                        else None
+                    ),
                     "input_mapping": msub.input_mapping,
                     "is_active": msub.is_active,
                     "updated_at": datetime.now(timezone.utc),

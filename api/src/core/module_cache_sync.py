@@ -22,11 +22,13 @@ import hashlib
 import json
 import logging
 import os
+import sys
 import threading
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import redis
@@ -35,10 +37,12 @@ from src.core.module_cache import (
     MODULE_INDEX_KEY,
     MODULE_INDEX_GENERATION_KEY,
     MODULE_KEY_PREFIX,
+    MODULE_RESOLUTION_KEY_PREFIX,
     WORKSPACE_GENERATION_KEY,
     WORKSPACE_UPDATE_LOCK_SECONDS,
     WORKSPACE_UPDATING_PREFIX,
     CachedModule,
+    module_resolution_cache_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -48,6 +52,7 @@ MODULE_CACHE_TTL = 86400
 
 REPO_PREFIX = "_repo/"
 SOLUTIONS_ROOT = "_solutions"
+WORKSPACE_RELEASES_ROOT = "_workspace_releases"
 
 
 # ── Per-execution Solution import root ───────────────────────────────────────
@@ -61,6 +66,7 @@ SOLUTIONS_ROOT = "_solutions"
 # thread-local correctly scopes the root to exactly one execution with no
 # cross-execution bleed. No active context == unchanged _repo/ behavior.
 _solution_ctx = threading.local()
+_workspace_release_ctx = threading.local()
 _workspace_generation_ctx = threading.local()
 
 
@@ -72,6 +78,30 @@ class SolutionContext:
     global_repo_access: bool
     runtime_storage_prefix: str | None = None
     source_hashes: dict[str, str] | None = None
+
+
+@dataclass(frozen=True)
+class WorkspaceReleaseContext:
+    """Immutable Workspace source tree pinned to one execution."""
+
+    release_id: str
+    runtime_storage_prefix: str
+    source_hashes: dict[str, str]
+
+
+@dataclass(frozen=True)
+class ModuleResolution:
+    """Targeted resolver result for a logical import name."""
+
+    kind: str
+    path: str
+    content: str | None = None
+    hash: str = ""
+    storage_path: str | None = None
+
+
+class ModuleResolutionError(RuntimeError):
+    """Raised when targeted module resolution cannot reach the API."""
 
 
 def set_solution_context(
@@ -90,16 +120,91 @@ def set_solution_context(
         else None,
         source_hashes=source_hashes,
     )
+    _solution_ctx.resolution_cache = {}
 
 
 def clear_solution_context() -> None:
     """Deactivate the solution import root (restore plain _repo/ behavior)."""
     _solution_ctx.value = None
+    _solution_ctx.resolution_cache = {}
 
 
 def get_solution_context() -> SolutionContext | None:
     """Return the active solution context for this thread, or None."""
     return getattr(_solution_ctx, "value", None)
+
+
+def _get_resolution_cache() -> dict[tuple[str, str | None, bool], ModuleResolution]:
+    cache = getattr(_solution_ctx, "resolution_cache", None)
+    if cache is None:
+        cache = {}
+        _solution_ctx.resolution_cache = cache
+    return cast(dict[tuple[str, str | None, bool], ModuleResolution], cache)
+
+
+def _get_http_client() -> Any:
+    client = getattr(_solution_ctx, "http_client", None)
+    if client is None:
+        import httpx
+
+        client = httpx.Client(timeout=10.0)
+        _solution_ctx.http_client = client
+    return client
+
+
+def _close_http_client() -> None:
+    client = getattr(_solution_ctx, "http_client", None)
+    if client is not None:
+        with suppress(Exception):
+            client.close()
+        _solution_ctx.http_client = None
+
+
+def set_workspace_release_context(
+    release_id: str,
+    *,
+    runtime_storage_prefix: str,
+    source_hashes: dict[str, str],
+) -> None:
+    """Pin all global Workspace imports to one immutable release tree."""
+    normalized_prefix = runtime_storage_prefix.rstrip("/") + "/"
+    if not normalized_prefix.startswith(f"{WORKSPACE_RELEASES_ROOT}/"):
+        raise ValueError("workspace release runtime prefix is outside its storage root")
+    release_digest = release_id.removeprefix("sha256:")
+    if (
+        not release_id.startswith("sha256:")
+        or len(release_digest) != 64
+        or any(char not in "0123456789abcdef" for char in release_digest)
+        or not source_hashes
+    ):
+        raise ValueError("workspace release context requires an id and source manifest")
+    if any(
+        not isinstance(path, str)
+        or not path
+        or not isinstance(digest, str)
+        or len(digest.removeprefix("sha256:")) != 64
+        or any(
+            char not in "0123456789abcdef"
+            for char in digest.removeprefix("sha256:")
+        )
+        for path, digest in source_hashes.items()
+    ):
+        raise ValueError("workspace release source manifest is invalid")
+    _workspace_release_ctx.value = WorkspaceReleaseContext(
+        release_id=release_id,
+        runtime_storage_prefix=normalized_prefix,
+        source_hashes=dict(source_hashes),
+    )
+
+
+def clear_workspace_release_context() -> None:
+    """Remove the immutable Workspace release pin for this execution."""
+    _workspace_release_ctx.value = None
+
+
+def get_workspace_release_context() -> WorkspaceReleaseContext | None:
+    """Return the immutable Workspace release pin for this execution."""
+    return getattr(_workspace_release_ctx, "value", None)
 
 
 def set_workspace_generation_context(generation: str | None) -> None:
@@ -129,6 +234,11 @@ def _candidate_storage_paths(path: str) -> list[str]:
     _repo/ prefix; a path already under ``_solutions/`` is read verbatim.
     """
     ctx = get_solution_context()
+    release_ctx = get_workspace_release_context()
+    if ctx is not None and release_ctx is not None:
+        raise RuntimeError("solution and Workspace release import roots cannot overlap")
+    if release_ctx is not None:
+        return [f"{release_ctx.runtime_storage_prefix}{path.lstrip('/')}"]
     if ctx is None:
         return [path]
     root = ctx.runtime_storage_prefix or f"{SOLUTIONS_ROOT}/{ctx.solution_id}/"
@@ -153,6 +263,11 @@ def candidate_index_prefixes(base_path: str) -> list[str]:
     """
     base = base_path.rstrip("/")
     ctx = get_solution_context()
+    release_ctx = get_workspace_release_context()
+    if ctx is not None and release_ctx is not None:
+        raise RuntimeError("solution and Workspace release import roots cannot overlap")
+    if release_ctx is not None:
+        return [f"{release_ctx.runtime_storage_prefix}{base}/"]
     if ctx is None:
         return [f"{base}/"]
     root = ctx.runtime_storage_prefix or f"{SOLUTIONS_ROOT}/{ctx.solution_id}/"
@@ -217,6 +332,9 @@ def _decode_ready_generation(value: str | bytes) -> str:
 
 def get_workspace_generation_sync() -> str:
     """Return the shared workspace generation, initializing a cold Redis key."""
+    release_ctx = get_workspace_release_context()
+    if release_ctx is not None:
+        return release_ctx.release_id
     try:
         client = _get_sync_redis()
         value = client.get(WORKSPACE_GENERATION_KEY)
@@ -259,7 +377,12 @@ def assert_workspace_generation(expected: str | None) -> str:
         raise WorkspaceGenerationMissingError(
             "workspace source generation was not pinned before execution loading"
         )
-    current = get_workspace_generation_sync()
+    release_ctx = get_workspace_release_context()
+    current = (
+        release_ctx.release_id
+        if release_ctx is not None
+        else get_workspace_generation_sync()
+    )
     if current != expected:
         raise WorkspaceGenerationChangedError(
             "workspace source generation changed while the execution was loading; "
@@ -330,13 +453,10 @@ def _fetch_module_from_api(path: str) -> CachedModule | None:
         return None
 
     try:
-        import httpx
-
         url = f"{api_url}/api/sdk/modules/{path}"
-        resp = httpx.get(
+        resp = _get_http_client().get(
             url,
             headers={"Authorization": f"Bearer {token}"},
-            timeout=10.0,
         )
         if resp.status_code == 404:
             return None
@@ -351,13 +471,188 @@ def _fetch_module_from_api(path: str) -> CachedModule | None:
         return None
 
 
-def _fetch_module_index_from_api(solution_id: str | None = None) -> set[str]:
+def _fetch_module_resolution_from_api(name: str) -> ModuleResolution | None:
     """
-    Fetch the module index via GET /api/sdk/modules-index (synchronous).
+    Resolve one import name via GET /api/sdk/modules-resolve.
 
-    Returns the set of known workspace module paths from the API server,
-    used when the Redis index is cold.  Returns empty set on any error.
+    This is the targeted replacement for fetching the whole module index during
+    child import resolution. The API owns Redis→S3 module lookup and bounded
+    namespace prefix probing; the child memoizes each result for the active
+    execution.
     """
+    creds = _get_engine_credentials()
+    if not creds:
+        return None
+    creds_url, token = creds
+    api_url = creds_url or os.environ.get("BIFROST_API_URL", "").rstrip("/")
+    if not api_url:
+        return None
+
+    ctx = get_solution_context()
+    params: dict[str, object] = {"name": name}
+    if ctx is not None:
+        params["solution_id"] = ctx.solution_id
+        params["global_repo_access"] = ctx.global_repo_access
+
+    try:
+        resp = _get_http_client().get(
+            f"{api_url}/api/sdk/modules-resolve",
+            headers={"Authorization": f"Bearer {token}"},
+            params=params,
+        )
+        if resp.status_code != 200:
+            logger.warning(
+                f"API module-resolve returned {resp.status_code} for {name}"
+            )
+            return None
+
+        data = resp.json()
+        kind = data.get("kind")
+        if kind not in {"module", "package", "namespace", "not_found"}:
+            logger.warning(f"API module-resolve returned invalid kind for {name}")
+            return None
+        return ModuleResolution(
+            kind=kind,
+            path=data.get("path") or name.replace(".", "/"),
+            content=data.get("content"),
+            hash=data.get("hash") or "",
+            storage_path=data.get("storage_path"),
+        )
+    except Exception as e:
+        logger.warning(f"API module-resolve error for {name}: {e}")
+        return None
+
+
+def _resolution_redis_key(name: str) -> str:
+    ctx = get_solution_context()
+    cache_key = module_resolution_cache_key(
+        name,
+        solution_id=ctx.solution_id if ctx is not None else None,
+        global_repo_access=ctx.global_repo_access if ctx is not None else False,
+    )
+    return f"{MODULE_RESOLUTION_KEY_PREFIX}{cache_key}"
+
+
+def _module_resolution_from_cached_source(
+    *,
+    kind: str,
+    path: str,
+    storage_path: str,
+    raw_module: str,
+) -> ModuleResolution | None:
+    try:
+        module = json.loads(raw_module)
+        content = module["content"]
+        content_hash = module.get("hash") or ""
+        if not isinstance(content, str) or not isinstance(content_hash, str):
+            return None
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return None
+    return ModuleResolution(
+        kind=kind,
+        path=path,
+        content=content,
+        hash=content_hash,
+        storage_path=storage_path,
+    )
+
+
+def _get_cached_module_resolution(name: str) -> ModuleResolution | None:
+    """Hydrate resolver metadata and source directly from worker-visible Redis."""
+    try:
+        client = _get_sync_redis()
+        raw_resolution = client.get(_resolution_redis_key(name))
+        if not raw_resolution:
+            return None
+        data = json.loads(raw_resolution)
+        kind = data.get("kind")
+        path = data.get("path") or name.replace(".", "/")
+        if kind in {"namespace", "not_found"}:
+            return ModuleResolution(kind=kind, path=path)
+        if kind not in {"module", "package"}:
+            return None
+        storage_path = data.get("storage_path")
+        if not isinstance(storage_path, str):
+            return None
+        raw_module = client.get(f"{MODULE_KEY_PREFIX}{storage_path}")
+        if not raw_module:
+            return None
+        return _module_resolution_from_cached_source(
+            kind=kind,
+            path=path,
+            storage_path=storage_path,
+            raw_module=raw_module,
+        )
+    except (redis.RedisError, json.JSONDecodeError, TypeError) as exc:
+        logger.debug("Cached module resolution unavailable for %s: %s", name, exc)
+        return None
+
+
+def _get_exact_scoped_module(name: str) -> ModuleResolution | None:
+    """Resolve a concrete module in the primary scope without an HTTP hop.
+
+    This intentionally does not probe namespaces or a Solution's optional
+    workspace fallback. Those cases require the API resolver to preserve the
+    rule that a Solution namespace shadows a concrete workspace module.
+    """
+    base_path = name.replace(".", "/")
+    ctx = get_solution_context()
+    scope_prefix = f"{SOLUTIONS_ROOT}/{ctx.solution_id}/" if ctx else ""
+    try:
+        client = _get_sync_redis()
+        for relative_path, kind in (
+            (f"{base_path}.py", "module"),
+            (f"{base_path}/__init__.py", "package"),
+        ):
+            storage_path = f"{scope_prefix}{relative_path}"
+            raw_module = client.get(f"{MODULE_KEY_PREFIX}{storage_path}")
+            if not raw_module:
+                continue
+            return _module_resolution_from_cached_source(
+                kind=kind,
+                path=relative_path,
+                storage_path=storage_path,
+                raw_module=raw_module,
+            )
+    except redis.RedisError as exc:
+        logger.debug("Direct module cache unavailable for %s: %s", name, exc)
+    return None
+
+
+def resolve_module_sync(name: str) -> ModuleResolution:
+    """Resolve one logical import name, cached for the active execution."""
+    top_level = name.split(".", 1)[0]
+    if (
+        top_level in sys.builtin_module_names
+        or top_level in getattr(sys, "stdlib_module_names", set())
+    ):
+        return ModuleResolution(kind="not_found", path=name.replace(".", "/"))
+
+    ctx = get_solution_context()
+    cache_key = (
+        name,
+        ctx.solution_id if ctx is not None else None,
+        ctx.global_repo_access if ctx is not None else False,
+    )
+    cache = _get_resolution_cache()
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    resolution = _get_cached_module_resolution(name)
+    if resolution is None:
+        resolution = _get_exact_scoped_module(name)
+    if resolution is None:
+        resolution = _fetch_module_resolution_from_api(name)
+    if resolution is None:
+        raise ModuleResolutionError(f"Module resolver unavailable for {name}")
+
+    cache[cache_key] = resolution
+    return resolution
+
+
+def _fetch_module_index_from_api(solution_id: str | None = None) -> set[str]:
+    """Fetch the module index used by the fork's release-aware cache paths."""
     creds = _get_engine_credentials()
     if not creds:
         return set()
@@ -367,64 +662,54 @@ def _fetch_module_index_from_api(solution_id: str | None = None) -> set[str]:
         return set()
 
     try:
-        import httpx
-
-        if solution_id:
-            resp = httpx.get(
-                f"{api_url}/api/sdk/modules-index",
-                headers={"Authorization": f"Bearer {token}"},
-                params={"solution_id": solution_id},
-                timeout=10.0,
-            )
-        else:
-            resp = httpx.get(
-                f"{api_url}/api/sdk/modules-index",
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=10.0,
-            )
+        params = {"solution_id": solution_id} if solution_id else None
+        resp = _get_http_client().get(
+            f"{api_url}/api/sdk/modules-index",
+            headers={"Authorization": f"Bearer {token}"},
+            params=params,
+        )
         if resp.status_code != 200:
             return set()
         return set(resp.json().get("paths", []))
-    except Exception as e:
-        logger.warning(f"API module-index fetch error: {e}")
+    except Exception as exc:
+        logger.warning("API module-index fetch error: %s", exc)
         return set()
 
 
-def _fetch_requirements_from_api() -> str | None:
+def _fetch_requirements_from_api() -> tuple[bool, str | None]:
     """
     Fetch requirements.txt via GET /api/sdk/requirements (synchronous).
 
-    Returns the requirements content string, or None on any error / 404.
+    Returns ``(authoritative, content)``. A 404 is authoritative absence, while
+    connection/auth/server failures return ``(False, None)`` so the caller can
+    distinguish them from a workspace that intentionally has no requirements.
     Used as the primary cold-cache fallback in get_requirements_sync() when
     BIFROST_S3_* are absent from the child environment (Phase 2 hardening).
     """
     creds = _get_engine_credentials()
     if not creds:
-        return None
+        return False, None
     creds_url, token = creds
     api_url = creds_url or os.environ.get("BIFROST_API_URL", "").rstrip("/")
     if not api_url:
-        return None
+        return False, None
 
     try:
-        import httpx
-
-        resp = httpx.get(
+        resp = _get_http_client().get(
             f"{api_url}/api/sdk/requirements",
             headers={"Authorization": f"Bearer {token}"},
-            timeout=10.0,
         )
         if resp.status_code == 404:
-            return None
+            return True, None
         if resp.status_code != 200:
             logger.warning(f"API requirements-fetch returned {resp.status_code}")
-            return None
+            return False, None
 
         data = resp.json()
-        return data.get("content")
+        return True, data.get("content")
     except Exception as e:
         logger.warning(f"API requirements-fetch error: {e}")
-        return None
+        return False, None
 
 
 def _get_s3_client() -> Any:
@@ -479,7 +764,9 @@ def _storage_path_to_s3_key(storage_path: str) -> str:
     A bare relative path lives under the _repo/ prefix; a path already rooted at
     ``_solutions/`` is used verbatim (it already carries its full prefix).
     """
-    if storage_path.startswith(f"{SOLUTIONS_ROOT}/"):
+    if storage_path.startswith(
+        (f"{SOLUTIONS_ROOT}/", f"{WORKSPACE_RELEASES_ROOT}/")
+    ):
         return storage_path
     return f"{REPO_PREFIX}{storage_path}"
 
@@ -649,21 +936,36 @@ def _object_storage_cached_module(
 def _resolve_module_candidate(
     client: Any, *, path: str, storage_path: str
 ) -> CachedModule | None:
-    solution_module = storage_path.startswith(f"{SOLUTIONS_ROOT}/")
-    expected_generation = None if solution_module else workspace_generation_for_import()
+    immutable_module = storage_path.startswith(
+        (f"{SOLUTIONS_ROOT}/", f"{WORKSPACE_RELEASES_ROOT}/")
+    )
+    integrity_error: RuntimeError | None = None
+    expected_generation = (
+        None if immutable_module else workspace_generation_for_import()
+    )
     key = f"{MODULE_KEY_PREFIX}{storage_path}"
     data = client.get(key)
     if data:
-        module = json.loads(data)
-        if solution_module or _cached_module_matches_generation(
+        try:
+            module = json.loads(data)
+        except (TypeError, json.JSONDecodeError):
+            module = None
+        if immutable_module and module is not None:
+            try:
+                _verify_immutable_module_hash(path, module)
+            except RuntimeError as exc:
+                integrity_error = exc
+                client.delete(key)
+            else:
+                return module
+        elif module is not None and _cached_module_matches_generation(
             module, expected_generation or ""
         ):
-            _verify_deployment_module_hash(path, module)
             return module
 
     api_module = _fetch_module_from_api(storage_path)
     if api_module is not None:
-        if not solution_module and not _cached_module_matches_generation(
+        if not immutable_module and not _cached_module_matches_generation(
             api_module, expected_generation or ""
         ):
             raise WorkspaceGenerationChangedError(
@@ -676,7 +978,7 @@ def _resolve_module_candidate(
             module=api_module,
             source="API",
         )
-        _verify_deployment_module_hash(path, api_module)
+        _verify_immutable_module_hash(path, api_module)
         return api_module
 
     module = _object_storage_cached_module(
@@ -685,6 +987,8 @@ def _resolve_module_candidate(
         expected_generation=expected_generation,
     )
     if module is None:
+        if integrity_error is not None:
+            raise integrity_error
         return None
     _cache_sync_module(
         client,
@@ -693,7 +997,7 @@ def _resolve_module_candidate(
         module=module,
         source="object storage",
     )
-    _verify_deployment_module_hash(path, module)
+    _verify_immutable_module_hash(path, module)
     _require_workspace_generation(
         expected_generation,
         message="workspace source generation changed during module fallback",
@@ -767,10 +1071,10 @@ def get_modules_sync(paths: list[str]) -> dict[str, CachedModule | None]:
                 continue
             module = json.loads(data)
             if not storage_path.startswith(
-                f"{SOLUTIONS_ROOT}/"
+                (f"{SOLUTIONS_ROOT}/", f"{WORKSPACE_RELEASES_ROOT}/")
             ) and not _cached_module_matches_generation(module, expected_generation):
                 continue
-            _verify_deployment_module_hash(path, module)
+            _verify_immutable_module_hash(path, module)
             resolved[path] = module
 
         for path in ordered_paths:
@@ -782,16 +1086,30 @@ def get_modules_sync(paths: list[str]) -> dict[str, CachedModule | None]:
         return {path: get_module_sync(path) for path in ordered_paths}
 
 
-def _verify_deployment_module_hash(path: str, module: CachedModule) -> None:
+def _verify_immutable_module_hash(path: str, module: CachedModule) -> None:
     ctx = get_solution_context()
-    if ctx is None or not ctx.runtime_storage_prefix:
+    release_ctx = get_workspace_release_context()
+    if ctx is not None and release_ctx is not None:
+        raise RuntimeError("solution and Workspace release import roots cannot overlap")
+    if release_ctx is not None:
+        expected = release_ctx.source_hashes.get(path.lstrip("/"))
+        label = "workspace release"
+    elif ctx is not None and ctx.runtime_storage_prefix:
+        expected = (ctx.source_hashes or {}).get(path.lstrip("/"))
+        label = "deployment"
+    else:
         return
-    expected = (ctx.source_hashes or {}).get(path.lstrip("/"))
     if expected is None:
-        raise RuntimeError(f"deployment source is absent from manifest: {path}")
-    actual = str(module.get("hash") or "").removeprefix("sha256:")
-    if actual != expected.removeprefix("sha256:"):
-        raise RuntimeError(f"deployment import integrity mismatch: {path}")
+        raise RuntimeError(f"{label} source is absent from manifest: {path}")
+    content = module.get("content")
+    labelled = str(module.get("hash") or "").removeprefix("sha256:")
+    actual = (
+        hashlib.sha256(content.encode("utf-8")).hexdigest()
+        if isinstance(content, str)
+        else ""
+    )
+    if actual != labelled or actual != expected.removeprefix("sha256:"):
+        raise RuntimeError(f"{label} import integrity mismatch: {path}")
 
 
 def _cached_module_matches_generation(module: object, generation: str) -> bool:
@@ -874,6 +1192,16 @@ def get_module_index_sync() -> set[str]:
     On any successful fallback hit, Redis is repopulated so subsequent calls
     take the fast path.
     """
+    release_ctx = get_workspace_release_context()
+    if release_ctx is not None:
+        # The immutable manifest is authoritative. Never merge a mutable Redis
+        # or _repo listing into a release-pinned execution.
+        return {
+            f"{release_ctx.runtime_storage_prefix}{path.lstrip('/')}"
+            for path in release_ctx.source_hashes
+            if path.endswith(".py")
+        }
+
     try:
         client = _get_sync_redis()
         generation = workspace_generation_for_import()

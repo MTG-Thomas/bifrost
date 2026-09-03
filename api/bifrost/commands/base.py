@@ -167,6 +167,25 @@ def _print_http_error(exc: httpx.HTTPStatusError) -> _ExitCode:
     if (
         status == 409
         and isinstance(detail, dict)
+        and detail.get("reason") == "workspace_release_governed_path"
+    ):
+        payload = {
+            "error": "workspace_release_governed_path",
+            "status": status,
+            **detail,
+        }
+        human = [
+            detail.get(
+                "message",
+                "Workspace source is governed by the immutable Live release.",
+            ),
+            "Use `bifrost promote` with reviewed protected-main source.",
+        ]
+        _emit_error(payload, human)
+        return 4
+    if (
+        status == 409
+        and isinstance(detail, dict)
         and detail.get("reason")
         in {
             "file_exists",

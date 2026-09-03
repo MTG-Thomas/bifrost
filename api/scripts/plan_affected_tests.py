@@ -83,6 +83,7 @@ COMPREHENSIVE_BASENAMES = frozenset(
 # ownership, including an e2e route owner for router boundaries.
 PYTHON_WIRING_SINKS = frozenset(
     {
+        "api/scripts/skill-truth/generate.py",
         "api/src/main.py",
         "api/src/routers/__init__.py",
         "api/src/worker/main.py",

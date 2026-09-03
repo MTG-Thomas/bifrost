@@ -145,7 +145,6 @@ class TestCLIAIStreamAndInfo:
 
         assert response.provider == "openai"
         assert response.model == "gpt-test"
-        assert response.max_tokens == 123
 
         with patch(
             "src.services.llm.factory.get_llm_config",

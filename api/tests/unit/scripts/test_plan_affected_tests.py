@@ -254,6 +254,53 @@ def test_nonliteral_dynamic_import_falls_back_to_comprehensive(
     assert plan.reason == f"non-literal dynamic import in {path}"
 
 
+def test_unchanged_generator_wiring_does_not_force_comprehensive(
+    graph_repo: Path,
+) -> None:
+    _write(graph_repo, "api/src/services/helper.py", "VALUE = 1\n")
+    _write(
+        graph_repo,
+        "api/scripts/skill-truth/generate.py",
+        "from src.services.helper import VALUE\n"
+        "from importlib import import_module\n"
+        "name = 'bifrost.workflows'\n"
+        "module = import_module(name)\n",
+    )
+    _write(
+        graph_repo,
+        "api/tests/unit/services/test_helper.py",
+        "from src.services.helper import VALUE\n\n"
+        "def test_value():\n"
+        "    assert VALUE == 1\n",
+    )
+
+    plan = affected.plan_changes(
+        [affected.GitChange("M", "api/src/services/helper.py")]
+    )
+
+    assert plan.scope == "affected"
+    assert plan.python.impacted == ("api/src/services/helper.py",)
+    assert plan.python.unit_tests == ("tests/unit/services/test_helper.py",)
+
+
+def test_changed_generator_dynamic_import_still_fails_closed(
+    graph_repo: Path,
+) -> None:
+    path = "api/scripts/skill-truth/generate.py"
+    _write(
+        graph_repo,
+        path,
+        "from importlib import import_module\n"
+        "name = 'bifrost.workflows'\n"
+        "module = import_module(name)\n",
+    )
+
+    plan = affected.plan_changes([affected.GitChange("M", path)])
+
+    assert plan.scope == "comprehensive"
+    assert plan.reason == f"non-literal dynamic import in {path}"
+
+
 def test_ci_evidence_paths_must_match_runner_contract(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

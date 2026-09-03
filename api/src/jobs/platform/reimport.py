@@ -4,6 +4,10 @@ from pydantic import BaseModel
 
 from src.config import get_settings
 from src.core.database import get_db_context
+from src.jobs.execution_policy import (
+    WorkloadClass,
+    platform_job_operations_policy,
+)
 from src.jobs.platform.base import (
     PlatformJobContext,
     PlatformJobDefinition,
@@ -51,5 +55,9 @@ WORKSPACE_REIMPORT_DEFINITION = PlatformJobDefinition(
         max_attempts=2,
         max_concurrency=1,
         min_memory_headroom_mb=512,
+    ),
+    operations_policy=platform_job_operations_policy(
+        "workspace.reimport",
+        workload_class=WorkloadClass.PLATFORM_INTERACTIVE,
     ),
 )
