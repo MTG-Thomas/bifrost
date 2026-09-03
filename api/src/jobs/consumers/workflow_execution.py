@@ -665,7 +665,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                         )
                     )
                     if should_retry_execution(
-                        execution_row.retry_policy,
+                        getattr(execution_row, "retry_policy", None),
                         "subprocess_crash",
                         int(attempt_count or 0),
                         operator_max_attempts(),

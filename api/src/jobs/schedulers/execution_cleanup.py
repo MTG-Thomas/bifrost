@@ -67,7 +67,7 @@ async def _recover_restart_orphan(db, execution: ExecutionModel) -> bool:
     )
 
     if not should_retry_execution(
-        execution.retry_policy,
+        getattr(execution, "retry_policy", None),
         "worker_lost",
         int(attempt_count or 0),
         operator_max_attempts(),
