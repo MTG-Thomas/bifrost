@@ -11,6 +11,12 @@
   "name": "rt_wf_install_parity",
   "path": "workflows/rt_install_parity.py",
   "public_endpoint": false,
+  "retry_policy": {
+    "enabled": false,
+    "max_attempts": 2,
+    "retry_on": [],
+    "version": "execution-retry/v1"
+  },
   "role_names": [
     "rt_install_parity_role"
   ],

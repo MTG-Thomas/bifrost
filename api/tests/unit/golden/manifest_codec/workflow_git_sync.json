@@ -13,6 +13,12 @@
   "organization_id": null,
   "path": "workflows/rt_parity.py",
   "public_endpoint": true,
+  "retry_policy": {
+    "enabled": false,
+    "max_attempts": 2,
+    "retry_on": [],
+    "version": "execution-retry/v1"
+  },
   "role_names": null,
   "roles": [],
   "tags": [
