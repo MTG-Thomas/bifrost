@@ -13,6 +13,7 @@ from src.services.mcp_server.tools import agents
 def _context(*, admin: bool = False, org_id=None, user_id=None) -> SimpleNamespace:
     return SimpleNamespace(
         is_platform_admin=admin,
+        has_scope_bypass=admin,
         org_id=org_id if org_id is not None else uuid4(),
         user_id=user_id if user_id is not None else uuid4(),
         is_external=False,
@@ -23,6 +24,7 @@ def _context(*, admin: bool = False, org_id=None, user_id=None) -> SimpleNamespa
 def _context_without_org(*, admin: bool = False) -> SimpleNamespace:
     return SimpleNamespace(
         is_platform_admin=admin,
+        has_scope_bypass=admin,
         org_id=None,
         user_id=uuid4(),
         is_external=False,

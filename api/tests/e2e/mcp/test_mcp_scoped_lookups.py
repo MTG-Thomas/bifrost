@@ -274,6 +274,7 @@ class MockMCPContext:
         user_id: UUID | str,
         org_id: UUID | str | None = None,
         is_platform_admin: bool = False,
+        is_provider_org: bool = False,
         is_external: bool = False,
         user_email: str = "test@example.com",
         user_name: str = "Test User",
@@ -281,11 +282,16 @@ class MockMCPContext:
         self.user_id = user_id
         self.org_id = org_id
         self.is_platform_admin = is_platform_admin
+        self.is_provider_org = is_provider_org
         self.is_external = is_external
         self.user_email = user_email
         self.user_name = user_name
         self.accessible_namespaces: list[str] = []
         self.session = None
+
+    @property
+    def has_scope_bypass(self) -> bool:
+        return self.is_platform_admin or self.is_provider_org
 
 
 # =============================================================================

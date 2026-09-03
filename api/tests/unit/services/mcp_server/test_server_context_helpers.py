@@ -150,6 +150,7 @@ async def test_get_runtime_context_uses_agent_scoped_namespaces(monkeypatch):
                 "agent_id": agent_id,
                 "user_roles": ["member"],
                 "is_superuser": False,
+                "is_provider_org": False,
                 "user_id": str(user_id),
                 "org_id": str(org_id),
                 "is_external": True,

@@ -258,7 +258,9 @@ async def test_emit_topic_filters_subscriptions_to_event_org():
     from src.models.orm.events import EventDelivery
 
     deliveries = [o for o in added_objects if isinstance(o, EventDelivery)]
-    delivered_subscription_ids = {delivery.event_subscription_id for delivery in deliveries}
+    delivered_subscription_ids = {
+        delivery.event_subscription_id for delivery in deliveries
+    }
     assert count == 2
     assert {same_org_sub.id, global_sub.id} == delivered_subscription_ids
     assert other_org_sub.id not in delivered_subscription_ids

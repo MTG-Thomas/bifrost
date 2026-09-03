@@ -27,6 +27,7 @@ def _content_text(result) -> str:
 def _context(*, admin: bool = False, org_id=None, user_id=None) -> SimpleNamespace:
     return SimpleNamespace(
         is_platform_admin=admin,
+        has_scope_bypass=admin,
         org_id=org_id if org_id is not None else uuid4(),
         user_id=user_id if user_id is not None else uuid4(),
         is_external=False,

@@ -19,7 +19,8 @@ vi.mock("react-router", async () => {
 });
 
 vi.mock("@/stores/chatStore", () => ({
-	useChatStore: () => storeState,
+	useChatStore: <T,>(selector: (state: typeof storeState) => T) =>
+		selector(storeState),
 }));
 
 vi.mock("@/hooks/useChatAvailability", () => ({

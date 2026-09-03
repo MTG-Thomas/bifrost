@@ -121,18 +121,18 @@ async def _load_attempt_history(
 # =============================================================================
 #
 # History pagination is keyset-based: the continuation token names the last
-# row the client saw — (started_at, id) — and the next page is "rows strictly
+# row the client saw — (timeline_at, id) — and the next page is "rows strictly
 # older than that". An offset token ("give me rows 26–50") re-serves the
 # previous page's tail whenever new executions land between page loads, which
 # on a busy instance is every pagination: users stepping into the past see
 # today's rows (and a "Today" day header) at the top of every page.
 
 
-def _encode_history_cursor(started_at: datetime | None, row_id: UUID) -> str:
+def _encode_history_cursor(timeline_at: datetime | None, row_id: UUID) -> str:
     """Encode the last-served row's position as an opaque token."""
     payload = {
         "v": 1,
-        "s": started_at.isoformat() if started_at else None,
+        "s": timeline_at.isoformat() if timeline_at else None,
         "i": str(row_id),
     }
     return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
@@ -180,7 +180,7 @@ class ExecutionRepository:
     ) -> tuple[list[ExecutionSummary], str | None]:
         """List executions with filtering.
 
-        `cursor` is the keyset position (last row's started_at + id); `offset`
+        `cursor` is the keyset position (last row's timeline timestamp + id); `offset`
         is only honored for legacy numeric tokens still in flight from before
         the keyset change. New continuation tokens are always keyset.
         """
@@ -242,42 +242,43 @@ class ExecutionRepository:
         if exclude_local:
             query = query.where(ExecutionModel.is_local_execution == False)  # noqa: E712
 
-        # Completed and running work is the useful history signal. Never-started
-        # rows remain visible after it instead of crowding the first page.
+        # Use the same timeline anchor as the History UI. This keeps old
+        # cancelled Scheduled rows from jumping onto page one merely because
+        # they never received a started_at timestamp. created_at is non-null
+        # and anchors Pending rows that have not started or been scheduled.
+        timeline_at = func.coalesce(
+            ExecutionModel.started_at,
+            ExecutionModel.scheduled_at,
+            ExecutionModel.completed_at,
+            ExecutionModel.created_at,
+        )
         query = query.order_by(
-            desc(ExecutionModel.started_at).nulls_last(),
+            desc(timeline_at),
             desc(ExecutionModel.id),
         )
 
         # Pagination: keyset when the caller has a cursor, legacy offset
         # otherwise (first page, or an old numeric token still in flight).
         if cursor is not None:
-            cursor_started, cursor_id = cursor
-            if cursor_started is None:
-                # Once pagination reaches never-started rows, only older rows
-                # in that trailing NULL block remain.
+            cursor_timeline, cursor_id = cursor
+            if cursor_timeline is None:
+                # Defensive support for an old cursor minted from a row with
+                # NULL started_at. New cursors always carry a timeline value
+                # because created_at is non-null.
                 query = query.where(
-                    and_(
-                        ExecutionModel.started_at.is_(None),
-                        ExecutionModel.id < cursor_id,
-                    )
+                    and_(timeline_at.is_(None), ExecutionModel.id < cursor_id)
                 )
             else:
-                # Strictly older started rows come next, followed by the
-                # never-started block.
+                # Strictly older than the cursor row. Excludes the NULL block
+                # and prevents new rows from injecting themselves into the
+                # middle of an in-progress pagination.
                 query = query.where(
                     or_(
+                        timeline_at < cursor_timeline,
                         and_(
-                            ExecutionModel.started_at.is_not(None),
-                            or_(
-                                ExecutionModel.started_at < cursor_started,
-                                and_(
-                                    ExecutionModel.started_at == cursor_started,
-                                    ExecutionModel.id < cursor_id,
-                                ),
-                            ),
+                            timeline_at == cursor_timeline,
+                            ExecutionModel.id < cursor_id,
                         ),
-                        ExecutionModel.started_at.is_(None),
                     )
                 )
         elif offset:
@@ -297,7 +298,13 @@ class ExecutionRepository:
         next_token = None
         if has_more and executions:
             last = executions[-1]
-            next_token = _encode_history_cursor(last.started_at, last.id)
+            last_timeline = (
+                last.started_at
+                or last.scheduled_at
+                or last.completed_at
+                or last.created_at
+            )
+            next_token = _encode_history_cursor(last_timeline, last.id)
 
         return [ExecutionRepository._to_summary(e) for e in executions], next_token
 

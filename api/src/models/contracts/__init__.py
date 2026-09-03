@@ -60,6 +60,7 @@ from src.models.contracts.users import (
     RoleKnowledgeResponse,
     RolePublic,
     RoleUpdate,
+    RoleUserSummary,
     RoleUsersResponse,
     RoleWorkflowsResponse,
     UnassignAgentsFromRoleRequest,
@@ -693,6 +694,7 @@ __all__ = [
     "RoleCreate",
     "RoleUpdate",
     "RolePublic",
+    "RoleUserSummary",
     # User/Role assignments
     "UserPermission",
     "PermissionsData",

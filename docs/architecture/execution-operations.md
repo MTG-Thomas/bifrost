@@ -129,6 +129,7 @@ The registered definitions at this baseline are:
 
 | Job type | Timeout | Attempts | Concurrency | Memory headroom | Special behavior |
 | --- | ---: | ---: | ---: | ---: | --- |
+| `application.deploy` | 20m | 1 | shared | 512 MiB | Independent V2 App build and atomic activation |
 | `application.publish` | 20m | 2 | shared | 256 MiB | Runner-loss retry |
 | `oauth.refresh` | 15m | 2 | 1 | 128 MiB | Singleton maintenance |
 | `webhook.renew` | 30m | 2 | 1 | 128 MiB | Singleton maintenance |

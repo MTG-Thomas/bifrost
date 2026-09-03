@@ -188,7 +188,7 @@ async def test_list_executions_resolves_org_scope_and_parses_filters():
 
 
 @pytest.mark.asyncio
-async def test_history_orders_never_started_rows_after_started_executions():
+async def test_history_orders_by_consistent_execution_timeline():
     db = SimpleNamespace(execute=AsyncMock(return_value=_DbResult(rows=[])))
     repo = executions.ExecutionRepository(db)
     user = SimpleNamespace(is_superuser=True, user_id=uuid4())
@@ -202,7 +202,7 @@ async def test_history_orders_never_started_rows_after_started_executions():
     assert rows == []
     assert token is None
     query = str(db.execute.await_args.args[0])
-    assert "executions.started_at DESC NULLS LAST" in query
+    assert "coalesce(executions.started_at, executions.scheduled_at, executions.completed_at, executions.created_at) DESC" in query
     assert "executions.id DESC" in query
 
 

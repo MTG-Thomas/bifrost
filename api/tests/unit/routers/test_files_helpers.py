@@ -613,8 +613,9 @@ async def test_signed_workspace_get_targets_verified_immutable_live_object(
         def __init__(self, _db):
             pass
 
-        async def generate_presigned_download_url(self, *, path):
+        async def generate_presigned_download_url(self, *, path, expires_in):
             assert path == immutable_key
+            assert expires_in == 600
             return "https://storage.example.test/immutable"
 
     async def tiers(*_args, **_kwargs):

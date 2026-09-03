@@ -148,3 +148,37 @@ async def test_file_sdk_preserves_positional_scope_argument(monkeypatch):
     assert isinstance(body, dict)
     assert body["scope"] == "customer-scope"
     assert body["impact_candidate_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_file_sdk_forwards_signed_url_expiration(monkeypatch):
+    captured_json: dict = {}
+
+    class FakeResponse:
+        status_code = 200
+        is_success = True
+
+        def json(self):
+            return {
+                "url": "https://example.invalid/signed",
+                "path": "finance/abc/x.txt",
+                "expires_in": 604800,
+            }
+
+    class FakeClient:
+        async def post(self, url, json=None):
+            captured_json.update(json or {})
+            return FakeResponse()
+
+    monkeypatch.setattr(files_sdk, "get_client", lambda: FakeClient())
+    set_execution_context(_make_context(solution_id=None))
+
+    result = await files_sdk.files.get_signed_url(
+        "x.txt",
+        location="finance",
+        method="GET",
+        expires_in=604800,
+    )
+
+    assert captured_json["expires_in"] == 604800
+    assert result["expires_in"] == 604800

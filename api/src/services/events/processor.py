@@ -418,9 +418,8 @@ class EventProcessor:
             logger.info(f"No subscriptions for topic '{log_safe(topic)}': {event.id}")
             return event.id, 0
 
-        event.status = EventStatus.PROCESSING
-        await self.session.flush()
-
+        deliveries_created = 0
+        matching_subscriptions = 0
         for subscription in subscriptions:
             target_type = getattr(subscription, "target_type", "workflow") or "workflow"
             if target_type == "agent":
@@ -437,17 +436,29 @@ class EventProcessor:
                     continue
 
             delivery = build_event_delivery(event=event, subscription=subscription)
+            filter_matches = delivery.status == EventDeliveryStatus.PENDING
             self.session.add(delivery)
+            deliveries_created += 1
+            if filter_matches:
+                matching_subscriptions += 1
 
+        event.status = (
+            EventStatus.PROCESSING
+            if matching_subscriptions
+            else EventStatus.COMPLETED
+        )
         await self.session.flush()
         logger.info(
             f"Created deliveries for topic '{log_safe(topic)}': {event.id}",
             extra={
                 "event_id": str(event.id),
-                "subscription_count": len(subscriptions),
+                "delivery_count": deliveries_created,
+                "matching_subscription_count": matching_subscriptions,
+                "skipped_subscription_count": deliveries_created
+                - matching_subscriptions,
             },
         )
-        return event.id, len(subscriptions)
+        return event.id, deliveries_created
 
     async def _process_delivery(
         self,
@@ -509,11 +520,8 @@ class EventProcessor:
                 event_id=event.id,
             )
 
-        # Create deliveries and queue executions
-        event.status = EventStatus.PROCESSING
-        await self.session.flush()
-
         deliveries_created = 0
+        matching_subscriptions = 0
         for subscription in subscriptions:
             target_type = getattr(subscription, "target_type", "workflow") or "workflow"
 
@@ -530,11 +538,18 @@ class EventProcessor:
                     )
                     continue
 
-            # Create delivery record
             delivery = build_event_delivery(event=event, subscription=subscription)
+            filter_matches = delivery.status == EventDeliveryStatus.PENDING
             self.session.add(delivery)
             deliveries_created += 1
+            if filter_matches:
+                matching_subscriptions += 1
 
+        event.status = (
+            EventStatus.PROCESSING
+            if matching_subscriptions
+            else EventStatus.COMPLETED
+        )
         await self.session.flush()
 
         logger.info(
@@ -542,6 +557,9 @@ class EventProcessor:
             extra={
                 "event_id": str(event.id),
                 "delivery_count": deliveries_created,
+                "matching_subscription_count": matching_subscriptions,
+                "skipped_subscription_count": deliveries_created
+                - matching_subscriptions,
             },
         )
 
@@ -660,6 +678,7 @@ class EventProcessor:
                 delivery.error_message = str(e)
 
         await self.session.flush()
+        await self._delivery_repo.update_event_status(event_id)
 
         # Broadcast update after queueing (use already-loaded deliveries)
         success_count = sum(
@@ -687,8 +706,6 @@ class EventProcessor:
             if (getattr(d, "rule_decision", None) or {}).get("outcome")
             == "evaluation_error"
         )
-
-        await self._delivery_repo.update_event_status(event_id)
 
         await self._broadcast_event_update(
             event_source_id=event_obj.event_source_id,

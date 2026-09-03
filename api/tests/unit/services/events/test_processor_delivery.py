@@ -472,9 +472,9 @@ async def test_emit_topic_noops_without_active_source_and_skips_invalid_subscrip
     event_id, notified = await processor.emit_topic(topic="ticket.created", data={"id": 123})
 
     assert isinstance(event_id, uuid.UUID)
-    assert notified == 4
+    assert notified == 2
     assert session.add.call_count == 3
-    assert session.flush.await_count == 3
+    assert session.flush.await_count == 2
 
     processor._source_repo.get_by_topic.return_value = None
     event_id, notified = await processor.emit_topic(topic="ticket.closed", data={})

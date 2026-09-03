@@ -127,9 +127,8 @@ async def run_refresh_job(
             if refresh_threshold_minutes is not None:
                 refresh_threshold = now + timedelta(minutes=refresh_threshold_minutes)
                 tokens_to_refresh = [
-                    t
-                    for t in all_tokens
-                    if t.expires_at and t.expires_at <= refresh_threshold
+                    t for t in all_tokens
+                    if t.expires_at is None or t.expires_at <= refresh_threshold
                 ]
             else:
                 tokens_to_refresh = list(all_tokens)

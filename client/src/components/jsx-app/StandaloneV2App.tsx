@@ -244,7 +244,6 @@ export function StandaloneV2App({
 	entry,
 	css,
 	baseUrl,
-	appOrgId,
 	runtimeContract,
 }: StandaloneV2AppProps) {
 	const containerRef = useRef<HTMLDivElement>(null);
@@ -267,18 +266,24 @@ export function StandaloneV2App({
 	const { scope } = useOrgScope();
 
 	const token = getActiveToken();
+	const isAuthenticated = Boolean(token);
 	const error = token ? loadError : "Not authenticated — cannot mount the application.";
 
 	useEffect(() => {
 		const mountEl = containerRef.current;
-		if (!mountEl || !token) return;
+		// Read the bootstrap seed only when a mount is actually starting. The
+		// boolean dependency below tears down on logout, but ordinary token
+		// rotation keeps the app's React tree mounted.
+		const bootstrapToken = getActiveToken();
+		if (!mountEl || !bootstrapToken) return;
 
 		setLoadError(null);
 		const basename = isPreview
 			? `/apps/${appSlug}/preview`
 			: `/apps/${appSlug}`;
-		const orgScope =
-			appOrgId ?? (scope.type === "organization" ? scope.orgId : null);
+		// Visibility/deployment scope is separate from runtime data scope. All
+		// Apps run against the user's currently selected organization.
+		const orgScope = scope.type === "organization" ? scope.orgId : null;
 		const entryUrl = new URL(
 			`${assets.baseUrl}/${assets.entry}`,
 			window.location.origin,
@@ -311,7 +316,7 @@ export function StandaloneV2App({
 		const bootstrap: BifrostAppBootstrap = {
 			basename,
 			baseUrl: window.location.origin,
-			token,
+			token: bootstrapToken,
 			orgScope,
 			appId,
 			onLogout: () => {
@@ -446,16 +451,7 @@ export function StandaloneV2App({
 			}
 			mountEl.replaceChildren();
 		};
-	}, [
-		appId,
-		appSlug,
-		isPreview,
-		assets,
-		sourceKey,
-		appOrgId,
-		scope,
-		token,
-	]);
+	}, [appId, appSlug, isPreview, assets, sourceKey, scope, isAuthenticated]);
 
 	if (error) {
 		return (

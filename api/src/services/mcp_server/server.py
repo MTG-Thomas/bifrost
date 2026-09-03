@@ -25,6 +25,8 @@ from uuid import UUID
 
 from fastmcp.tools import ToolResult
 
+from shared.scope_resolver import has_scope_bypass
+
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
@@ -137,6 +139,7 @@ class MCPContext:
     user_id: UUID | str
     org_id: UUID | str | None = None
     is_platform_admin: bool = False
+    is_provider_org: bool = False
     # External (portal/guest) principal — no global tier, no authenticated-
     # tier entitlement. Mirrors UserPrincipal.is_external (the claim is
     # already bypass-neutralized at token mint).
@@ -159,6 +162,14 @@ class MCPContext:
             self.user_id = UUID(self.user_id)
         if isinstance(self.org_id, str) and self.org_id:
             self.org_id = UUID(self.org_id)
+
+    @property
+    def has_scope_bypass(self) -> bool:
+        """Whether this caller may cross organization scope boundaries."""
+        return has_scope_bypass(
+            is_platform_admin=self.is_platform_admin,
+            is_provider_org=self.is_provider_org,
+        )
 
 
 def _has_http_request_context() -> bool:
@@ -195,6 +206,7 @@ def _get_context_from_token() -> MCPContext:
         user_id=token.claims.get("user_id", ""),
         org_id=token.claims.get("org_id"),
         is_platform_admin=token.claims.get("is_superuser", False),
+        is_provider_org=token.claims.get("is_provider_org", False),
         is_external=token.claims.get("is_external", False),
         user_email=token.claims.get("email", ""),
         user_name=token.claims.get("name", ""),
@@ -226,6 +238,7 @@ async def _get_runtime_context() -> MCPContext:
 
     user_roles = token.claims.get("roles", [])
     is_superuser = token.claims.get("is_superuser", False)
+    is_provider_org = token.claims.get("is_provider_org", False)
     is_external = token.claims.get("is_external", False)
     user_id = token.claims.get("user_id")
     org_id = token.claims.get("org_id")
@@ -240,6 +253,7 @@ async def _get_runtime_context() -> MCPContext:
                     agent_id=agent_id,
                     user_roles=user_roles,
                     is_superuser=is_superuser,
+                    is_provider_org=is_provider_org,
                     user_id=user_id,
                     org_id=org_id,
                     is_external=is_external,
@@ -260,6 +274,7 @@ async def _get_runtime_context() -> MCPContext:
         user_id=token.claims.get("user_id", ""),
         org_id=token.claims.get("org_id"),
         is_platform_admin=is_superuser,
+        is_provider_org=is_provider_org,
         is_external=is_external,
         user_email=token.claims.get("email", ""),
         user_name=token.claims.get("name", ""),
@@ -777,7 +792,7 @@ async def _execute_workflow_tool_impl(
                 db,
                 org_id=context.org_id,
                 user_id=context.user_id,
-                is_superuser=context.is_platform_admin,
+                is_superuser=context.has_scope_bypass,
                 is_external=context.is_external,
             )
             workflow = await repo.get(id=workflow_id)

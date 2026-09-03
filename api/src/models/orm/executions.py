@@ -23,6 +23,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    func,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -155,6 +156,11 @@ class Execution(Base):
 
     __table_args__ = (
         Index("ix_executions_org_status", "organization_id", "status"),
+        Index(
+            "ix_executions_history_timeline",
+            func.coalesce(started_at, scheduled_at, completed_at, created_at).desc(),
+            id.desc(),
+        ),
         Index("ix_executions_created", "created_at"),
         Index("ix_executions_started_at", "started_at"),
         Index("ix_executions_user", "executed_by"),
