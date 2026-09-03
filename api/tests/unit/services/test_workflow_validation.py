@@ -90,7 +90,8 @@ class TestConvertWorkflowMetadataToModel:
         assert result.value == 5.5
         assert result.source_file_path == "workflows/my_workflow.py"
         assert result.relative_file_path == "workflows/my_workflow.py"
-        assert result.retry_policy is None
+        assert result.retry_policy.enabled is False
+        assert result.retry_policy.retry_on == []
         assert result.endpoint_enabled is False
         assert result.disable_global_key is False
         assert result.public_endpoint is False

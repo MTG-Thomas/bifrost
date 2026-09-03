@@ -217,6 +217,16 @@ async def get_current_user_optional(
         form_id=payload.get("form_id"),
         verified_params=payload.get("verified_params"),
         is_engine_token=payload.get("engine", False) is True,
+        engine_execution_id=(
+            UUID(payload["engine_execution_id"])
+            if payload.get("engine_execution_id")
+            else None
+        ),
+        engine_attempt_token=(
+            UUID(payload["engine_attempt_token"])
+            if payload.get("engine_attempt_token")
+            else None
+        ),
         delegated_user_id=delegated_user_id,
         delegated_email=payload.get("delegated_email", ""),
         delegated_name=payload.get("delegated_name", ""),
@@ -344,6 +354,30 @@ async def get_execution_context(
     Returns:
         ExecutionContext with user and organization scope
     """
+    if user.is_engine_token and user.engine_execution_id is not None:
+        from sqlalchemy import select
+
+        from src.models.orm.executions import WorkflowExecutionAttempt
+
+        if user.engine_attempt_token is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Execution attempt lease is missing or revoked",
+            )
+        active_attempt_id = await db.scalar(
+            select(WorkflowExecutionAttempt.id).where(
+                WorkflowExecutionAttempt.execution_id == user.engine_execution_id,
+                WorkflowExecutionAttempt.claim_token == user.engine_attempt_token,
+                WorkflowExecutionAttempt.completed_at.is_(None),
+                WorkflowExecutionAttempt.status.in_({"claimed", "running"}),
+            )
+        )
+        if active_attempt_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Execution attempt lease is missing or revoked",
+            )
+
     # Populate role_ids / role_names. The table-policy evaluator's
     # `has_role` function reads these (the JWT claims do not carry the post-
     # token role assignments needed by row-level policies). Reads go through

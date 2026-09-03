@@ -31,7 +31,7 @@ from typing import Any
 from uuid import UUID
 
 from redis.exceptions import RedisError
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
 from src.core.database import get_db_context
 from src.core.pubsub import publish_execution_update, publish_history_update
@@ -646,6 +646,42 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     )
                     await session.rollback()
                     return
+                if (
+                    error_type == "ProcessCrashError"
+                    and execution_row.status != ExecutionStatus.CANCELLING
+                ):
+                    from src.models.orm.executions import WorkflowExecutionAttempt
+                    from src.services.execution.async_executor import (
+                        republish_execution_from_dispatch,
+                    )
+                    from src.services.execution.retry_policy import (
+                        operator_max_attempts,
+                        should_retry_execution,
+                    )
+
+                    attempt_count = await session.scalar(
+                        select(func.count(WorkflowExecutionAttempt.id)).where(
+                            WorkflowExecutionAttempt.execution_id == execution_row.id
+                        )
+                    )
+                    if should_retry_execution(
+                        execution_row.retry_policy,
+                        "subprocess_crash",
+                        int(attempt_count or 0),
+                        operator_max_attempts(),
+                    ):
+                        await republish_execution_from_dispatch(execution_row)
+                        execution_row.status = ExecutionStatus.PENDING
+                        execution_row.started_at = None
+                        execution_row.completed_at = None
+                        execution_row.duration_ms = None
+                        execution_row.error_message = None
+                        await session.commit()
+                        logger.warning(
+                            "Retrying workflow execution %s after subprocess crash",
+                            execution_id,
+                        )
+                        return
             status = await update_execution(
                 execution_id=execution_id,
                 status=status,
@@ -1284,6 +1320,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
             from src.core.security import mint_engine_token
             engine_token, engine_token_expires_at = mint_engine_token(
                 execution_id=execution_id,
+                attempt_token=attempt_token,
                 solution_id=solution_id,
                 global_repo_access=solution_global_repo_access,
                 timeout_seconds=timeout_seconds,

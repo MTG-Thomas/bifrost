@@ -6,7 +6,7 @@ Bifrost contract models organized by domain.
 from src.models.contracts.base import (
     DataProviderInputMode,
     IntegrationType,
-    RetryPolicy,
+    ExecutionRetryPolicy,
     generate_entity_id,
 )
 
@@ -661,7 +661,7 @@ __all__ = [
     # NOTE: Bare names like User, Organization, Role, Form, Config, ExecutionLog
     # are NOT exported here to avoid conflicts with ORM models.
     # Use *Public, *Response, *Request suffixed versions instead.
-    "RetryPolicy",
+    "ExecutionRetryPolicy",
     "DataProviderInputMode",
     "IntegrationType",
     "generate_entity_id",

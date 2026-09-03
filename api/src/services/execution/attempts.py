@@ -10,12 +10,16 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.orm.executions import Execution, WorkflowExecutionAttempt as ExecutionAttempt
+from src.services.execution.retry_policy import snapshot_retry_policy
 
 
 def _policy_digest(execution: Execution) -> str:
     evidence = {
         "attempt_policy": "workflow-attempt/v1",
         "runtime_mode": execution.runtime_mode,
+        "execution_retry": snapshot_retry_policy(
+            getattr(execution, "retry_policy", None)
+        ),
     }
     encoded = json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
@@ -138,6 +142,7 @@ async def create_claimed_attempt(
         active.worker_id = worker_id
         active.worker_incarnation_id = worker_incarnation_id
         active.claimed_at = datetime.now(timezone.utc)
+        active.heartbeat_at = active.claimed_at
         await session.flush()
         return AttemptClaim(active.id, active.attempt_number, token)
 
@@ -159,6 +164,7 @@ async def create_claimed_attempt(
         worker_incarnation_id=worker_incarnation_id,
         published_at=now,
         claimed_at=now,
+        heartbeat_at=now,
         runtime_mode=execution.runtime_mode,
         runtime_evidence_hash=execution.runtime_evidence_hash,
         dispatch_evidence_hash=getattr(execution, "dispatch_evidence_hash", None),
