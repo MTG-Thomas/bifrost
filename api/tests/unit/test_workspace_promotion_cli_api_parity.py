@@ -317,5 +317,6 @@ def test_promotion_capabilities_are_independently_default_off() -> None:
     fields = Settings.model_fields
     assert fields["workspace_rapid_promotion_preview_enabled"].default is False
     assert fields["workspace_rapid_promotion_draft_upload_enabled"].default is False
+    assert fields["workspace_promotion_diagnostics_mode"].default == "off"
     assert fields["workspace_release_prepare_canary_enabled"].default is False
     assert fields["workspace_release_activation_enabled"].default is False

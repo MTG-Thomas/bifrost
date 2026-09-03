@@ -270,6 +270,41 @@ describe("ChatWindow — messages render & send", () => {
 		expect(container.querySelector(".grid-rows-\\[0fr\\]")).not.toBeNull();
 	});
 
+	it("shows running tool activity before a streaming assistant message", () => {
+		messagesRef.data = [
+			{
+				id: "m-1",
+				role: "user",
+				content: "Build a report",
+				created_at: "2026-04-20T00:00:00Z",
+			},
+			{
+				id: "assistant-progress",
+				role: "assistant",
+				content: "I'll create that.",
+				isStreaming: true,
+				created_at: "2026-04-20T00:00:01Z",
+			},
+			{
+				id: "tool-1",
+				role: "tool_call",
+				tool_name: "create_text_artifact",
+				tool_input: { format: "markdown" },
+				tool_state: "running",
+				created_at: "2026-04-20T00:00:02Z",
+			},
+		];
+		streamRef.isStreaming = true;
+		storeSelectors.streamingMessageIds = {
+			"c-1": "assistant-progress",
+		};
+
+		renderWithProviders(<ChatWindow conversationId="c-1" />);
+
+		expect(screen.getByText("Generating Markdown…")).toBeInTheDocument();
+		expect(screen.queryByText("Responding…")).not.toBeInTheDocument();
+	});
+
 	it("renders messages returned from the hook", () => {
 		messagesRef.data = [
 			{

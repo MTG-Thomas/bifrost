@@ -2,17 +2,18 @@
 Execution Cleanup Scheduler
 
 Cleans up stuck workflow executions and stale autonomous agent runs that
-remain in in-progress states for too long.
+remain in claimed or otherwise recoverably orphaned states for too long.
 
 Runs every 5 minutes to find and timeout stuck executions.
 """
 
 import json
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, select, text
 
 from src.core.database import get_session_factory
 from src.core.pubsub import (
@@ -24,19 +25,107 @@ from src.core.redis_client import get_redis_client
 from src.models.orm.agent_runs import AgentRun
 from src.models.orm.agents import Agent
 from src.models import Execution as ExecutionModel, ExecutionLog
+from src.models.orm.executions import WorkflowExecutionAttempt as ExecutionAttempt
 from src.models.orm.workflows import Workflow
 from src.services.execution_attempts import transition_execution_attempt
 
 logger = logging.getLogger(__name__)
 
 # Timeout thresholds
-PENDING_TIMEOUT_MINUTES = 10  # If PENDING for 10+ minutes, it's stuck in queue
 SCHEDULED_TIMEOUT_MINUTES = 24 * 60  # Leave a full day for deferred recovery
 RUNNING_TIMEOUT_MINUTES = 30  # If RUNNING for 30+ minutes, worker likely crashed
 CANCELLING_TIMEOUT_MINUTES = 3  # If CANCELLING for 3+ minutes, worker failed to cancel
 RESTART_ORPHAN_GRACE_SECONDS = 120
 DEFAULT_AGENT_RUN_TIMEOUT_SECONDS = 30 * 60
 AGENT_RUN_TIMEOUT_GRACE_SECONDS = 5 * 60
+
+
+def _runner_loss_max_attempts() -> int:
+    """Return the opt-in workflow runner-loss attempt limit."""
+    try:
+        return max(
+            1,
+            min(
+                10,
+                int(os.environ.get("BIFROST_WORKFLOW_RUNNER_LOSS_MAX_ATTEMPTS", "1")),
+            ),
+        )
+    except ValueError:
+        return 1
+
+
+def _restart_orphan_grace_seconds() -> int:
+    try:
+        return max(
+            1,
+            int(
+                os.environ.get(
+                    "BIFROST_WORKFLOW_RESTART_ORPHAN_GRACE_SECONDS",
+                    str(RESTART_ORPHAN_GRACE_SECONDS),
+                )
+            ),
+        )
+    except ValueError:
+        return RESTART_ORPHAN_GRACE_SECONDS
+
+
+async def _recover_restart_orphan(db, execution: ExecutionModel) -> bool:
+    """Republish a fenced RUNNING execution after its worker disappears."""
+    attempt_count = await db.scalar(
+        select(func.count(ExecutionAttempt.id)).where(
+            ExecutionAttempt.execution_id == execution.id
+        )
+    )
+    if int(attempt_count or 0) >= _runner_loss_max_attempts():
+        return False
+
+    from src.services.execution.async_executor import (
+        republish_execution_from_dispatch,
+    )
+    from src.services.execution.attempts import finalize_attempt
+
+    active_attempt = await db.scalar(
+        select(ExecutionAttempt)
+        .where(
+            ExecutionAttempt.execution_id == execution.id,
+            ExecutionAttempt.completed_at.is_(None),
+        )
+        .with_for_update()
+    )
+    if active_attempt is None or active_attempt.claim_token is None:
+        return False
+
+    # Publish while the current database projection is still untouched. The
+    # execution advisory lock prevents the consumer from claiming this message
+    # until the caller commits PENDING. If publication fails, no attempt or
+    # execution state has been changed and a later sweep can retry safely.
+    await republish_execution_from_dispatch(execution)
+    accepted = await finalize_attempt(
+        db,
+        execution.id,
+        active_attempt.claim_token,
+        status="worker_lost",
+        phase="terminal",
+        failure_code="worker_lost",
+        failure_phase="worker",
+    )
+    if not accepted:
+        return False
+
+    await transition_execution_attempt(
+        db,
+        logical_job_type="workflow_execution",
+        logical_job_id=execution.id,
+        status="worker_lost",
+        failure_code="worker_lost",
+        failure_message="Worker heartbeat disappeared before completion.",
+    )
+    execution.status = "Pending"
+    execution.started_at = None
+    execution.completed_at = None
+    execution.duration_ms = None
+    execution.error_message = None
+    return True
 
 
 def _execution_age_anchor(execution: ExecutionModel) -> datetime:
@@ -51,6 +140,7 @@ async def _load_worker_heartbeat_state(now: datetime) -> dict[str, Any]:
     """Read Redis worker heartbeats for restart-orphan detection."""
     state: dict[str, Any] = {
         "active_execution_ids": set(),
+        "live_worker_incarnation_ids": set(),
         "oldest_worker_started_at": None,
         "heartbeat_count": 0,
     }
@@ -75,6 +165,9 @@ async def _load_worker_heartbeat_state(now: datetime) -> dict[str, Any]:
                 except json.JSONDecodeError:
                     continue
                 state["heartbeat_count"] += 1
+                incarnation_id = heartbeat.get("worker_incarnation_id")
+                if incarnation_id:
+                    state["live_worker_incarnation_ids"].add(str(incarnation_id))
                 started_at = _parse_heartbeat_time(heartbeat.get("started_at"))
                 if started_at is not None:
                     oldest = state["oldest_worker_started_at"]
@@ -103,6 +196,7 @@ async def _load_worker_heartbeat_state(now: datetime) -> dict[str, Any]:
         )
         return {
             "active_execution_ids": set(),
+            "live_worker_incarnation_ids": set(),
             "oldest_worker_started_at": None,
             "heartbeat_count": 0,
         }
@@ -127,6 +221,7 @@ def _is_restart_orphan(
     *,
     now: datetime,
     heartbeat_state: dict[str, Any],
+    active_attempt: ExecutionAttempt | None = None,
 ) -> bool:
     if not execution.started_at:
         return False
@@ -135,6 +230,24 @@ def _is_restart_orphan(
     if str(execution.id) in heartbeat_state.get("active_execution_ids", set()):
         return False
 
+    owner_incarnation_id = (
+        getattr(active_attempt, "worker_incarnation_id", None)
+        if active_attempt is not None
+        else None
+    )
+    if owner_incarnation_id is not None:
+        if str(owner_incarnation_id) in heartbeat_state.get(
+            "live_worker_incarnation_ids", set()
+        ):
+            return False
+        heartbeat_at = getattr(active_attempt, "heartbeat_at", None)
+        grace_anchor = heartbeat_at or execution.started_at
+        if grace_anchor.tzinfo is None:
+            grace_anchor = grace_anchor.replace(tzinfo=timezone.utc)
+        return (now - grace_anchor).total_seconds() >= _restart_orphan_grace_seconds()
+
+    # Legacy attempts have no owner-incarnation evidence. Preserve the
+    # fleet-restart heuristic for those executions.
     oldest_worker_started_at = heartbeat_state.get("oldest_worker_started_at")
     if oldest_worker_started_at is None:
         return False
@@ -145,15 +258,16 @@ def _is_restart_orphan(
 
     if started_at >= oldest_worker_started_at:
         return False
-    return (now - oldest_worker_started_at).total_seconds() >= RESTART_ORPHAN_GRACE_SECONDS
+    return (now - oldest_worker_started_at).total_seconds() >= _restart_orphan_grace_seconds()
 
 
 async def cleanup_stuck_executions() -> dict[str, Any]:
     """
     Clean up stuck executions.
 
-    Finds executions that have been stuck in PENDING, RUNNING, or CANCELLING
-    status for longer than the timeout threshold and marks them as TIMEOUT/CANCELLED.
+    Finds executions that have been stuck after worker claim or cancellation
+    and marks them as TIMEOUT/CANCELLED. PENDING rows remain queued: age alone
+    is not evidence that their broker delivery was lost.
 
     Returns:
         Summary of cleanup results
@@ -166,6 +280,7 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
         "scheduled_timeouts": 0,
         "pending_timeouts": 0,
         "running_timeouts": 0,
+        "runner_loss_recoveries": 0,
         "cancelling_timeouts": 0,
         "total_cleaned": 0,
         "errors": [],
@@ -203,37 +318,37 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
             )
             scheduled_stuck = list(scheduled_result.scalars().all())
 
-            # Find stuck PENDING executions
-            pending_cutoff = now - timedelta(minutes=PENDING_TIMEOUT_MINUTES)
-            pending_result = await db.execute(
-                select(ExecutionModel).where(
-                    and_(
-                        ExecutionModel.status == ExecutionStatus.PENDING.value,
-                        func.coalesce(
-                            ExecutionModel.started_at,
-                            ExecutionModel.scheduled_at,
-                            ExecutionModel.created_at,
-                        )
-                        < pending_cutoff,
-                    )
-                )
-            )
-            pending_stuck = list(pending_result.scalars().all())
-
             # Find stuck RUNNING executions — respect per-workflow timeout
             # Join with Workflow to get configured timeout_seconds.
             # Use workflow timeout + 5 min grace (process pool should kill first).
             # Fallback to RUNNING_TIMEOUT_MINUTES if no workflow found.
             running_result = await db.execute(
-                select(ExecutionModel, Workflow.timeout_seconds).where(
+                select(
+                    ExecutionModel,
+                    Workflow.timeout_seconds,
+                    ExecutionAttempt,
+                ).where(
                     and_(
                         ExecutionModel.status == ExecutionStatus.RUNNING.value,
                     )
-                ).outerjoin(Workflow, ExecutionModel.workflow_id == Workflow.id)
+                )
+                .outerjoin(Workflow, ExecutionModel.workflow_id == Workflow.id)
+                .outerjoin(
+                    ExecutionAttempt,
+                    and_(
+                        ExecutionAttempt.execution_id == ExecutionModel.id,
+                        ExecutionAttempt.completed_at.is_(None),
+                    ),
+                )
             )
             running_stuck = []
-            for execution, wf_timeout in running_result.all():
-                if _is_restart_orphan(execution, now=now, heartbeat_state=heartbeat_state):
+            for execution, wf_timeout, active_attempt in running_result.all():
+                if _is_restart_orphan(
+                    execution,
+                    now=now,
+                    heartbeat_state=heartbeat_state,
+                    active_attempt=active_attempt,
+                ):
                     running_stuck.append(execution)
                     continue
                 age_anchor = _execution_age_anchor(execution)
@@ -269,7 +384,6 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
 
             all_stuck = (
                 scheduled_stuck
-                + pending_stuck
                 + running_stuck
                 + cancelling_stuck
             )
@@ -277,6 +391,90 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
 
             for execution in all_stuck:
                 try:
+                    # Candidate discovery is intentionally lock-free. Re-fence
+                    # and re-read before mutating so a result committed after
+                    # discovery cannot be overwritten by this sweep. Keep the
+                    # global order execution advisory lock -> execution row ->
+                    # attempt row, matching result and cancellation paths.
+                    await db.execute(
+                        text(
+                            "SELECT pg_advisory_xact_lock("
+                            "hashtext('bifrost:workflow-execution:' || :execution_id))"
+                        ),
+                        {"execution_id": str(execution.id)},
+                    )
+                    execution = await db.scalar(
+                        select(ExecutionModel)
+                        .where(ExecutionModel.id == execution.id)
+                        .execution_options(populate_existing=True)
+                        .with_for_update()
+                    )
+                    if execution is None or execution.status not in {
+                        ExecutionStatus.SCHEDULED.value,
+                        ExecutionStatus.PENDING.value,
+                        ExecutionStatus.RUNNING.value,
+                        ExecutionStatus.CANCELLING.value,
+                    }:
+                        continue
+
+                    # Status alone is insufficient: the claimant may have
+                    # refreshed the row after candidate discovery. Reapply the
+                    # status-specific age predicate while holding the fence.
+                    locked_anchor = _execution_age_anchor(execution)
+                    if (
+                        execution.status == ExecutionStatus.SCHEDULED.value
+                        and locked_anchor >= scheduled_cutoff
+                    ):
+                        continue
+                    # PENDING rows are not cleanup candidates in this sweep.
+                    # Reaching it here means publication won after discovery.
+                    if execution.status == ExecutionStatus.PENDING.value:
+                        continue
+                    if (
+                        execution.status == ExecutionStatus.CANCELLING.value
+                        and locked_anchor >= cancelling_cutoff
+                    ):
+                        continue
+                    if execution.status == ExecutionStatus.RUNNING.value:
+                        active_attempt = await db.scalar(
+                            select(ExecutionAttempt)
+                            .where(
+                                ExecutionAttempt.execution_id == execution.id,
+                                ExecutionAttempt.completed_at.is_(None),
+                            )
+                            .with_for_update()
+                        )
+                        restart_orphan = _is_restart_orphan(
+                            execution,
+                            now=now,
+                            heartbeat_state=heartbeat_state,
+                            active_attempt=active_attempt,
+                        )
+                        if not restart_orphan:
+                            workflow_timeout = await db.scalar(
+                                select(Workflow.timeout_seconds).where(
+                                    Workflow.id == execution.workflow_id
+                                )
+                            )
+                            if workflow_timeout == 0:
+                                continue
+                            effective_timeout_s = (
+                                workflow_timeout + 300
+                                if workflow_timeout
+                                else RUNNING_TIMEOUT_MINUTES * 60
+                            )
+                            if (
+                                now - locked_anchor
+                            ).total_seconds() <= effective_timeout_s:
+                                continue
+
+                        if restart_orphan and await _recover_restart_orphan(
+                            db, execution
+                        ):
+                            results["runner_loss_recoveries"] += 1
+                            await db.commit()
+                            continue
+
                     # Determine timeout reason and final status
                     original_status = ExecutionStatus(execution.status)
                     age_anchor = _execution_age_anchor(execution)
@@ -289,17 +487,9 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
                         final_status = ExecutionStatus.FAILED
                         results["scheduled_timeouts"] += 1
 
-                    elif execution.status == ExecutionStatus.PENDING.value:
-                        timeout_reason = (
-                            f"Stuck in PENDING status for {PENDING_TIMEOUT_MINUTES}+ minutes. "
-                            "Likely queue processing issue or worker not running."
-                        )
-                        final_status = ExecutionStatus.TIMEOUT
-                        results["pending_timeouts"] += 1
-
                     elif execution.status == ExecutionStatus.RUNNING.value:
                         elapsed_min = int((now - age_anchor).total_seconds() / 60)
-                        if _is_restart_orphan(execution, now=now, heartbeat_state=heartbeat_state):
+                        if restart_orphan:
                             timeout_reason = (
                                 f"Stuck in RUNNING status for {elapsed_min}+ minutes. "
                                 "Execution predates all current worker heartbeats and is not claimed by any live worker."
@@ -343,6 +533,59 @@ async def cleanup_stuck_executions() -> dict[str, Any]:
                             "timeout_reason": timeout_reason,
                         },
                     )
+
+                    # Revoke the current attempt before changing the logical
+                    # projection. A delayed child callback carrying this
+                    # attempt's token will then be rejected as stale.
+                    if original_status != ExecutionStatus.RUNNING:
+                        active_attempt = await db.scalar(
+                            select(ExecutionAttempt)
+                            .where(
+                                ExecutionAttempt.execution_id == execution.id,
+                                ExecutionAttempt.completed_at.is_(None),
+                            )
+                            .with_for_update()
+                        )
+                    if active_attempt is not None:
+                        owner_incarnation_lost = bool(
+                            active_attempt.worker_incarnation_id
+                            and heartbeat_state.get("heartbeat_count", 0) > 0
+                            and str(active_attempt.worker_incarnation_id)
+                            not in heartbeat_state.get(
+                                "live_worker_incarnation_ids", set()
+                            )
+                        )
+                        if original_status == ExecutionStatus.CANCELLING:
+                            active_attempt.status = "cancelled"
+                            active_attempt.failure_code = "cancellation_timeout"
+                            active_attempt.failure_phase = "cancellation"
+                        elif original_status == ExecutionStatus.SCHEDULED:
+                            active_attempt.status = "failed"
+                            active_attempt.failure_code = (
+                                "dispatch_publication_timeout"
+                            )
+                            active_attempt.failure_phase = "dispatch"
+                        elif original_status == ExecutionStatus.PENDING:
+                            active_attempt.status = "timed_out"
+                            active_attempt.failure_code = "queue_timeout"
+                            active_attempt.failure_phase = "queue"
+                        elif (
+                            original_status == ExecutionStatus.RUNNING
+                            and (
+                                owner_incarnation_lost
+                                or restart_orphan
+                            )
+                        ):
+                            active_attempt.status = "worker_lost"
+                            active_attempt.failure_code = "worker_incarnation_lost"
+                            active_attempt.failure_phase = "worker"
+                        else:
+                            active_attempt.status = "timed_out"
+                            active_attempt.failure_code = "stuck_execution_timeout"
+                            active_attempt.failure_phase = "execution"
+                        active_attempt.phase = "terminal"
+                        active_attempt.completed_at = now
+                        active_attempt.heartbeat_at = now
 
                     # Update execution
                     execution.status = final_status.value  # type: ignore[assignment]

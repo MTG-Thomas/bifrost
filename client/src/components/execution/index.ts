@@ -21,3 +21,8 @@ export {
 export { PrettyInputDisplay } from "./PrettyInputDisplay";
 export { SafeHTMLRenderer } from "./SafeHTMLRenderer";
 export { ExecutionMetadataBar } from "./ExecutionMetadataBar";
+export { ExecutionAttemptHistory } from "./ExecutionAttemptHistory";
+export type {
+	ExecutionAttemptHistoryView,
+	ExecutionAttemptView,
+} from "./ExecutionAttemptHistory";

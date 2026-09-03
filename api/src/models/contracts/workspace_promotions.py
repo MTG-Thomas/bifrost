@@ -98,11 +98,63 @@ class PromotionClosureMember(BaseModel):
     relation: Literal["selected", "dependency"]
 
 
+class PromotionDiagnosticSubject(BaseModel):
+    """Stable identity for one concrete diagnostic finding."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(min_length=1, max_length=100)
+    key: str = Field(min_length=1, max_length=1000)
+
+
 class PromotionDiagnostic(BaseModel):
     code: str
     severity: Literal["info", "warning", "blocker"]
     message: str
     path: str | None = None
+    subject: PromotionDiagnosticSubject | None = None
+    enforcement: Literal["absolute", "differential"] = "absolute"
+
+    @model_validator(mode="after")
+    def validate_differential_identity(self):
+        if self.enforcement == "differential" and self.subject is None:
+            raise ValueError("differential diagnostics require a stable subject")
+        return self
+
+
+class PromotionDiagnosticChange(BaseModel):
+    baseline: PromotionDiagnostic
+    candidate: PromotionDiagnostic
+
+
+class PromotionDiagnosticDelta(BaseModel):
+    """Immutable comparison of candidate findings with its exact active base."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["bifrost.workspace-diagnostic-delta/v1"] = (
+        "bifrost.workspace-diagnostic-delta/v1"
+    )
+    baseline_release_id: str = Field(pattern=r"^(?:sha256|repo-v1):[0-9a-f]{64}$")
+    baseline_manifest_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    affected_paths: list[str]
+    introduced: list[PromotionDiagnostic] = Field(default_factory=list)
+    worsened: list[PromotionDiagnosticChange] = Field(default_factory=list)
+    unchanged: list[PromotionDiagnostic] = Field(default_factory=list)
+    resolved: list[PromotionDiagnostic] = Field(default_factory=list)
+    unrelated: list[PromotionDiagnostic] = Field(default_factory=list)
+
+
+class PromotionDiagnosticDecision(BaseModel):
+    """Legacy and differential decisions bound to one immutable candidate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["bifrost.workspace-diagnostic-decision/v1"] = (
+        "bifrost.workspace-diagnostic-decision/v1"
+    )
+    legacy_blocked: bool
+    differential_blocked: bool
 
 
 class PromotionValidationTarget(BaseModel):
@@ -204,6 +256,8 @@ class WorkspacePromotionPreviewResponse(BaseModel):
     supersedes_candidate_id: str | None = None
     source_artifact_key: str | None = None
     diagnostics: list[PromotionDiagnostic]
+    diagnostic_delta: PromotionDiagnosticDelta | None = None
+    diagnostic_decision: PromotionDiagnosticDecision | None = None
     expires_at: datetime | None = None
 
 
@@ -249,6 +303,8 @@ class WorkspacePromotionArtifactResponse(BaseModel):
     requested_bounds: dict[str, int]
     local_run: PromotionRunEvidence | None = None
     diagnostics: list[PromotionDiagnostic] = Field(default_factory=list)
+    diagnostic_delta: PromotionDiagnosticDelta | None = None
+    diagnostic_decision: PromotionDiagnosticDecision | None = None
     lifecycle_status: PromotionArtifactLifecycle
     supersedes_candidate_id: str | None = None
     source_artifact_key: str

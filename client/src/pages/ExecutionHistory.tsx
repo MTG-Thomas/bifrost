@@ -1,4 +1,4 @@
-import { useState, useMemo, Fragment } from "react";
+import { useCallback, useState, useMemo, Fragment } from "react";
 import { useSearchParams } from "react-router";
 import {
 	CheckCircle,
@@ -87,6 +87,7 @@ import {
 import { DateRangePicker } from "@/components/ui/date-range-picker";
 import type { DateRange } from "react-day-picker";
 import type { components } from "@/lib/v1";
+import { useWebMcpTool, type WebMcpTool } from "@/lib/app-sdk/webmcp";
 
 type Organization = components["schemas"]["OrganizationPublic"];
 type ExecutionStatus =
@@ -119,7 +120,6 @@ interface StuckExecution {
 	logs_count?: number;
 	variables?: Record<string, unknown> | null;
 }
-
 export function ExecutionHistory() {
 	const [searchParams, setSearchParams] = useSearchParams();
 	const { isPlatformAdmin, user } = useAuth();
@@ -136,7 +136,7 @@ export function ExecutionHistory() {
 	const statusParam = searchParams.get("status")?.toLowerCase();
 	const statusFilter: ExecutionStatus | "all" =
 		STATUS_TABS.find((s) => s.toLowerCase() === statusParam) ?? "all";
-	const setStatusFilter = (value: ExecutionStatus | "all") => {
+	const setStatusFilter = useCallback((value: ExecutionStatus | "all") => {
 		setSearchParams(
 			(prev) => {
 				const next = new URLSearchParams(prev);
@@ -149,7 +149,7 @@ export function ExecutionHistory() {
 			},
 			{ replace: true },
 		);
-	};
+	}, [setSearchParams]);
 	const [searchTerm, setSearchTerm] = useState("");
 	const [dateRange, setDateRange] = useState<DateRange | undefined>();
 	const [cleanupDialogOpen, setCleanupDialogOpen] = useState(false);
@@ -390,6 +390,144 @@ export function ExecutionHistory() {
 		"execution_id",
 		(exec) => exec.status,
 	]);
+
+	const summarizeVisibleTool = useMemo<WebMcpTool>(
+		() => ({
+			name: "summarize-visible-executions",
+			title: "Summarize visible executions",
+			description:
+				"Summarizes only the currently loaded and visible workflow executions on the Bifrost History page. It does not return inputs, results, or logs.",
+			inputSchema: {
+				type: "object",
+				properties: {},
+				additionalProperties: false,
+			},
+			annotations: { readOnlyHint: true },
+			execute: async () => {
+				const byStatus: Record<string, number> = {};
+				for (const execution of filteredExecutions) {
+					const status = optimisticCancelledIds.has(
+						execution.execution_id,
+					)
+						? "Cancelled"
+						: execution.status;
+					byStatus[status] = (byStatus[status] ?? 0) + 1;
+				}
+				const dates = filteredExecutions
+					.map(runAnchorDate)
+					.filter(
+						(value): value is Date =>
+							value instanceof Date &&
+							!Number.isNaN(value.valueOf()),
+					)
+					.sort((a, b) => b.valueOf() - a.valueOf());
+				return {
+					scope: "loaded_page",
+					count: filteredExecutions.length,
+					byStatus,
+					newestAt: dates[0]?.toISOString() ?? null,
+					oldestAt: dates.at(-1)?.toISOString() ?? null,
+					hasMore,
+					isFetching,
+					activeFilters: {
+						status: statusFilter,
+						search: searchTerm,
+						workflowId: isPlatformAdmin
+							? workflowIdFilter || null
+							: null,
+						showLocal,
+					},
+				};
+			},
+		}),
+		[
+			filteredExecutions,
+			optimisticCancelledIds,
+			hasMore,
+			isFetching,
+			statusFilter,
+			searchTerm,
+			isPlatformAdmin,
+			workflowIdFilter,
+			showLocal,
+		],
+	);
+
+	const filterHistoryTool = useMemo<
+		WebMcpTool<{
+			status?: ExecutionStatus | "all";
+			search?: string;
+			workflowId?: string | null;
+			showLocal?: boolean;
+		}>
+	>(
+		() => ({
+			name: "set-execution-history-filters",
+			title: "Filter execution history",
+			description:
+				"Updates filters on the visible Bifrost workflow execution History page. This changes the UI and does not mutate executions.",
+			inputSchema: {
+				type: "object",
+				properties: {
+					status: { enum: ["all", ...STATUS_TABS] },
+					search: { type: "string" },
+					workflowId: { type: ["string", "null"] },
+					showLocal: { type: "boolean" },
+				},
+				additionalProperties: false,
+			},
+			annotations: { readOnlyHint: true },
+			execute: async (input) => {
+				if (input.workflowId !== undefined && !isPlatformAdmin) {
+					throw new Error(
+						"Workflow ID filtering is available only to platform administrators",
+					);
+				}
+				if (input.status !== undefined) setStatusFilter(input.status);
+				if (input.search !== undefined) setSearchTerm(input.search);
+				if (input.workflowId !== undefined)
+					setWorkflowIdFilter(input.workflowId ?? "");
+				if (input.showLocal !== undefined)
+					setShowLocal(input.showLocal);
+				return { updated: true, visibleStateWillRefresh: true };
+			},
+		}),
+		[isPlatformAdmin, setStatusFilter],
+	);
+
+	const openExecutionTool = useMemo<WebMcpTool<{ executionId: string }>>(
+		() => ({
+			name: "open-visible-execution",
+			title: "Open visible execution",
+			description:
+				"Opens the details drawer for an execution in the currently loaded History page.",
+			inputSchema: {
+				type: "object",
+				properties: { executionId: { type: "string" } },
+				required: ["executionId"],
+				additionalProperties: false,
+			},
+			annotations: { readOnlyHint: true },
+			execute: async ({ executionId }) => {
+				if (
+					!filteredExecutions.some(
+						(item) => item.execution_id === executionId,
+					)
+				) {
+					throw new Error(
+						"Execution is not visible on the currently loaded page",
+					);
+				}
+				handleViewDetails(executionId);
+				return { openedExecutionId: executionId };
+			},
+		}),
+		[filteredExecutions],
+	);
+
+	useWebMcpTool(historyType === "workflows" ? summarizeVisibleTool : null);
+	useWebMcpTool(historyType === "workflows" ? filterHistoryTool : null);
+	useWebMcpTool(historyType === "workflows" ? openExecutionTool : null);
 
 	// Pagination handlers
 	const handleNextPage = () => {

@@ -134,6 +134,25 @@ def test_pending_dispatch_replays_durable_runtime_and_rejects_parameter_drift():
         _validated_pending_dispatch(execution, changed)
 
 
+def test_pending_dispatch_records_explicit_org_override():
+    context = _context()
+
+    request = _dispatch_request_identity(
+        context,
+        "22222222-2222-2222-2222-222222222222",
+        "11111111-1111-1111-1111-111111111111",
+        {},
+        form_id=None,
+        sync=False,
+        api_key_id=None,
+        file_path=None,
+        org_id_override="55555555-5555-5555-5555-555555555555",
+    )
+
+    assert request["org_id"] == "55555555-5555-5555-5555-555555555555"
+    assert request["org_id_overridden"] is True
+
+
 @pytest.mark.asyncio
 async def test_existing_execution_is_rehydrated_before_current_runtime_is_pinned(
     monkeypatch,

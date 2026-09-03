@@ -125,31 +125,55 @@ def _wait_for_successful_delivery(e2e_client, headers, source: dict, predicate):
 
 
 def _wait_for_failed_delivery(e2e_client, headers, source: dict, predicate):
+    last_observation: dict = {}
+
     def find_delivery():
+        last_observation.clear()
         events_resp = e2e_client.get(
             f"/api/events/sources/{source['id']}/events",
             headers=headers,
         )
+        last_observation["events_status_code"] = events_resp.status_code
         if events_resp.status_code != 200:
             return None
 
-        for event in events_resp.json()["items"]:
+        events = events_resp.json()["items"]
+        last_observation["event_ids"] = [event["id"] for event in events]
+        for event in events:
             if not predicate(event):
                 continue
+            last_observation["matched_event"] = event
             deliveries_resp = e2e_client.get(
                 f"/api/events/{event['id']}/deliveries",
                 headers=headers,
             )
+            last_observation["deliveries_status_code"] = deliveries_resp.status_code
             if deliveries_resp.status_code != 200:
                 return None
             deliveries = deliveries_resp.json()["items"]
+            last_observation["deliveries"] = [
+                {
+                    key: delivery.get(key)
+                    for key in (
+                        "id",
+                        "status",
+                        "execution_id",
+                        "attempt_count",
+                        "error_message",
+                    )
+                }
+                for delivery in deliveries
+            ]
             failed = [d for d in deliveries if d["status"] == "failed"]
             if failed:
                 return {"event": event, "delivery": failed[0]}
         return None
 
     result = poll_until(find_delivery, max_wait=20.0, interval=0.5)
-    assert result is not None, f"No failed delivery for {source['event_type']}"
+    assert result is not None, (
+        f"No failed delivery for {source['event_type']}; "
+        f"last observation: {last_observation!r}"
+    )
     return result
 
 
