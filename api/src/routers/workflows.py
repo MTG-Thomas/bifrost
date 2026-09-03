@@ -66,6 +66,7 @@ from src.services.workflow_registration import (
     add_workflow_registration,
     resolve_workflow_registration_id,
 )
+from src.services.execution.retry_policy import normalize_retry_policy
 from src.services.workspace_release_registration_authority import (
     WorkspaceReleaseRegistrationGoverned,
     guard_workspace_registration_mutation,
@@ -134,7 +135,6 @@ def _convert_workflow_orm_to_schema(workflow: WorkflowORM, used_by_count: int = 
     """Convert ORM model to Pydantic schema for API response."""
     from typing import Literal
     from src.models.contracts.workflows import ExecutableType
-    from src.services.execution.retry_policy import normalize_retry_policy
     from src.services.tool_registry import (
         workflow_json_schema_to_parameter_records,
     )
