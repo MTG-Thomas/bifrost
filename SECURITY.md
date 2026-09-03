@@ -50,22 +50,25 @@ The repo runs:
 - **OpenSSF Scorecard** weekly, results published to
   https://api.securityscorecards.dev/projects/github.com/gobifrost/bifrost
 
-### Auto-Merge Policy for Dependency Updates
+### Dependency update policy
 
-To keep patch SLAs short, Dependabot PRs auto-merge under these conditions:
+Dependabot acts like unattended upgrades for low-risk maintenance. It checks
+weekly, waits 7 days before proposing stable patches and 14 days before stable
+minors, groups compatible updates, and merges them after CI passes.
 
-| Update type | Auto-merge |
+| Update type | Dependabot behavior |
 |---|---|
-| Security advisory bumps | Yes if CI green |
-| Patch (`x.y.Z`) | Yes if CI green |
-| Minor (`x.Y.z`) | Yes if CI green |
-| Major (`X.y.z`) | No — human review |
-| Docker base image | No — human review |
-| GitHub Actions (pinned to SHA) | Yes if CI green |
+| Security advisory bumps | Open immediately and merge if CI is green |
+| Stable patch (`x.y.Z`) | Group after a 7-day cooldown and merge if CI is green |
+| Stable minor (`x.Y.z`) | Group after a 14-day cooldown and merge if CI is green |
+| Major (`X.y.z`) | No routine PR; upgrade deliberately |
+| Prerelease (`alpha`, `beta`, `rc`) | Keep an explicit pin until stable unless we opt in |
+| Docker base image | Security PRs only; refresh deliberately |
+| GitHub Actions (pinned to SHA) | Stable patch/minor updates merge if CI is green |
 
 Auto-merged PRs still go through the full CI suite (lint, typecheck,
 unit, e2e). If a green-CI auto-merge later breaks something, the
-behavior is by definition uncovered by tests — the response is to add
+behavior is by definition uncovered by tests. The response is to add
 the test and fix forward, not to gate the auto-merge harder.
 
 ## What's Out of Scope
