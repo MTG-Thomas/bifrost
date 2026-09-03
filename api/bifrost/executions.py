@@ -11,7 +11,7 @@ from .client import get_client, raise_for_status_with_detail
 from .models import ExecutionLog, WorkflowExecution
 
 
-class executions:
+class Executions:
     """
     Execution history operations.
 
@@ -178,3 +178,7 @@ class executions:
             start=start,
             count=count,
         )
+
+
+# Backwards-compatible public API name used by existing callers.
+executions = Executions

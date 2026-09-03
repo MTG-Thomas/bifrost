@@ -4,11 +4,39 @@ Integration tests for Bifrost SDK from workflows
 Tests that user workflows can import and use the bifrost SDK.
 """
 
+import json
+import os
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
 import pytest
 
 # Import bifrost context functions directly
 # This ensures we use the same ContextVar instance that storage module uses
 from bifrost._context import set_execution_context, clear_execution_context, get_execution_context
+
+
+# The test is mounted at ``/app/tests`` in the Dockerized test runner, while
+# host-side paths include the repository's ``api/tests`` prefix.  In both
+# environments the SDK package root is three parents above this file.
+SDK_ROOT = Path(__file__).resolve().parents[3]
+TEST_ENVS = {**os.environ, "PYTHONPATH": str(SDK_ROOT)}
+
+
+def _run_import_probe(script: str) -> dict[str, object]:
+    code = "import json\n" + textwrap.dedent(script)
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=str(SDK_ROOT),
+        env=TEST_ENVS,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout.strip())
 
 
 
@@ -85,12 +113,96 @@ class TestSDKImportsFromWorkflow:
         assert hasattr(forms, 'list')
         assert hasattr(forms, 'get')
 
-    def test_import_bifrost_executions(self):
-        """Test importing executions module"""
-        from bifrost.executions import executions
+    def test_import_order_import_module_then_package_subprocess(self):
+        """Import `bifrost.executions` then `from bifrost import executions` in isolation."""
+        result = _run_import_probe(
+            """
+            import bifrost.executions
+            from bifrost import executions
 
-        assert hasattr(executions, 'list')
-        assert hasattr(executions, 'get')
+            import bifrost
+            print(json.dumps({
+                "type_name": type(executions).__name__,
+                "is_class": isinstance(executions, type),
+                "has_list": hasattr(executions, "list"),
+                "package_attr_is_same": executions is bifrost.executions,
+                "package_attr_type": type(bifrost.executions).__name__,
+            }))
+            """
+        )
+
+        assert result["is_class"] is True
+        assert result["type_name"] == "type"
+        assert result["has_list"] is True
+        assert result["package_attr_is_same"] is True
+        assert result["package_attr_type"] == "type"
+
+    def test_import_order_import_submodule_then_package_subprocess(self):
+        """Import `from bifrost.executions import executions` then `from bifrost import executions`."""
+        result = _run_import_probe(
+            """
+            from bifrost.executions import executions as submodule_executions
+            from bifrost import executions
+
+            import bifrost
+            print(json.dumps({
+                "is_same_object": submodule_executions is executions,
+                "package_attr_is_same": executions is bifrost.executions,
+                "package_attr_type": type(bifrost.executions).__name__,
+                "type_name": type(executions).__name__,
+                "has_list": hasattr(executions, "list"),
+            }))
+            """
+        )
+
+        assert result["is_same_object"] is True
+        assert result["package_attr_is_same"] is True
+        assert result["package_attr_type"] == "type"
+        assert result["type_name"] == "type"
+        assert result["has_list"] is True
+
+    def test_import_order_import_package_then_module_subprocess(self):
+        """Import `from bifrost import executions` then `from bifrost.executions import executions`."""
+        result = _run_import_probe(
+            """
+            from bifrost import executions as package_executions
+            from bifrost.executions import executions as module_executions
+
+            print(json.dumps({
+                "is_same_object": package_executions is module_executions,
+                "type_name": type(module_executions).__name__,
+                "has_list": hasattr(module_executions, "list"),
+                "has_get_current_logs": hasattr(module_executions, "get_current_logs"),
+            }))
+            """
+        )
+
+        assert result["is_same_object"] is True
+        assert result["type_name"] == "type"
+        assert result["has_list"] is True
+        assert result["has_get_current_logs"] is True
+
+    def test_import_executions_class_alias_identity_subprocess(self):
+        """Assert canonical class and alias are identical in isolated interpreter."""
+        result = _run_import_probe(
+            """
+            from bifrost.executions import Executions, executions
+
+            print(json.dumps({
+                "alias_identity": Executions is executions,
+                "is_class": isinstance(executions, type),
+                "has_list": hasattr(executions, "list"),
+                "has_get": hasattr(executions, "get"),
+                "class_name": Executions.__name__,
+            }))
+            """
+        )
+
+        assert result["alias_identity"] is True
+        assert result["is_class"] is True
+        assert result["class_name"] == "Executions"
+        assert result["has_list"] is True
+        assert result["has_get"] is True
 
     def test_import_bifrost_roles(self):
         """Test importing roles module"""

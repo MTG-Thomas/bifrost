@@ -15,10 +15,11 @@ mutate the capture selectors. The human deselects in the UI; the preview is the
 guard. (Capture's own Python bundling closure is separate, in ``capture.py``
 ``_python_files`` gated by ``include_imports``.)
 
-References are found by static scanners (``ref_scanner``): Python module imports
-(AST) and string-literal entity refs (``tables.get``/``config.get``/
-``useWorkflow``/``useTable``). Computed refs are invisible — hence
-``scan_is_static`` and the deselectable human-checked preview.
+References are found by static scanners (``ref_scanner``): Python module
+imports (AST) and string-literal entity refs (``tables.get``/``config.get``/
+``useWorkflow``/``useTable``/``workflows.execute``). Computed refs are
+invisible — hence ``scan_is_static`` and the deselectable human-checked
+preview.
 """
 
 from __future__ import annotations
@@ -198,10 +199,8 @@ class SolutionDependencyWalker:
                 if wf is not None:
                     _ref_workflow(wf)
 
-        # Drain the worklist: scan each workflow's source for tables/configs/
-        # modules. New workflows can't appear here (workflows don't reference
-        # other workflows in source), so this terminates after one sweep — but
-        # the loop form keeps it correct if that ever changes.
+        # Drain the worklist: scan each workflow's source for table/config/module
+        # refs and workflow refs discovered via ``workflows.execute``.
         while wf_worklist - scanned_wf:
             wf_id = (wf_worklist - scanned_wf).pop()
             scanned_wf.add(wf_id)
@@ -213,6 +212,10 @@ class SolutionDependencyWalker:
                 continue
             if include_imports:
                 await self._collect_module_closure(src, seen_modules)
+            for ref in scan_workflow_refs(src):
+                wf = self._resolve_workflow_ref(ref, wf_by_id, wf_by_pathfn)
+                if wf is not None:
+                    _ref_workflow(wf)
             for tname in scan_table_refs(src):
                 tbl = tbl_by_name.get(tname)
                 if tbl is not None:
@@ -270,13 +273,24 @@ class SolutionDependencyWalker:
         }
         out: list[OutsideReference] = []
 
-        # Workflows outside the closure that read a selected table/config.
+        # Workflows outside the closure that reference selected tables/configs/workflows.
         for wf_id, wf in wf_by_id.items():
             if wf_id in closure_workflows or not wf.path:
                 continue
             src = await self._read(wf.path)
             if src is None:
                 continue
+            for ref in scan_workflow_refs(src):
+                target_wf = self._resolve_workflow_ref(
+                    ref, wf_by_id, wf_by_pathfn
+                )
+                if target_wf is not None and target_wf.id in closure_workflows:
+                    out.append(OutsideReference(
+                        referencer_kind="workflow", referencer_ref=str(wf.id),
+                        referencer_name=wf.name,
+                        target_kind="workflow", target_ref=str(target_wf.id),
+                        target_name=target_wf.name,
+                    ))
             for tname in scan_table_refs(src):
                 if tname in selected_table_names:
                     tbl = tbl_by_name[tname]
