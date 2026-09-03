@@ -509,3 +509,42 @@ async def test_parent_and_attempt_terminalization_roll_back_together(
     assert refreshed_execution.status == ExecutionStatus.RUNNING
     assert refreshed_attempt is not None
     assert refreshed_attempt.completed_at is None
+
+
+@pytest.mark.asyncio
+async def test_fenced_attempt_token_cannot_renew_database_lease(
+    db_session, monkeypatch
+) -> None:
+    execution = Execution(
+        id=uuid4(),
+        workflow_name="fenced-heartbeat",
+        status=ExecutionStatus.RUNNING,
+        parameters={},
+        executed_by_name="test",
+    )
+    db_session.add(execution)
+    await db_session.flush()
+    claim = await create_claimed_attempt(
+        db_session,
+        execution,
+        worker_id="slot-a",
+        worker_incarnation_id=uuid4(),
+    )
+    assert await finalize_attempt(
+        db_session,
+        execution.id,
+        claim.claim_token,
+        status="worker_lost",
+        phase="terminal",
+        failure_phase="worker",
+        failure_code="worker_lost",
+    )
+    await db_session.commit()
+
+    @asynccontextmanager
+    async def db_context():
+        yield db_session
+
+    monkeypatch.setattr("src.core.database.get_db_context", db_context)
+
+    assert await heartbeat_attempt_tokens([claim.claim_token]) == set()

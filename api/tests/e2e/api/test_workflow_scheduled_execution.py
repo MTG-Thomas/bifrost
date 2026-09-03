@@ -137,6 +137,77 @@ async def test_schedule_with_delay_seconds_normalizes_to_scheduled_at(
 
 
 @pytest.mark.asyncio
+async def test_execution_keeps_retry_policy_from_dispatch(
+    e2e_client,
+    platform_admin,
+    scheduled_workflow,
+    db_session: AsyncSession,
+    cleanup_scheduled_rows: list[UUID],
+):
+    first_policy = {
+        "version": "execution-retry/v1",
+        "enabled": True,
+        "max_attempts": 2,
+        "retry_on": ["worker_lost"],
+    }
+    patch_response = e2e_client.patch(
+        f"/api/workflows/{scheduled_workflow['id']}",
+        headers=platform_admin.headers,
+        json={"retry_policy": first_policy},
+    )
+    assert patch_response.status_code == 200, patch_response.text
+    assert patch_response.json()["retry_policy"] == first_policy
+
+    get_response = e2e_client.get(
+        f"/api/workflows/{scheduled_workflow['id']}",
+        headers=platform_admin.headers,
+    )
+    assert get_response.status_code == 200, get_response.text
+    assert get_response.json()["retry_policy"] == first_policy
+
+    schedule_response = e2e_client.post(
+        "/api/workflows/execute",
+        headers=platform_admin.headers,
+        json={
+            "workflow_id": scheduled_workflow["id"],
+            "input_data": {"foo": "snapshot"},
+            "scheduled_at": (
+                datetime.now(timezone.utc) + timedelta(minutes=10)
+            ).isoformat(),
+        },
+    )
+    assert schedule_response.status_code == 200, schedule_response.text
+    execution_id = UUID(schedule_response.json()["execution_id"])
+    cleanup_scheduled_rows.append(execution_id)
+
+    changed_policy = {
+        "version": "execution-retry/v1",
+        "enabled": True,
+        "max_attempts": 3,
+        "retry_on": ["subprocess_crash"],
+    }
+    patch_response = e2e_client.patch(
+        f"/api/workflows/{scheduled_workflow['id']}",
+        headers=platform_admin.headers,
+        json={"retry_policy": changed_policy},
+    )
+    assert patch_response.status_code == 200, patch_response.text
+    assert patch_response.json()["retry_policy"] == changed_policy
+
+    execution_response = e2e_client.get(
+        f"/api/executions/{execution_id}",
+        headers=platform_admin.headers,
+    )
+    assert execution_response.status_code == 200, execution_response.text
+    assert execution_response.json()["retry_policy"] == first_policy
+
+    await db_session.rollback()
+    execution = await db_session.get(Execution, execution_id)
+    assert execution is not None
+    assert execution.retry_policy == first_policy
+
+
+@pytest.mark.asyncio
 async def test_schedule_skips_queue(
     e2e_client,
     platform_admin,

@@ -483,3 +483,69 @@ class TestFailedExecutionCompletionOrder:
             "00000000-0000-0000-0000-000000000004",
             session=session,
         )
+
+
+@pytest.mark.asyncio
+async def test_late_fenced_success_cannot_change_execution_or_run_callbacks():
+    from src.jobs.consumers.workflow_execution import WorkflowExecutionConsumer
+
+    session = AsyncMock()
+    session.scalar.return_value = SimpleNamespace(status="Running")
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=session)
+    context.__aexit__ = AsyncMock(return_value=None)
+    update_execution = AsyncMock()
+    publish_execution = AsyncMock()
+    publish_history = AsyncMock()
+    cleanup_cache = AsyncMock()
+
+    with patch.object(WorkflowExecutionConsumer, "__init__", lambda self: None):
+        consumer = WorkflowExecutionConsumer()
+        consumer._redis_client = AsyncMock()
+        consumer._redis_client.get_pending_execution.return_value = {
+            "workflow_id": "00000000-0000-0000-0000-000000000001",
+            "workflow_name": "fenced_workflow",
+            "org_id": "00000000-0000-0000-0000-000000000002",
+            "user_id": "00000000-0000-0000-0000-000000000003",
+            "user_name": "Test User",
+            "sync": False,
+        }
+        with (
+            patch("src.core.database.get_session_factory", return_value=lambda: context),
+            patch(
+                "src.services.execution.attempts.finalize_attempt",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "src.jobs.consumers.workflow_execution.update_execution",
+                update_execution,
+            ),
+            patch(
+                "src.jobs.consumers.workflow_execution.publish_execution_update",
+                publish_execution,
+            ),
+            patch(
+                "src.jobs.consumers.workflow_execution.publish_history_update",
+                publish_history,
+            ),
+            patch("src.core.cache.cleanup_execution_cache", cleanup_cache),
+        ):
+            await consumer._process_success(
+                "00000000-0000-0000-0000-000000000004",
+                {
+                    "success": True,
+                    "status": "Success",
+                    "result": {"late": True},
+                    "duration_ms": 10,
+                    "attempt_token": str(uuid4()),
+                },
+            )
+
+    session.rollback.assert_awaited_once()
+    session.commit.assert_not_awaited()
+    update_execution.assert_not_awaited()
+    publish_execution.assert_not_awaited()
+    publish_history.assert_not_awaited()
+    cleanup_cache.assert_not_awaited()
+    consumer._redis_client.delete_pending_execution.assert_not_awaited()
