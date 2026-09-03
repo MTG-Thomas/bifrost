@@ -10,18 +10,22 @@ The scans are STATIC and intentionally simple:
 - Entity name/path references (``tables.get("x")``, ``config.get("k")``,
   ``useWorkflow("p::f")``, ``workflows.execute("p::f")``,
   ``useTable("x")``, ``integrations.get("Name")``) are
-  matched as STRING LITERALS via
-  regex. Dynamic references built from variables are invisible — which is
-  exactly why the capture/export preview is a deselectable human-checked list
-  (capture-design §3.3), not an automatic gate.
+  matched as STRING LITERALS. Python ``workflows.execute`` calls use the AST
+  so comments and docstrings are ignored; the other references use regex so
+  this scanner also works for non-Python sources. Dynamic references built
+  from variables are invisible — which is exactly why the capture/export
+  preview is a deselectable human-checked list (capture-design §3.3), not an
+  automatic gate.
 
-Matching string literals (not full parses) keeps one scanner working across both
-Python and TSX without a TS parser, at the cost of missing computed refs. That
-trade-off is the documented design: the human is the authority over the preview.
+Using the AST only for Python execution calls keeps one scanner working across
+both Python and TSX without a TS parser, at the cost of missing computed refs.
+That trade-off is the documented design: the human is the authority over the
+preview.
 """
 
 from __future__ import annotations
 
+import ast
 import re
 
 from bifrost.solution_vendoring import scan_imported_modules
@@ -87,9 +91,48 @@ def scan_workflow_refs(source: str) -> set[str]:
     ``workflows.execute``; the captured value is a bare name OR a ``path::fn``
     ref (caller resolves both).
     """
-    return set(_WORKFLOW_RE.findall(source)) | set(
-        _WORKFLOW_EXECUTE_RE.findall(source)
-    )
+    execute_refs = _scan_python_workflow_execute_refs(source)
+    if execute_refs is None:
+        # Non-Python sources (currently TSX) still use the shared text scanner.
+        execute_refs = set(_WORKFLOW_EXECUTE_RE.findall(source))
+    return set(_WORKFLOW_RE.findall(source)) | execute_refs
+
+
+def _scan_python_workflow_execute_refs(source: str) -> set[str] | None:
+    """Scan valid Python for literal ``workflows.execute`` calls.
+
+    Returning ``None`` for a syntax error lets callers retain regex scanning
+    for non-Python sources such as TSX.  AST traversal intentionally ignores
+    comments and docstrings, while only accepting the two SDK spellings that
+    the regex scanner recognizes (``workflows.execute`` and
+    ``sdk.workflows.execute``).
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+
+    refs: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        func = node.func
+        if not isinstance(func, ast.Attribute) or func.attr != "execute":
+            continue
+        target = func.value
+        direct_sdk = isinstance(target, ast.Name) and target.id == "workflows"
+        namespaced_sdk = (
+            isinstance(target, ast.Attribute)
+            and target.attr == "workflows"
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "sdk"
+        )
+        if not (direct_sdk or namespaced_sdk):
+            continue
+        argument = node.args[0]
+        if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+            refs.add(argument.value)
+    return refs
 
 
 def scan_integration_refs(source: str) -> set[str]:

@@ -278,7 +278,8 @@ async def test_form_resolves_workflow_ref_stored_as_pathfn(db_session) -> None:
 async def test_forward_closure_is_transitive_workflow_to_workflow_via_execute(
     db_session,
 ) -> None:
-    # Workflow -> workflow via Python execute should be pulled transitively.
+    # Workflow -> workflow -> workflow via Python execute should be pulled
+    # transitively through both hops.
     sol = await _solution(db_session)
     parent = await _wf(db_session, path="workflows/parent.py", name="parent")
     child = await _wf(
@@ -287,10 +288,19 @@ async def test_forward_closure_is_transitive_workflow_to_workflow_via_execute(
         fn="run",
         name="child",
     )
+    grandchild = await _wf(
+        db_session,
+        path="workflows/grandchild.py",
+        fn="finish",
+        name="grandchild",
+    )
     repo = _FakeRepo(
         {
             "workflows/parent.py": (
                 b'await workflows.execute("workflows/child.py::run")'
+            ),
+            "workflows/child.py": (
+                b'await workflows.execute("workflows/grandchild.py::finish")'
             ),
         }
     )
@@ -298,9 +308,11 @@ async def test_forward_closure_is_transitive_workflow_to_workflow_via_execute(
     preview = await SolutionDependencyWalker(db_session, repo=repo).preview(
         sol, workflows=[parent.id]
     )
-    assert ("workflow", str(child.id)) in {
+    pulled = {
         (d.kind, d.ref) for d in preview.pulled_in
     }
+    assert ("workflow", str(child.id)) in pulled
+    assert ("workflow", str(grandchild.id)) in pulled
 
 
 async def test_outside_ref_warns_when_workflow_executes_selected_workflow(

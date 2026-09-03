@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from textwrap import dedent
+
 from src.services.solutions.ref_scanner import (
     scan_config_refs,
     scan_integration_refs,
@@ -35,11 +37,13 @@ def test_scan_workflow_refs_query_and_mutation_hooks() -> None:
 
 
 def test_scan_workflow_refs_python_execute() -> None:
-    src = (
-        'results = workflows.execute("workflows/main.py::handler")\n'
-        "follow = await workflows.execute('workflows/child.py::run')\n"
-        "await sdk.workflows.execute('workflows/sdk.py::main')"
-    )
+    src = dedent('''
+        async def run():
+            results = workflows.execute("workflows/main.py::handler")
+            follow = await workflows.execute('workflows/child.py::run')
+            await sdk.workflows.execute('workflows/sdk.py::main')
+            return results, follow
+        ''')
     assert scan_workflow_refs(src) == {
         "workflows/main.py::handler",
         "workflows/child.py::run",
@@ -54,6 +58,21 @@ def test_scan_workflow_refs_python_execute_with_whitespace_and_dynamic_arg() -> 
         "x = workflows.execute(workflow_ref)\n"
     )
     assert scan_workflow_refs(src) == {"workflows/with_space.py::spaced"}
+
+
+def test_scan_workflow_refs_python_execute_ignores_comments_and_docstrings() -> None:
+    src = dedent('''
+        """workflows.execute("workflows/docstring.py::ignored")"""
+        # workflows.execute("workflows/comment.py::ignored")
+        async def run():
+            return await workflows.execute("workflows/real.py::run")
+        ''')
+    assert scan_workflow_refs(src) == {"workflows/real.py::run"}
+
+
+def test_scan_workflow_refs_non_python_keeps_text_matching() -> None:
+    tsx = 'const result = workflows.execute("workflows/ui.py::run");'
+    assert scan_workflow_refs(tsx) == {"workflows/ui.py::run"}
 
 
 def test_scan_workflow_refs_python_execute_rejects_prefixed_call() -> None:
