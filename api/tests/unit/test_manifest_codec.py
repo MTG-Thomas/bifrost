@@ -1698,6 +1698,12 @@ def _install_roundtrip_specs():
         endpoint_enabled=True,
         public_endpoint=True,
         timeout_seconds=4242,
+        retry_policy={
+            "version": "execution-retry/v1",
+            "enabled": True,
+            "max_attempts": 3,
+            "retry_on": ["worker_lost", "subprocess_crash"],
+        },
         category="CAT_SENTINEL",
         tags=["t_sentinel"],
         access_level="role_based",

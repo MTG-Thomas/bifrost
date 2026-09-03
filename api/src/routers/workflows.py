@@ -133,6 +133,7 @@ def _convert_workflow_orm_to_schema(workflow: WorkflowORM, used_by_count: int = 
     """Convert ORM model to Pydantic schema for API response."""
     from typing import Literal
     from src.models.contracts.workflows import ExecutableType
+    from src.services.execution.retry_policy import normalize_retry_policy
     from src.services.tool_registry import (
         workflow_json_schema_to_parameter_records,
     )
@@ -169,7 +170,7 @@ def _convert_workflow_orm_to_schema(workflow: WorkflowORM, used_by_count: int = 
         parameters=parameters,
         execution_mode=execution_mode,
         timeout_seconds=workflow.timeout_seconds if workflow.timeout_seconds is not None else 1800,
-        retry_policy=getattr(workflow, "retry_policy", None) or {},
+        retry_policy=normalize_retry_policy(getattr(workflow, "retry_policy", None)),
         endpoint_enabled=workflow.endpoint_enabled or False,
         allowed_methods=workflow.allowed_methods or ["POST"],
         disable_global_key=workflow.disable_global_key or False,
@@ -1593,7 +1594,7 @@ async def register_workflow(
         type=workflow.type,
         description=workflow.description,
         organization_id=str(workflow.organization_id) if workflow.organization_id else None,
-        retry_policy=getattr(workflow, "retry_policy", None) or {},
+        retry_policy=normalize_retry_policy(getattr(workflow, "retry_policy", None)),
     )
 
 
@@ -1785,9 +1786,6 @@ async def update_workflow(
                     detail="execution_mode must be 'sync' or 'async'",
                 )
             workflow.execution_mode = request.execution_mode
-
-        if request.retry_policy is not None:
-            workflow.retry_policy = request.retry_policy.model_dump(mode="json")
 
         # Update time_saved if provided
         if request.time_saved is not None:

@@ -30,6 +30,18 @@ from bifrost.contracts.workflows import ExecutionRetryPolicy
 logger = logging.getLogger(__name__)
 
 
+def _execution_retry_policy(value: object) -> ExecutionRetryPolicy:
+    """Return a valid policy and fail closed for legacy or malformed rows."""
+    if isinstance(value, ExecutionRetryPolicy):
+        return value
+    if isinstance(value, dict):
+        try:
+            return ExecutionRetryPolicy.model_validate(value)
+        except ValueError:
+            pass
+    return ExecutionRetryPolicy()
+
+
 class ClaimQuery(BaseModel):
     """Portable copy of the server's ``ClaimQuery`` (the lookup producing a
     custom claim's value).
@@ -157,7 +169,7 @@ class ManifestWorkflow(EntityCodec, BaseModel):
             allowed_methods=getattr(wf, "allowed_methods", None) or ["POST"],
             # NOT `or 1800` — 0 means "no timeout" and `or` would clobber it.
             timeout_seconds=wf.timeout_seconds if wf.timeout_seconds is not None else 1800,
-            retry_policy=wf.retry_policy or ExecutionRetryPolicy(),
+            retry_policy=_execution_retry_policy(getattr(wf, "retry_policy", None)),
             public_endpoint=wf.public_endpoint or False,
             category=wf.category or "General",
             tags=wf.tags or [],
