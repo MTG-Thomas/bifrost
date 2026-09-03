@@ -4,8 +4,8 @@
 #   - Security advisory bumps  → auto-merge when CI green (any semver level)
 #   - Patch updates            → auto-merge when CI green
 #   - Minor updates            → auto-merge when CI green
-#   - Major updates            → label needs-review, leave open
-#   - Docker base images       → label needs-review, leave open
+#   - Routine major updates    → suppressed by dependabot.yml
+#   - Routine Docker updates   → suppressed by dependabot.yml
 #
 # Mechanism: enable GitHub auto-merge on the eligible PRs. Branch protection
 # requires CI green before merge happens, so this never bypasses CI.
@@ -66,10 +66,13 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Label majors and Docker for human review
+      # This catches an already-open PR or a manually recreated PR that predates
+      # the conservative generation policy in dependabot.yml.
+      - name: Label unexpected routine majors and Docker updates
         if: |
-          steps.metadata.outputs.update-type == 'version-update:semver-major' ||
-          steps.metadata.outputs.package-ecosystem == 'docker'
+          steps.metadata.outputs.alert-state == '' &&
+          (steps.metadata.outputs.update-type == 'version-update:semver-major' ||
+           steps.metadata.outputs.package-ecosystem == 'docker')
         run: gh pr edit "$PR_URL" --add-label needs-review
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
