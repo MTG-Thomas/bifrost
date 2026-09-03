@@ -687,12 +687,14 @@ export function ChatWindow({ conversationId, agentName }: ChatWindowProps) {
 										isActive={isActiveTurn}
 										durationMs={durationMs}
 										activeLabel={
-											isFinalResponseStreaming
-												? "Responding…"
-												: getActiveRunLabel(
+											runningTool
+												? getActiveRunLabel(
 														runningTool?.tool_name,
 														runningTool?.tool_input,
 													)
+												: isFinalResponseStreaming
+													? "Responding…"
+													: getActiveRunLabel()
 										}
 									>
 										{detailItems.length > 0

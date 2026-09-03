@@ -118,13 +118,6 @@ test.describe("Chat attachments and model profiles", () => {
 								content: "I’ll create that. ",
 							}),
 						);
-						socket.send(
-							JSON.stringify({
-								type: "assistant_message_end",
-								conversation_id: conversationId,
-								message_id: "assistant-progress",
-							}),
-						);
 					};
 					advanceTool = () => {
 						socket.send(
@@ -180,6 +173,13 @@ test.describe("Chat attachments and model profiles", () => {
 						);
 					};
 					finishChat = () => {
+						socket.send(
+							JSON.stringify({
+								type: "assistant_message_end",
+								conversation_id: conversationId,
+								message_id: "assistant-message",
+							}),
+						);
 						socket.send(
 							JSON.stringify({
 								type: "done",
