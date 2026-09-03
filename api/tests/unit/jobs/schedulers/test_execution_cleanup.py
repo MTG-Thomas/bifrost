@@ -10,138 +10,76 @@ from src.jobs.schedulers import execution_cleanup
 from src.jobs.schedulers.execution_cleanup import (
     _execution_age_anchor,
     _is_restart_orphan,
-    _load_worker_heartbeat_state,
-    _parse_heartbeat_time,
 )
 from src.models.orm.agent_runs import AgentRun
 
 cleanup = execution_cleanup
 
 
-class _FakeRedis:
-    def __init__(self, pages, values):
-        self._pages = list(pages)
-        self._values = values
-
-    async def scan(self, cursor, match=None, count=100):
-        assert match == "bifrost:pool:*:heartbeat"
-        assert count == 100
-        assert cursor in (0, 1)
-        return self._pages.pop(0)
-
-    async def get(self, key):
-        return self._values.get(key)
-
-
-def test_is_restart_orphan_when_execution_predates_current_workers():
+def test_is_restart_orphan_when_database_lease_expires():
     now = datetime.now(timezone.utc)
     execution = SimpleNamespace(
         id=uuid4(),
         started_at=now - timedelta(minutes=15),
     )
-    heartbeat_state = {
-        "active_execution_ids": set(),
-        "live_worker_incarnation_ids": set(),
-        "oldest_worker_started_at": now - timedelta(minutes=5),
-        "heartbeat_count": 3,
-    }
+    active_attempt = SimpleNamespace(
+        claim_token=uuid4(),
+        status="running",
+        claimed_at=now - timedelta(minutes=10),
+        heartbeat_at=now - timedelta(minutes=3),
+    )
 
-    assert _is_restart_orphan(execution, now=now, heartbeat_state=heartbeat_state)
+    assert _is_restart_orphan(execution, now=now, active_attempt=active_attempt)
 
 
-def test_is_restart_orphan_keeps_execution_claimed_by_heartbeat():
+def test_is_restart_orphan_keeps_fresh_database_lease():
     now = datetime.now(timezone.utc)
     execution_id = uuid4()
     execution = SimpleNamespace(
         id=execution_id,
         started_at=now - timedelta(minutes=15),
     )
-    heartbeat_state = {
-        "active_execution_ids": {str(execution_id)},
-        "live_worker_incarnation_ids": set(),
-        "oldest_worker_started_at": now - timedelta(minutes=5),
-        "heartbeat_count": 3,
-    }
-
-    assert not _is_restart_orphan(execution, now=now, heartbeat_state=heartbeat_state)
-
-
-def test_is_restart_orphan_waits_for_worker_grace_period():
-    now = datetime.now(timezone.utc)
-    execution = SimpleNamespace(
-        id=uuid4(),
-        started_at=now - timedelta(minutes=15),
+    active_attempt = SimpleNamespace(
+        claim_token=uuid4(),
+        status="running",
+        claimed_at=now - timedelta(minutes=10),
+        heartbeat_at=now - timedelta(seconds=30),
     )
-    heartbeat_state = {
-        "active_execution_ids": set(),
-        "live_worker_incarnation_ids": set(),
-        "oldest_worker_started_at": now - timedelta(seconds=30),
-        "heartbeat_count": 3,
-    }
 
-    assert not _is_restart_orphan(execution, now=now, heartbeat_state=heartbeat_state)
+    assert not _is_restart_orphan(execution, now=now, active_attempt=active_attempt)
 
 
-def test_is_restart_orphan_when_attempt_owner_disappears_among_older_live_workers():
+def test_is_restart_orphan_requires_active_claim():
     now = datetime.now(timezone.utc)
     execution = SimpleNamespace(
         id=uuid4(),
         started_at=now - timedelta(minutes=15),
     )
     active_attempt = SimpleNamespace(
-        worker_incarnation_id=uuid4(),
+        claim_token=None,
+        status="published",
+        claimed_at=None,
         heartbeat_at=now - timedelta(minutes=3),
     )
-    heartbeat_state = {
-        "active_execution_ids": set(),
-        "live_worker_incarnation_ids": {str(uuid4()), str(uuid4())},
-        "oldest_worker_started_at": now - timedelta(hours=1),
-        "heartbeat_count": 2,
-    }
-
-    assert _is_restart_orphan(
-        execution,
-        now=now,
-        heartbeat_state=heartbeat_state,
-        active_attempt=active_attempt,
-    )
-
-
-def test_is_restart_orphan_keeps_attempt_with_live_owner_incarnation():
-    now = datetime.now(timezone.utc)
-    owner_incarnation_id = uuid4()
-    execution = SimpleNamespace(
-        id=uuid4(),
-        started_at=now - timedelta(minutes=15),
-    )
-    active_attempt = SimpleNamespace(
-        worker_incarnation_id=owner_incarnation_id,
-        heartbeat_at=now - timedelta(minutes=3),
-    )
-    heartbeat_state = {
-        "active_execution_ids": set(),
-        "live_worker_incarnation_ids": {str(owner_incarnation_id), str(uuid4())},
-        "oldest_worker_started_at": now - timedelta(hours=1),
-        "heartbeat_count": 2,
-    }
 
     assert not _is_restart_orphan(
         execution,
         now=now,
-        heartbeat_state=heartbeat_state,
         active_attempt=active_attempt,
     )
 
 
 def test_runner_loss_attempt_limit_is_fail_closed(monkeypatch):
-    monkeypatch.delenv("BIFROST_WORKFLOW_RUNNER_LOSS_MAX_ATTEMPTS", raising=False)
-    assert execution_cleanup._runner_loss_max_attempts() == 1
+    from src.services.execution.retry_policy import operator_max_attempts
 
-    monkeypatch.setenv("BIFROST_WORKFLOW_RUNNER_LOSS_MAX_ATTEMPTS", "2")
-    assert execution_cleanup._runner_loss_max_attempts() == 2
+    monkeypatch.delenv("BIFROST_WORKFLOW_EXECUTION_MAX_ATTEMPTS", raising=False)
+    assert operator_max_attempts() == 1
 
-    monkeypatch.setenv("BIFROST_WORKFLOW_RUNNER_LOSS_MAX_ATTEMPTS", "invalid")
-    assert execution_cleanup._runner_loss_max_attempts() == 1
+    monkeypatch.setenv("BIFROST_WORKFLOW_EXECUTION_MAX_ATTEMPTS", "2")
+    assert operator_max_attempts() == 2
+
+    monkeypatch.setenv("BIFROST_WORKFLOW_EXECUTION_MAX_ATTEMPTS", "invalid")
+    assert operator_max_attempts() == 1
 
 
 def test_restart_orphan_grace_is_overridable_for_chaos_stacks(monkeypatch):
@@ -165,13 +103,19 @@ async def test_recover_restart_orphan_fences_attempt_and_republishes(monkeypatch
         completed_at=None,
         duration_ms=100,
         error_message="old",
+        retry_policy={
+            "version": "execution-retry/v1",
+            "enabled": True,
+            "max_attempts": 2,
+            "retry_on": ["worker_lost"],
+        },
     )
     attempt = SimpleNamespace(claim_token=claim_token)
     db = SimpleNamespace(scalar=AsyncMock(side_effect=[1, attempt]))
     finalize = AsyncMock(return_value=True)
     republish = AsyncMock()
     transition = AsyncMock()
-    monkeypatch.setenv("BIFROST_WORKFLOW_RUNNER_LOSS_MAX_ATTEMPTS", "2")
+    monkeypatch.setenv("BIFROST_WORKFLOW_EXECUTION_MAX_ATTEMPTS", "2")
 
     with (
         patch(
@@ -205,9 +149,17 @@ async def test_recover_restart_orphan_fences_attempt_and_republishes(monkeypatch
 
 @pytest.mark.asyncio
 async def test_recover_restart_orphan_stops_at_attempt_limit(monkeypatch):
-    execution = SimpleNamespace(id=uuid4())
+    execution = SimpleNamespace(
+        id=uuid4(),
+        retry_policy={
+            "version": "execution-retry/v1",
+            "enabled": True,
+            "max_attempts": 2,
+            "retry_on": ["worker_lost"],
+        },
+    )
     db = SimpleNamespace(scalar=AsyncMock(return_value=2))
-    monkeypatch.setenv("BIFROST_WORKFLOW_RUNNER_LOSS_MAX_ATTEMPTS", "2")
+    monkeypatch.setenv("BIFROST_WORKFLOW_EXECUTION_MAX_ATTEMPTS", "2")
 
     assert not await execution_cleanup._recover_restart_orphan(db, execution)
 
@@ -224,13 +176,19 @@ async def test_recover_restart_orphan_publish_failure_preserves_state(monkeypatc
         completed_at=None,
         duration_ms=100,
         error_message=None,
+        retry_policy={
+            "version": "execution-retry/v1",
+            "enabled": True,
+            "max_attempts": 2,
+            "retry_on": ["worker_lost"],
+        },
     )
     attempt = SimpleNamespace(claim_token=claim_token)
     db = SimpleNamespace(scalar=AsyncMock(side_effect=[1, attempt]))
     finalize = AsyncMock(return_value=True)
     republish = AsyncMock(side_effect=ConnectionError("broker unavailable"))
     transition = AsyncMock()
-    monkeypatch.setenv("BIFROST_WORKFLOW_RUNNER_LOSS_MAX_ATTEMPTS", "2")
+    monkeypatch.setenv("BIFROST_WORKFLOW_EXECUTION_MAX_ATTEMPTS", "2")
 
     with (
         patch("src.services.execution.attempts.finalize_attempt", finalize),
@@ -247,67 +205,6 @@ async def test_recover_restart_orphan_publish_failure_preserves_state(monkeypatc
     transition.assert_not_awaited()
     assert execution.status == "Running"
     assert execution.started_at == started_at
-
-
-def test_parse_heartbeat_time_normalizes_zulu_and_naive_values():
-    assert _parse_heartbeat_time("2026-07-05T10:30:00Z") == datetime(
-        2026, 7, 5, 10, 30, tzinfo=timezone.utc
-    )
-    assert _parse_heartbeat_time("2026-07-05T10:30:00") == datetime(
-        2026, 7, 5, 10, 30, tzinfo=timezone.utc
-    )
-
-
-def test_parse_heartbeat_time_ignores_empty_or_invalid_values():
-    assert _parse_heartbeat_time(None) is None
-    assert _parse_heartbeat_time("not-a-date") is None
-
-
-@pytest.mark.asyncio
-async def test_load_worker_heartbeat_state_collects_active_executions_and_oldest_start(
-    monkeypatch,
-):
-    redis = _FakeRedis(
-        pages=[
-            (1, ["heartbeat:one", "heartbeat:bad-json"]),
-            (0, ["heartbeat:two", "heartbeat:empty"]),
-        ],
-        values={
-            "heartbeat:one": (
-                '{"started_at":"2026-07-05T10:00:00Z",'
-                '"processes":[{"execution":{"execution_id":"exec-1"}},{}]}'
-            ),
-            "heartbeat:bad-json": "{",
-            "heartbeat:two": (
-                '{"started_at":"2026-07-05T09:00:00Z",'
-                '"processes":[{"execution":{"execution_id":"exec-2"}}]}'
-            ),
-            "heartbeat:empty": None,
-        },
-    )
-    monkeypatch.setattr(execution_cleanup, "get_redis_client", lambda: redis)
-
-    state = await _load_worker_heartbeat_state(datetime(2026, 7, 5, tzinfo=timezone.utc))
-
-    assert state["active_execution_ids"] == {"exec-1", "exec-2"}
-    assert state["oldest_worker_started_at"] == datetime(
-        2026, 7, 5, 9, 0, tzinfo=timezone.utc
-    )
-    assert state["heartbeat_count"] == 2
-
-
-@pytest.mark.asyncio
-async def test_load_worker_heartbeat_state_returns_empty_state_without_redis(monkeypatch):
-    monkeypatch.setattr(execution_cleanup, "get_redis_client", lambda: None)
-
-    state = await _load_worker_heartbeat_state(datetime.now(timezone.utc))
-
-    assert state == {
-        "active_execution_ids": set(),
-        "live_worker_incarnation_ids": set(),
-        "oldest_worker_started_at": None,
-        "heartbeat_count": 0,
-    }
 
 
 def _stale_time(minutes: int) -> datetime:
@@ -439,23 +336,6 @@ class TestExecutionCleanupAgentRuns:
         assert running_first.status == running_second.status == "timeout"
         assert fresh_first.status == fresh_second.status == "running"
         assert fresh_second.completed_at is None
-
-
-@pytest.mark.asyncio
-async def test_load_worker_heartbeat_failure_does_not_block_age_cleanup(monkeypatch):
-    redis = SimpleNamespace(
-        scan=AsyncMock(side_effect=ConnectionError("Redis DNS unavailable"))
-    )
-    monkeypatch.setattr(execution_cleanup, "get_redis_client", lambda: redis)
-
-    state = await _load_worker_heartbeat_state(datetime.now(timezone.utc))
-
-    assert state == {
-        "active_execution_ids": set(),
-        "live_worker_incarnation_ids": set(),
-        "oldest_worker_started_at": None,
-        "heartbeat_count": 0,
-    }
 
 
 def test_execution_age_anchor_uses_scheduled_then_created_for_null_start() -> None:
@@ -643,16 +523,6 @@ async def test_cleanup_does_not_terminalize_old_pending_rows() -> None:
     )
     with (
         patch.object(execution_cleanup, "get_session_factory", return_value=lambda: session),
-        patch.object(
-            execution_cleanup,
-            "_load_worker_heartbeat_state",
-            new_callable=AsyncMock,
-            return_value={
-                "active_execution_ids": set(),
-                "oldest_worker_started_at": None,
-                "heartbeat_count": 0,
-            },
-        ),
         patch.object(
             execution_cleanup,
             "_cleanup_stale_agent_runs",

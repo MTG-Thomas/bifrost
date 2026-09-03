@@ -10,7 +10,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.models.enums import FormAccessLevel
-from src.models.contracts.base import RetryPolicy
+from src.models.contracts.base import ExecutionRetryPolicy
 
 if TYPE_CHECKING:
     pass
@@ -89,8 +89,10 @@ class WorkflowMetadata(BaseModel):
     execution_mode: Literal["sync", "async"] = Field(default="sync", description="Execution mode")
     timeout_seconds: int = Field(default=1800, ge=0, le=86400, description="Max execution time in seconds. 0 = no timeout. Default 1800 (30 min), max 86400 (24h).")
 
-    # Retry policy (for future use)
-    retry_policy: RetryPolicy | None = Field(default=None, description="Retry configuration")
+    retry_policy: ExecutionRetryPolicy = Field(
+        default_factory=ExecutionRetryPolicy,
+        description="Execution-engine retry policy",
+    )
 
     # HTTP Endpoint configuration
     endpoint_enabled: bool = Field(default=False, description="Whether workflow is exposed as HTTP endpoint")
@@ -346,6 +348,10 @@ class WorkflowUpdateRequest(BaseModel):
     execution_mode: Literal["sync", "async"] | None = Field(
         default=None,
         description="Execution mode: 'sync' for immediate response, 'async' for background execution"
+    )
+    retry_policy: ExecutionRetryPolicy | None = Field(
+        default=None,
+        description="Execution-engine retry policy",
     )
 
     # Economics - value metrics for reporting

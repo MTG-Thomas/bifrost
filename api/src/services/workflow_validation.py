@@ -122,7 +122,6 @@ def _convert_workflow_metadata_to_model(
             if workflow_metadata.timeout_seconds is not None
             else 1800
         ),
-        retry_policy=None,
         schedule=None,
         endpoint_enabled=False,
         disable_global_key=False,

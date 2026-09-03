@@ -81,6 +81,20 @@ class Workflow(Base):
     disable_global_key: Mapped[bool] = mapped_column(Boolean, default=False)
     execution_mode: Mapped[str] = mapped_column(String(20), default="sync")
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=1800)  # 30 min default
+    retry_policy: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=lambda: {
+            "version": "execution-retry/v1",
+            "enabled": False,
+            "max_attempts": 2,
+            "retry_on": [],
+        },
+        server_default=text(
+            "jsonb_build_object('version', 'execution-retry/v1', 'enabled', false, "
+            "'max_attempts', 2, 'retry_on', jsonb_build_array())"
+        ),
+    )
 
     # Tool configuration (for AI agent tool calling when type='tool')
     tool_description: Mapped[str | None] = mapped_column(Text, default=None)

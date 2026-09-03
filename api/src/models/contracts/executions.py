@@ -8,6 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
+from src.models.contracts.base import ExecutionRetryPolicy
 from src.models.enums import ExecutionModel, ExecutionStatus
 
 if TYPE_CHECKING:
@@ -181,6 +182,7 @@ class WorkflowExecution(ExecutionSummary):
     ai_totals: AIUsageTotalsSimple | None = None
     # Persisted execution context (admin only)
     execution_context: dict[str, Any] | None = None
+    retry_policy: ExecutionRetryPolicy = Field(default_factory=ExecutionRetryPolicy)
     attempt_history: ExecutionAttemptHistory = Field(
         default_factory=lambda: ExecutionAttemptHistory(
             coverage="legacy_unavailable", attempts=[]
