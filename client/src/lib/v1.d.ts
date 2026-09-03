@@ -24444,8 +24444,8 @@ export interface components {
              * @description Role IDs for role_based access. Omit to leave unchanged when reactivating; pass an empty list to clear.
              */
             role_ids?: string[] | null;
-            /** @description Policy for retrying eligible infrastructure failures. */
-            retry_policy?: components["schemas"]["ExecutionRetryPolicy"];
+            /** @description Policy for retrying eligible infrastructure failures. Omit to preserve the policy when reactivating an existing workflow. */
+            retry_policy?: components["schemas"]["ExecutionRetryPolicy"] | null;
         };
         /**
          * RegisterWorkflowResponse
