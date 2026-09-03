@@ -7,6 +7,9 @@ import pytest
 
 
 def _initialize_admission_metrics(pool) -> None:
+    # These tests intentionally bypass __init__; mirror the pre-start manager
+    # state for additive worker-incarnation heartbeat metadata.
+    pool.worker_incarnation_id = None
     pool._admission_attempts = 0
     pool._admission_successes = 0
     pool._admission_rejections = {}

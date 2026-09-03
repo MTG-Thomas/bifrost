@@ -1961,7 +1961,7 @@ export interface paths {
         put?: never;
         /**
          * Cancel execution
-         * @description Cancel a pending or running execution
+         * @description Cancel a scheduled, pending, or running execution
          */
         post: operations["cancel_execution_api_executions__execution_id__cancel_post"];
         delete?: never;
@@ -3734,6 +3734,43 @@ export interface paths {
          * @description Record one protected-main push using a narrowly pinned Actions identity.
          */
         post: operations["declare_workspace_source_release_from_github_api_workspace_promotions_source_releases_github_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspace-promotions/solution-deploy-obligations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Solution Deploy Obligations
+         * @description List reviewed Solution source that requires an explicit deployment.
+         */
+        get: operations["list_solution_deploy_obligations_api_workspace_promotions_solution_deploy_obligations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspace-promotions/solution-deploy-obligations/{obligation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Solution Deploy Obligation */
+        get: operations["get_solution_deploy_obligation_api_workspace_promotions_solution_deploy_obligations__obligation_id__get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -10754,23 +10791,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/platform/workers/commands/history": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List audited worker controls */
-        get: operations["list_worker_control_commands_api_platform_workers_commands_history_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/platform/queue": {
         parameters: {
             query?: never;
@@ -11771,38 +11791,6 @@ export interface components {
         AdminRevokeRequest: {
             /** User Id */
             user_id: string;
-        };
-        /** AdmissionDiagnostics */
-        AdmissionDiagnostics: {
-            /**
-             * Attempts
-             * @default 0
-             */
-            attempts: number;
-            /**
-             * Successes
-             * @default 0
-             */
-            successes: number;
-            /** Rejections */
-            rejections?: {
-                [key: string]: number;
-            };
-            /**
-             * Wait Seconds Total
-             * @default 0
-             */
-            wait_seconds_total: number;
-            /**
-             * Wait Seconds Max
-             * @default 0
-             */
-            wait_seconds_max: number;
-            /**
-             * Wait Seconds Average
-             * @default 0
-             */
-            wait_seconds_average: number;
         };
         /**
          * AffectedEntity
@@ -17411,6 +17399,86 @@ export interface components {
          * @enum {string}
          */
         ExecutableType: "workflow" | "tool" | "data_provider";
+        /**
+         * ExecutionAttemptHistory
+         * @description Attempt coverage for a logical execution.
+         *
+         *     Historical rows intentionally do not receive fabricated attempt details.
+         */
+        ExecutionAttemptHistory: {
+            /**
+             * Coverage
+             * @default legacy_unavailable
+             * @enum {string}
+             */
+            coverage: "recorded" | "legacy_unavailable";
+            /** Attempts */
+            attempts?: components["schemas"]["ExecutionAttemptPublic"][];
+        };
+        /**
+         * ExecutionAttemptPublic
+         * @description Bounded lifecycle evidence for one workflow execution attempt.
+         */
+        ExecutionAttemptPublic: {
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
+            /** Attempt Number */
+            attempt_number: number;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "dispatching" | "published" | "claimed" | "running" | "succeeded" | "failed" | "timed_out" | "cancelled" | "worker_lost" | "admission_rejected";
+            /**
+             * Phase
+             * @enum {string}
+             */
+            phase: "dispatch" | "queue" | "claim" | "admission" | "execution" | "result" | "terminal";
+            /** Failure Phase */
+            failure_phase?: ("dispatch" | "queue" | "claim" | "admission" | "execution" | "result" | "worker" | "cancellation") | null;
+            /** Failure Code */
+            failure_code?: string | null;
+            /** Worker Id */
+            worker_id?: string | null;
+            /** Worker Incarnation Id */
+            worker_incarnation_id?: string | null;
+            /** Process Id */
+            process_id?: string | null;
+            /** Runtime Mode */
+            runtime_mode?: string | null;
+            /** Runtime Evidence Hash */
+            runtime_evidence_hash?: string | null;
+            /** Dispatch Evidence Hash */
+            dispatch_evidence_hash?: string | null;
+            /** Policy Digest */
+            policy_digest?: string | null;
+            /** Policy Version */
+            policy_version: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Published At */
+            published_at?: string | null;
+            /** Claimed At */
+            claimed_at?: string | null;
+            /** Started At */
+            started_at?: string | null;
+            /** Heartbeat At */
+            heartbeat_at?: string | null;
+            /** Completed At */
+            completed_at?: string | null;
+            /** Duration Ms */
+            duration_ms?: number | null;
+            /** Peak Memory Bytes */
+            peak_memory_bytes?: number | null;
+            /** Cpu Total Seconds */
+            cpu_total_seconds?: number | null;
+        };
         /**
          * ExecutionLogPublic
          * @description Single log entry from workflow execution (API response model)
@@ -23333,21 +23401,6 @@ export interface components {
             max_workers?: number | null;
             /** Processes */
             processes?: components["schemas"]["ProcessInfo"][];
-            /** Available Slots */
-            available_slots?: number | null;
-            /** Saturation Ratio */
-            saturation_ratio?: number | null;
-            /** Memory Current Bytes */
-            memory_current_bytes?: number | null;
-            /** Memory Max Bytes */
-            memory_max_bytes?: number | null;
-            /** Memory Utilization */
-            memory_utilization?: number | null;
-            /** Estimated Drain Seconds */
-            estimated_drain_seconds?: number | null;
-            /** Health Reasons */
-            health_reasons?: string[];
-            admission?: components["schemas"]["AdmissionDiagnostics"];
         };
         /**
          * PoolStatsResponse
@@ -23379,17 +23432,6 @@ export interface components {
              * @description Total busy processes across all pools
              */
             total_busy: number;
-            /** Total Available Slots */
-            total_available_slots?: number | null;
-            /**
-             * Saturated Workers
-             * @default 0
-             */
-            saturated_workers: number;
-            /** Admission Rejections */
-            admission_rejections?: {
-                [key: string]: number;
-            };
         };
         /**
          * PoolSummary
@@ -23476,17 +23518,6 @@ export interface components {
              * @description Memory limit of the worker container in bytes (from cgroup, -1 if unlimited)
              */
             memory_max_bytes?: number | null;
-            /** Available Slots */
-            available_slots?: number | null;
-            /** Saturation Ratio */
-            saturation_ratio?: number | null;
-            /** Memory Utilization */
-            memory_utilization?: number | null;
-            /** Estimated Drain Seconds */
-            estimated_drain_seconds?: number | null;
-            /** Health Reasons */
-            health_reasons?: string[];
-            admission?: components["schemas"]["AdmissionDiagnostics"];
         };
         /**
          * PoolsListResponse
@@ -24051,8 +24082,6 @@ export interface components {
             worker_id: string;
             /** Processes Affected */
             processes_affected: number;
-            /** Command Id */
-            command_id?: string | null;
         };
         /**
          * RecycleProcessRequest
@@ -24080,8 +24109,6 @@ export interface components {
             process_id?: string | null;
             /** Pid */
             pid?: number | null;
-            /** Command Id */
-            command_id?: string | null;
         };
         /**
          * RefreshJobRun
@@ -26234,6 +26261,151 @@ export interface components {
              */
             updated_at: string;
         };
+        /**
+         * SolutionDeployObligationDeclare
+         * @description Exact protected-Git evidence for one changed Solution subtree.
+         */
+        "SolutionDeployObligationDeclare-Input": {
+            /** Solution Slug */
+            solution_slug: string;
+            /** Repo Subpath */
+            repo_subpath: string;
+            /** Base Commit Sha */
+            base_commit_sha?: string | null;
+            /** Source Subtree Sha */
+            source_subtree_sha?: string | null;
+            /** Source Content Id */
+            source_content_id?: string | null;
+            /** Base Source Content Id */
+            base_source_content_id?: string | null;
+            /** Declared Version */
+            declared_version?: string | null;
+            /** Source Files */
+            source_files?: components["schemas"]["SolutionSourceFile"][];
+            /** Changed Paths */
+            changed_paths: {
+                [key: string]: string | null;
+            };
+            /**
+             * Disposition
+             * @enum {string}
+             */
+            disposition: "solution_deploy_required" | "attention_required";
+            /** Reason */
+            reason?: string | null;
+        };
+        "SolutionDeployObligationDeclare-Output": {
+            [key: string]: unknown;
+        };
+        /** SolutionDeployObligationListResponse */
+        SolutionDeployObligationListResponse: {
+            /**
+             * Schema Version
+             * @default bifrost.solution-deploy-obligation-list/v1
+             * @constant
+             */
+            schema_version: "bifrost.solution-deploy-obligation-list/v1";
+            /** Records */
+            records: components["schemas"]["SolutionDeployObligationResponse"][];
+            /** Total */
+            total: number;
+            /** Pending */
+            pending: number;
+            /** Attention Required */
+            attention_required: number;
+            /** Overdue */
+            overdue: number;
+        };
+        /** SolutionDeployObligationResponse */
+        SolutionDeployObligationResponse: {
+            /**
+             * Schema Version
+             * @default bifrost.solution-deploy-obligation/v1
+             * @constant
+             */
+            schema_version: "bifrost.solution-deploy-obligation/v1";
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Source Release Id
+             * Format: uuid
+             */
+            source_release_id: string;
+            /**
+             * Organization Id
+             * Format: uuid
+             */
+            organization_id: string;
+            /** Source Commit Sha */
+            source_commit_sha: string;
+            /** Source Tree Sha */
+            source_tree_sha: string;
+            /** Base Commit Sha */
+            base_commit_sha?: string | null;
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "solution_deploy_required";
+            /** Solution Slug */
+            solution_slug: string;
+            /** Repo Subpath */
+            repo_subpath: string;
+            /** Source Subtree Sha */
+            source_subtree_sha?: string | null;
+            /** Source Content Id */
+            source_content_id?: string | null;
+            /** Base Source Content Id */
+            base_source_content_id?: string | null;
+            /** Declared Version */
+            declared_version?: string | null;
+            /** Source Files */
+            source_files: components["schemas"]["SolutionSourceFile"][];
+            /** Changed Paths */
+            changed_paths: {
+                [key: string]: string | null;
+            };
+            /**
+             * Disposition
+             * @enum {string}
+             */
+            disposition: "pending" | "attention_required" | "released" | "superseded";
+            /** Reason */
+            reason?: string | null;
+            /** Solution Id */
+            solution_id?: string | null;
+            /** Deploy Job Id */
+            deploy_job_id?: string | null;
+            /** Candidate Id */
+            candidate_id?: string | null;
+            /** Source Artifact Sha256 */
+            source_artifact_sha256?: string | null;
+            /** Completion Evidence */
+            completion_evidence?: {
+                [key: string]: unknown;
+            } | null;
+            /** Due At */
+            due_at?: string | null;
+            /** Overdue */
+            overdue: boolean;
+            /** Requires Attention */
+            requires_attention: boolean;
+            /** Resolved At */
+            resolved_at?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
         /** SolutionDeploymentCapabilities */
         SolutionDeploymentCapabilities: {
             /**
@@ -26744,6 +26916,20 @@ export interface components {
             setup_complete: boolean;
             /** Items */
             items: components["schemas"]["SolutionSetupItem"][];
+        };
+        /** SolutionSourceFile */
+        SolutionSourceFile: {
+            /** Sha256 */
+            sha256: string;
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "100644" | "100755";
+            /** Path */
+            path: string;
+            /** Size */
+            size: number;
         };
         /**
          * SolutionUpdate
@@ -28072,34 +28258,6 @@ export interface components {
              */
             rate_limited_count_24h: number;
         };
-        /** WorkerControlCommandPublic */
-        WorkerControlCommandPublic: {
-            /** Id */
-            id: string;
-            /** Worker Id */
-            worker_id: string;
-            /** Action */
-            action: string;
-            /** Process Id */
-            process_id: number | null;
-            /** Status */
-            status: string;
-            /** Requested By User Id */
-            requested_by_user_id: string;
-            /** Reason */
-            reason: string;
-            /** Failure Message */
-            failure_message: string | null;
-            /**
-             * Requested At
-             * Format: date-time
-             */
-            requested_at: string;
-            /** Claimed At */
-            claimed_at: string | null;
-            /** Completed At */
-            completed_at: string | null;
-        };
         /**
          * WorkerMetricPoint
          * @description A single time-series data point for the memory chart.
@@ -28238,6 +28396,7 @@ export interface components {
             execution_context?: {
                 [key: string]: unknown;
             } | null;
+            attempt_history?: components["schemas"]["ExecutionAttemptHistory"];
         };
         /**
          * WorkflowExecutionRequest
@@ -30011,6 +30170,8 @@ export interface components {
             disposition: "pending" | "attention_required" | "non_production";
             /** Reason */
             reason?: string | null;
+            /** Solution Deploy Obligations */
+            solution_deploy_obligations?: components["schemas"]["SolutionDeployObligationDeclare-Input"][] | null;
         };
         /** WorkspaceSourceReleaseDispositionRequest */
         WorkspaceSourceReleaseDispositionRequest: {
@@ -30130,6 +30291,8 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+            /** Solution Deploy Obligations */
+            solution_deploy_obligations?: components["schemas"]["SolutionDeployObligationDeclare-Output"][];
         };
         /**
          * OAuthProviderInfo
@@ -36686,6 +36849,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkspaceSourceReleaseResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_solution_deploy_obligations_api_workspace_promotions_solution_deploy_obligations_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SolutionDeployObligationListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_solution_deploy_obligation_api_workspace_promotions_solution_deploy_obligations__obligation_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                obligation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SolutionDeployObligationResponse"];
                 };
             };
             /** @description Validation Error */
@@ -49558,37 +49783,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RecycleAllResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_worker_control_commands_api_platform_workers_commands_history_get: {
-        parameters: {
-            query?: {
-                limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WorkerControlCommandPublic"][];
                 };
             };
             /** @description Validation Error */

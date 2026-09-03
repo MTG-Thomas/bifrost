@@ -90,6 +90,25 @@ await files.write("reports/status.txt", "ready", { location: "documents" });
 
 Solution locations must be declared. Render denied separately from empty, and use signed upload/download behavior for large binary data. Read `files.md`.
 
+## WebMCP progressive enhancement
+
+Standalone v2 apps can expose a small, page-local tool catalog to supported
+browser agents. WebMCP is experimental, so use `useWebMcpTool` or
+`useWebMcpWorkflowTool` from `bifrost` rather than accessing
+`document.modelContext` directly. The workflow helper uses the existing
+`BifrostProvider` transport and app/org scope; it does not call the platform's
+remote MCP server.
+
+Keep registrations scoped to the route and UI state where they are valid,
+prefer reviewable UI updates, and never expose generic administration, secrets,
+tokens, or hidden page data. Unsupported browsers are a no-op. WebMCP
+annotations are hints, not authorization; workflows and platform APIs remain
+authoritative.
+
+Treat workflow tools as side-effecting once invoked. A signal already aborted
+at invocation prevents submission, but a later browser-tool abort cannot stop
+or undo the workflow; use the platform's execution controls instead.
+
 ## Errors
 
 The SDK exports typed table/file errors including access denied, not found, and invalid-policy/location cases. Distinguish failures when they lead to different user actions; otherwise show one actionable message and preserve diagnostic detail for logs.

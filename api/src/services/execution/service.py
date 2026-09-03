@@ -350,6 +350,7 @@ async def run_workflow(
     transient: bool = False,
     sync: bool = False,
     dispatch_metadata: dict[str, Any] | None = None,
+    org_id_override: str | None = None,
 ) -> WorkflowExecutionResponse:
     """
     Execute a workflow by ID.
@@ -407,6 +408,7 @@ async def run_workflow(
         sync=sync,
         timeout_seconds=timeout_seconds,
         dispatch_metadata=dispatch_metadata,
+        org_id_override=org_id_override,
     )
 
 
@@ -451,6 +453,7 @@ async def _enqueue_workflow_async(
     sync: bool = False,
     timeout_seconds: int | None = None,
     dispatch_metadata: dict[str, Any] | None = None,
+    org_id_override: str | None = None,
 ) -> WorkflowExecutionResponse:
     """
     Enqueue workflow for execution via RabbitMQ.
@@ -469,6 +472,7 @@ async def _enqueue_workflow_async(
         execution_id=context.execution_id,  # Pass through for log streaming
         sync=sync,
         dispatch_metadata=dispatch_metadata,
+        org_id_override=org_id_override,
     )
 
     if not sync:
@@ -510,6 +514,17 @@ async def _enqueue_workflow_async(
     result = await redis_client.wait_for_result(execution_id, timeout_seconds=wait_timeout)
 
     if result is None:
+        # Redis delivery is an optimization, not the result authority. A
+        # terminal PostgreSQL projection may already exist when BLPOP times out
+        # (for example after bounded sync-result fan-out retries are exhausted).
+        durable = await _wait_for_persisted_workflow_result(
+            execution_id=execution_id,
+            workflow_id=workflow_id,
+            workflow_name=workflow_name,
+            timeout_seconds=1,
+        )
+        if durable.status != ExecutionStatus.TIMEOUT:
+            return durable
         return WorkflowExecutionResponse(
             execution_id=execution_id,
             workflow_id=workflow_id,
@@ -568,6 +583,11 @@ async def _wait_for_persisted_workflow_result(
                     status=execution.status,
                     result=execution.result,
                     error=execution.error_message,
+                    error_type=(
+                        "TimeoutError"
+                        if execution.status == ExecutionStatus.TIMEOUT
+                        else None
+                    ),
                     duration_ms=execution.duration_ms,
                 )
         await asyncio.sleep(0.1)

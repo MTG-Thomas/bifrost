@@ -40,7 +40,7 @@ def test_get_version_accepts_semver_dev_format(monkeypatch):
     assert v.get_version() == "0.8.1-dev.47"
 
 
-def test_min_cli_version_is_release_floor():
+def test_legacy_minimum_is_a_real_published_build():
     import shared.version as version
 
-    assert version.MIN_CLI_VERSION == "1.2.3"
+    assert version.LEGACY_MIN_CLI_VERSION == "1.1.1-dev.548"

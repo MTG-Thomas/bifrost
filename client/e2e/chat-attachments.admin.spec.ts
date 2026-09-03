@@ -78,6 +78,7 @@ test.describe("Chat attachments and model profiles", () => {
 		let resolveChat!: (payload: Record<string, unknown>) => void;
 		let finishChat!: () => void;
 		let advanceChat!: () => void;
+		let advanceTool!: () => void;
 		let advanceArtifact!: () => void;
 		const chatPayload = new Promise<Record<string, unknown>>((resolve) => {
 			resolveChat = resolve;
@@ -117,13 +118,8 @@ test.describe("Chat attachments and model profiles", () => {
 								content: "I’ll create that. ",
 							}),
 						);
-						socket.send(
-							JSON.stringify({
-								type: "assistant_message_end",
-								conversation_id: conversationId,
-								message_id: "assistant-progress",
-							}),
-						);
+					};
+					advanceTool = () => {
 						socket.send(
 							JSON.stringify({
 								type: "tool_call",
@@ -179,6 +175,13 @@ test.describe("Chat attachments and model profiles", () => {
 					finishChat = () => {
 						socket.send(
 							JSON.stringify({
+								type: "assistant_message_end",
+								conversation_id: conversationId,
+								message_id: "assistant-message",
+							}),
+						);
+						socket.send(
+							JSON.stringify({
 								type: "done",
 								conversation_id: conversationId,
 								message_id: "assistant-message",
@@ -223,7 +226,17 @@ test.describe("Chat attachments and model profiles", () => {
 			path: "playwright-results/screenshots/chat-thinking.png",
 			fullPage: true,
 		});
+		const conversationId = String(payload.conversation_id);
+		const messagesRefresh = page.waitForResponse(
+			(response) =>
+				response.url().includes(
+					`/api/chat/conversations/${conversationId}/messages`,
+				) && response.ok(),
+		);
 		advanceChat();
+		await messagesRefresh;
+		await expect(page.getByText("I’ll create that.")).toBeVisible();
+		advanceTool();
 		await expect(page.getByText("Generating Markdown…")).toBeVisible({
 			timeout: 15_000,
 		});

@@ -3,10 +3,9 @@ import subprocess
 from functools import lru_cache
 
 
-# Old CLIs below this release do not implement the portable Solution targeting
-# contract. The API exposes this floor at /api/version and compatible CLIs hard-
-# block command dispatch until they are upgraded.
-MIN_CLI_VERSION = "1.2.3"
+# Frozen bridge for CLIs that shipped with minimum-version gating. New CLIs use
+# contract_version; do not advance this beyond an actually published CLI build.
+LEGACY_MIN_CLI_VERSION = "1.1.1-dev.548"
 
 
 @lru_cache(maxsize=1)

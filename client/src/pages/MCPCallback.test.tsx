@@ -9,6 +9,7 @@ describe("MCPCallback", () => {
 	});
 
 	it("shows the detected client after a successful callback", async () => {
+		const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
 		vi.stubGlobal(
 			"fetch",
 			vi.fn().mockResolvedValue({
@@ -20,7 +21,7 @@ describe("MCPCallback", () => {
 			}),
 		);
 
-		renderWithProviders(<MCPCallback />, {
+		const { unmount } = renderWithProviders(<MCPCallback />, {
 			initialEntries: ["/mcp/callback?internal_state=state-1"],
 		});
 
@@ -28,6 +29,9 @@ describe("MCPCallback", () => {
 		expect(
 			screen.getByText("You can close this tab and return to Cursor."),
 		).toBeVisible();
+
+		unmount();
+		expect(clearTimeoutSpy).toHaveBeenCalled();
 	});
 
 	it("uses generic copy when callback metadata is malformed", async () => {

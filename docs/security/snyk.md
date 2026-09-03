@@ -40,8 +40,8 @@ The initial workflow scans:
   generated from `requirements.lock`.
 - Client dependencies from `client/package-lock.json`.
 - Kubernetes manifests under `k8s/`.
-- Published `ghcr.io/mtg-thomas/bifrost-api:dev` and
-  `ghcr.io/mtg-thomas/bifrost-client:dev` images on scheduled/manual runs.
+- Published `ghcr.io/midtown-technology-group/bifrost-api:dev` and
+  `ghcr.io/midtown-technology-group/bifrost-client:dev` images on scheduled/manual runs.
 
 The workflow is non-blocking during rollout. Treat it as tuning evidence until
 the false-positive and duplicate-finding volume is understood.

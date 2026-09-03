@@ -5,13 +5,17 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from src.core.database import get_db_context
 from src.core.pubsub import publish_execution_update, publish_history_update
 from src.core.redis_client import get_redis_client
 from src.models.enums import ExecutionStatus
-from src.models.orm.executions import Execution, ExecutionLog
+from src.models.orm.executions import (
+    Execution,
+    ExecutionLog,
+    WorkflowExecutionAttempt as ExecutionAttempt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +82,29 @@ async def _record_durable_poison(
                 if original_status == ExecutionStatus.CANCELLING
                 else ExecutionStatus.FAILED
             )
+            active_attempt = await db.scalar(
+                select(ExecutionAttempt)
+                .where(
+                    ExecutionAttempt.execution_id == execution_uuid,
+                    ExecutionAttempt.completed_at.is_(None),
+                )
+                .with_for_update()
+            )
+            if active_attempt is not None:
+                active_attempt.status = (
+                    "cancelled"
+                    if final_status == ExecutionStatus.CANCELLED
+                    else "failed"
+                )
+                active_attempt.phase = "terminal"
+                active_attempt.failure_phase = (
+                    "cancellation"
+                    if final_status == ExecutionStatus.CANCELLED
+                    else "queue"
+                )
+                active_attempt.failure_code = "consumer_delivery_poisoned"
+                active_attempt.completed_at = completed_at
+                active_attempt.heartbeat_at = completed_at
             execution.status = final_status
             execution.error_message = error_message
             execution.completed_at = completed_at

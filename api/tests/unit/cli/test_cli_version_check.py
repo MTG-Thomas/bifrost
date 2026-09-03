@@ -1,7 +1,7 @@
 """Tests for ``bifrost.cli._check_cli_version`` — URL resolution and transport.
 
-The *behavioral* contract of the gate (server-minimum hard gate, build-drift
-soft notice, old-server behavior, un-reachable warning) lives in
+The *behavioral* contract of the gate (contract-version hard gate, build-drift
+soft notice, old-server fallback, un-reachable warning) lives in
 ``test_cli_contract_gate.py``. This file keeps the still-valid cross-cutting
 concerns the gate must honor regardless of which gate fires:
 
@@ -162,8 +162,8 @@ class TestSkipCases:
 
 
 class TestVersionComparison:
-    def test_passes_when_versions_match(self, monkeypatch):
-        """Installed and server agree → no exit, no stderr noise."""
+    def test_matching_version_without_contract_warns(self, monkeypatch):
+        """Matching builds still warn when compatibility cannot be verified."""
         _patch_version(monkeypatch, "1.2.3")
         from bifrost import cli
 
@@ -177,7 +177,7 @@ class TestVersionComparison:
         ), patch("sys.stderr", stderr):
             cli._check_cli_version()
 
-        assert stderr.getvalue() == ""
+        assert "predates contract versioning" in stderr.getvalue()
 
     def test_passes_when_server_prefixes_with_v(self, monkeypatch):
         """``v1.2.3`` from the server should match ``1.2.3`` installed."""

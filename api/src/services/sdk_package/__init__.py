@@ -43,6 +43,7 @@ _SDK_SOURCE_FILES = (
     "files.ts",
     "use-files.ts",
     "bifrost-header.tsx",
+    "webmcp.ts",
 )
 
 # The peer deps a v2 app must already have for the SDK to resolve at runtime.

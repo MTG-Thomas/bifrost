@@ -1,7 +1,8 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { WebMcpTool } from "@/lib/app-sdk/webmcp";
 
 vi.mock("@/services/schedulerDiagnostics", async () => {
 	const actual = await vi.importActual<
@@ -113,6 +114,10 @@ vi.mock("@/services/websocket", () => ({
 
 import { SchedulerTab } from "./SchedulerTab";
 
+afterEach(() => {
+	delete (document as Document & { modelContext?: unknown }).modelContext;
+});
+
 describe("SchedulerTab", () => {
 	it("shows schedule state and both scaling signals", async () => {
 		const user = userEvent.setup();
@@ -163,6 +168,54 @@ describe("SchedulerTab", () => {
 		expect(within(scheduleRow).getByText("—")).toBeInTheDocument();
 
 		await user.click(scheduleRow);
+		expect(await screen.findByRole("dialog")).toHaveTextContent(
+			"Refresh Expiring OAuth Tokens",
+		);
+	});
+
+	it("exposes a minimized health snapshot and opens existing task history UI", async () => {
+		const registered: WebMcpTool[] = [];
+		Object.defineProperty(document, "modelContext", {
+			configurable: true,
+			value: {
+				registerTool: (tool: WebMcpTool) => registered.push(tool),
+			},
+		});
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		render(
+			<QueryClientProvider client={client}>
+				<SchedulerTab />
+			</QueryClientProvider>,
+		);
+
+		await waitFor(() =>
+			expect(
+				registered.some((tool) => tool.name === "get-scheduler-health"),
+			).toBe(true),
+		);
+		const health = [...registered]
+			.reverse()
+			.find((tool) => tool.name === "get-scheduler-health")!;
+		await expect(
+			health.execute({}, { signal: new AbortController().signal }),
+		).resolves.toMatchObject({
+			leaderHealthy: true,
+			replicasOnline: 2,
+			jobsWaitingForMemory: 1,
+			dataFreshness: "live_snapshot",
+		});
+
+		const showTask = [...registered]
+			.reverse()
+			.find((tool) => tool.name === "show-scheduler-task-history")!;
+		await act(async () => {
+			await showTask.execute(
+				{ task: "oauth_token_refresh" },
+				{ signal: new AbortController().signal },
+			);
+		});
 		expect(await screen.findByRole("dialog")).toHaveTextContent(
 			"Refresh Expiring OAuth Tokens",
 		);

@@ -206,6 +206,7 @@ class ExecutionInfo:
     execution_id: str
     started_at: datetime
     timeout_seconds: int
+    attempt_token: str | None = None
 
     @property
     def elapsed_seconds(self) -> float:
@@ -260,6 +261,7 @@ class ProcessHandle:
     # producing its one result. None once readiness fires or the handle is
     # removed through timeout/cancellation/crash cleanup.
     result_reader_fd: int | None = None
+    result_callback_failed: bool = False
 
     @property
     def is_alive(self) -> bool:
@@ -383,6 +385,10 @@ class ProcessPoolManager:
 
         # Worker ID from HOSTNAME env var (Docker container name) or UUID
         self.worker_id = os.environ.get("HOSTNAME", str(uuid.uuid4()))
+        # A hostname/slot can be reused after restart. This UUID is renewed by
+        # start() and is the durable lease owner for attempts claimed by this
+        # particular manager lifetime.
+        self.worker_incarnation_id: uuid.UUID | None = None
 
         # Process tracking
         self.processes: dict[str, ProcessHandle] = {}
@@ -588,6 +594,7 @@ class ProcessPoolManager:
         self._started = True
         self._shutdown = False
         self._started_at = datetime.now(timezone.utc)
+        self.worker_incarnation_id = uuid.uuid4()
 
         # Install requirements once (shared filesystem — all child processes inherit)
         install_result = await asyncio.to_thread(install_requirements)
@@ -632,7 +639,7 @@ class ProcessPoolManager:
         3. Terminates all processes gracefully
         4. Unregisters from Redis
         """
-        if self._shutdown:
+        if self._shutdown and not self.processes:
             return
 
         logger.info("ProcessPoolManager stopping...")
@@ -653,8 +660,39 @@ class ProcessPoolManager:
                     await task
 
         # Terminate all processes
+        failed_surrenders: list[str] = []
         for handle in list(self.processes.values()):
+            exec_info = handle.current_execution
+            # Stop tenant code before committing a terminal projection. No
+            # child may continue producing SDK or external side effects after
+            # the durable worker-lost outcome is visible.
             await self._terminate_process(handle)
+            if exec_info is not None and not handle.result_reported:
+                # Rabbit delivery was already acknowledged after routing. A
+                # graceful manager shutdown must therefore durably surrender
+                # every active claim before discarding local ownership.
+                handle.result_reported = await self._deliver_result(
+                    {
+                        "type": "result",
+                        "execution_id": exec_info.execution_id,
+                        "success": False,
+                        "error": "Worker manager stopped during execution",
+                        "error_type": "WorkerShutdownError",
+                        "duration_ms": int(exec_info.elapsed_seconds * 1000),
+                        "attempt_token": exec_info.attempt_token,
+                    }
+                )
+                if not handle.result_reported:
+                    failed_surrenders.append(exec_info.execution_id)
+
+        if failed_surrenders:
+            # Keep the killed handles and their exact tokens so a subsequent
+            # stop attempt can retry durable surrender. Claiming a clean stop
+            # here would silently discard the only local recovery evidence.
+            raise RuntimeError(
+                "Could not durably surrender workflow attempts during shutdown: "
+                + ", ".join(failed_surrenders)
+            )
 
         # Shutdown template process
         if self._template is not None:
@@ -740,6 +778,8 @@ class ProcessPoolManager:
         self,
         execution_id: str,
         context: dict[str, Any],
+        *,
+        attempt_token: str | None = None,
     ) -> None:
         """
         Fork a one-shot worker for this execution.
@@ -798,6 +838,7 @@ class ProcessPoolManager:
             context,
             timeout,
             admission_started,
+            attempt_token=attempt_token,
         )
 
     async def _dispatch_to_child(
@@ -806,6 +847,8 @@ class ProcessPoolManager:
         context: dict[str, Any],
         timeout: int,
         admission_started: float,
+        *,
+        attempt_token: str | None,
     ) -> None:
         """Claim or fork one child and send its sole execution."""
         # Wait until a result frees a slot when every child is busy.
@@ -845,8 +888,22 @@ class ProcessPoolManager:
             execution_id=execution_id,
             started_at=datetime.now(timezone.utc),
             timeout_seconds=timeout,
+            attempt_token=attempt_token,
         )
         handle.result_reported = False
+
+        if attempt_token:
+            from src.services.execution.attempts import mark_attempt_running_token
+
+            if not await mark_attempt_running_token(
+                uuid.UUID(execution_id),
+                uuid.UUID(attempt_token),
+                process_id=handle.id,
+            ):
+                await self._terminate_process(handle)
+                self.processes.pop(handle.id, None)
+                await self._notify_slot_free()
+                raise RuntimeError("workflow attempt claim is no longer active")
 
         self._register_result_reader(handle)
 
@@ -972,11 +1029,12 @@ class ProcessPoolManager:
                 # Report timeout
                 await self._report_timeout(handle)
 
-                # Remove from the pool — the next execution forks on demand.
-                # pop() not del: a peer (_handle_result) may have removed it
-                # during the _kill_process / _report_timeout awaits above.
-                self.processes.pop(handle.id, None)
-                await self._notify_slot_free()
+                if handle.result_reported:
+                    # Remove only after the authoritative callback commits.
+                    self.processes.pop(handle.id, None)
+                    await self._notify_slot_free()
+                else:
+                    handle.result_callback_failed = True
 
     async def _kill_process(self, handle: ProcessHandle) -> None:
         """
@@ -1027,18 +1085,17 @@ class ProcessPoolManager:
         exec_info = handle.current_execution
         if self.on_result is None or exec_info is None:
             return
-        handle.result_reported = True
-        try:
-            await self.on_result({
+        handle.result_reported = await self._deliver_result(
+            {
                 "type": "result",
                 "execution_id": exec_info.execution_id,
                 "success": False,
                 "error": f"Execution timed out after {exec_info.timeout_seconds}s",
                 "error_type": "TimeoutError",
                 "duration_ms": int(exec_info.elapsed_seconds * 1000),
-            })
-        except Exception as e:
-            logger.exception(f"Error reporting timeout: {e}")
+                "attempt_token": exec_info.attempt_token,
+            }
+        )
 
     async def _cancel_listener_loop(self) -> None:
         """
@@ -1327,11 +1384,11 @@ class ProcessPoolManager:
                 # Report cancellation
                 await self._report_cancellation(handle)
 
-                # Remove from the pool — the next execution forks on demand.
-                # pop() not del: a peer (_handle_result) may have removed it
-                # during the _kill_process / _report_cancellation awaits.
-                self.processes.pop(handle.id, None)
-                await self._notify_slot_free()
+                if handle.result_reported:
+                    self.processes.pop(handle.id, None)
+                    await self._notify_slot_free()
+                else:
+                    handle.result_callback_failed = True
 
                 return
 
@@ -1352,18 +1409,17 @@ class ProcessPoolManager:
         exec_info = handle.current_execution
         if self.on_result is None or exec_info is None:
             return
-        handle.result_reported = True
-        try:
-            await self.on_result({
+        handle.result_reported = await self._deliver_result(
+            {
                 "type": "result",
                 "execution_id": exec_info.execution_id,
                 "success": False,
                 "error": "Execution was cancelled",
                 "error_type": "CancelledError",
                 "duration_ms": int(exec_info.elapsed_seconds * 1000),
-            })
-        except Exception as e:
-            logger.exception(f"Error reporting cancellation: {e}")
+                "attempt_token": exec_info.attempt_token,
+            }
+        )
 
     async def _check_process_health(self) -> None:
         """
@@ -1416,7 +1472,12 @@ class ProcessPoolManager:
                 if handle.current_execution and not handle.result_reported:
                     await self._report_crash(handle)
 
-                to_remove.append(process_id)
+                if handle.result_reported:
+                    to_remove.append(process_id)
+                else:
+                    handle.state = ProcessState.KILLED
+                    handle.killed_at = datetime.now(timezone.utc)
+                    handle.result_callback_failed = True
 
             elif handle.state == ProcessState.KILLED and handle.current_execution:
                 # Case B: KILLED — wait out the kill grace window before treating
@@ -1435,7 +1496,8 @@ class ProcessPoolManager:
                         f"firing orphan callback"
                     )
                     await self._report_orphan(handle)
-                to_remove.append(process_id)
+                if handle.result_reported:
+                    to_remove.append(process_id)
 
         # Remove crashed/orphaned processes.
         # Use pop() not del because a peer (e.g. _handle_result) may have
@@ -1490,18 +1552,27 @@ class ProcessPoolManager:
         exec_info = handle.current_execution
         if self.on_result is None or exec_info is None:
             return
-        handle.result_reported = True
-        try:
-            await self.on_result({
+        error_type = (
+            "ResultPersistenceError"
+            if handle.result_callback_failed
+            else "OrphanedExecution"
+        )
+        error = (
+            "Execution result could not be durably persisted"
+            if handle.result_callback_failed
+            else "Execution orphaned — process was killed but result was never reported"
+        )
+        handle.result_reported = await self._deliver_result(
+            {
                 "type": "result",
                 "execution_id": exec_info.execution_id,
                 "success": False,
-                "error": "Execution orphaned — process was killed but result was never reported",
-                "error_type": "OrphanedExecution",
+                "error": error,
+                "error_type": error_type,
                 "duration_ms": int(exec_info.elapsed_seconds * 1000),
-            })
-        except Exception as e:
-            logger.exception(f"Error reporting orphan: {e}")
+                "attempt_token": exec_info.attempt_token,
+            }
+        )
 
     async def _report_crash(self, handle: ProcessHandle) -> None:
         """
@@ -1516,18 +1587,49 @@ class ProcessPoolManager:
         exec_info = handle.current_execution
         if self.on_result is None or exec_info is None:
             return
-        handle.result_reported = True
-        try:
-            await self.on_result({
+        exit_code = handle.process.exitcode
+        signal_number = -exit_code if exit_code is not None and exit_code < 0 else None
+        worker_identity = f"{self.worker_id}:{handle.id}"
+        detail = (
+            f"exit_code={exit_code}, signal={signal_number}, worker={worker_identity}"
+        )
+        handle.result_reported = await self._deliver_result(
+            {
                 "type": "result",
                 "execution_id": exec_info.execution_id,
                 "success": False,
-                "error": "Worker process crashed unexpectedly",
+                "error": f"Worker process crashed unexpectedly ({detail})",
                 "error_type": "ProcessCrashError",
+                "exit_code": exit_code,
+                "signal": signal_number,
+                "worker_identity": worker_identity,
                 "duration_ms": int(exec_info.elapsed_seconds * 1000),
-            })
-        except Exception as e:
-            logger.exception(f"Error reporting crash: {e}")
+                "attempt_token": exec_info.attempt_token,
+            }
+        )
+
+    async def _deliver_result(self, result: dict[str, Any]) -> bool:
+        """Persist a terminal callback before relinquishing local ownership.
+
+        Result callbacks are normally fast PostgreSQL transactions. Brief
+        transport/database interruptions receive bounded retries; failure is
+        left locally unreported so the orphan/stuck reconciler remains able to
+        revoke the durable attempt instead of silently losing it.
+        """
+
+        if self.on_result is None:
+            return False
+        for attempt in range(3):
+            try:
+                await self.on_result(result)
+                return True
+            except Exception as exc:
+                logger.exception(
+                    "Result callback attempt %s/3 failed: %s", attempt + 1, exc
+                )
+                if attempt < 2:
+                    await asyncio.sleep(0.1 * (2**attempt))
+        return False
 
     def _register_result_reader(self, handle: ProcessHandle) -> None:
         """Wake immediately when a one-shot child's result pipe is readable."""
@@ -1597,10 +1699,27 @@ class ProcessPoolManager:
             handle: ProcessHandle that produced the result
             result: Result data from the worker
         """
-        # Mark result as reported before clearing current_execution so the invariant
-        # ("result_reported=True once on_result has fired") holds for external observers.
+        exec_info = handle.current_execution
+        if exec_info is not None:
+            # Child output is untrusted. Bind it to this handle's durable
+            # ownership instead of accepting identity fields from the child.
+            result["execution_id"] = exec_info.execution_id
+            if exec_info.attempt_token is not None:
+                result["attempt_token"] = exec_info.attempt_token
+            else:
+                # Legacy inline executions have no durable attempt fence. Do
+                # not let a child invent one, and preserve their established
+                # callback payload shape rather than adding a null token.
+                result.pop("attempt_token", None)
+
+        # Do not relinquish ownership until the authoritative callback commits.
         self._unregister_result_reader(handle)
-        handle.result_reported = True
+        handle.result_reported = await self._deliver_result(result)
+        if not handle.result_reported:
+            handle.state = ProcessState.KILLED
+            handle.killed_at = datetime.now(timezone.utc)
+            handle.result_callback_failed = True
+            return
 
         # Clear current execution
         handle.current_execution = None
@@ -1611,13 +1730,6 @@ class ProcessPoolManager:
         # pop() not check-then-del: race-safe against concurrent cleaners.
         self.processes.pop(handle.id, None)
         await self._notify_slot_free()
-
-        # Forward result to callback
-        if self.on_result:
-            try:
-                await self.on_result(result)
-            except Exception as e:
-                logger.exception(f"Error in result callback: {e}")
 
     async def _notify_slot_free(self) -> None:
         """Wake any tasks blocked in `_wait_for_slot`."""
@@ -1638,6 +1750,45 @@ class ProcessPoolManager:
             try:
                 # Refresh registration
                 await self._refresh_registration()
+
+                active_tokens = [
+                    uuid.UUID(info.attempt_token)
+                    for handle in self.processes.values()
+                    if (info := handle.current_execution) is not None
+                    and info.attempt_token
+                ]
+                if active_tokens:
+                    from src.services.execution.attempts import (
+                        heartbeat_attempt_tokens,
+                    )
+
+                    accepted_tokens = await heartbeat_attempt_tokens(active_tokens)
+                    stale_tokens = set(active_tokens) - accepted_tokens
+                    stale_handles: list[ProcessHandle] = []
+                    for handle in list(self.processes.values()):
+                        info = handle.current_execution
+                        if (
+                            info is None
+                            or not info.attempt_token
+                            or uuid.UUID(info.attempt_token) not in stale_tokens
+                        ):
+                            continue
+                        logger.warning(
+                            "Stopping process %s after its durable attempt lease was revoked",
+                            handle.id,
+                        )
+                        stale_handles.append(handle)
+                    if stale_handles:
+                        # Drain revoked children concurrently so N grace periods
+                        # cannot starve this live worker's registration TTL.
+                        await asyncio.gather(
+                            *(self._terminate_process(h) for h in stale_handles)
+                        )
+                        await self._refresh_registration()
+                    for handle in stale_handles:
+                        handle.current_execution = None
+                        self.processes.pop(handle.id, None)
+                        await self._notify_slot_free()
 
                 # Build and publish heartbeat
                 heartbeat = self._build_heartbeat()
@@ -1669,6 +1820,7 @@ class ProcessPoolManager:
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "status": "online",
                 "hostname": os.environ.get("HOSTNAME", "unknown"),
+                "worker_incarnation_id": str(self.worker_incarnation_id),
                 "packages": json.dumps(packages),
             }
         )
@@ -1842,6 +1994,7 @@ class ProcessPoolManager:
         return {
             "type": "worker_heartbeat",
             "worker_id": self.worker_id,
+            "worker_incarnation_id": str(self.worker_incarnation_id),
             "hostname": os.environ.get("HOSTNAME", "unknown"),
             "status": "online",
             "started_at": self._started_at.isoformat() if self._started_at else None,

@@ -14,5 +14,5 @@ digest promotion, ingress, and Kubernetes resources belong in
 
 The dedicated GitHub Actions workflow builds the real image and performs a PDF
 smoke test for pull requests. Merges to `main` publish `main` and commit-SHA tags
-to `ghcr.io/mtg-thomas/bifrost-doc-renderer`. Infra promotion remains an
+to `ghcr.io/midtown-technology-group/bifrost-doc-renderer`. Infra promotion remains an
 explicit digest update.

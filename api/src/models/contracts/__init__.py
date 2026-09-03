@@ -215,6 +215,8 @@ from src.models.contracts.executions import (
     AIUsageTotalsSimple,
     CleanupTriggeredResponse,
     ExecutionBase,
+    ExecutionAttemptHistory,
+    ExecutionAttemptPublic,
     ExecutionCreate,
     ExecutionLogPublic,
     ExecutionPublic,
@@ -785,6 +787,8 @@ __all__ = [
     "RoleAgentsResponse",
     # Executions
     "ExecutionBase",
+    "ExecutionAttemptHistory",
+    "ExecutionAttemptPublic",
     "ExecutionLogPublic",
     "AIUsagePublicSimple",
     "AIUsageTotalsSimple",

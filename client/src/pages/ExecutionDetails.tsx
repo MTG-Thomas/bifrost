@@ -33,9 +33,11 @@ import {
 	ExecutionCancelDialog,
 	ExecutionRerunDialog,
 	ExecutionMetadataBar,
+	ExecutionAttemptHistory,
 	RunStatusBadge,
 	PrettyInputDisplay,
 	type LogEntry,
+	type ExecutionAttemptHistoryView,
 } from "@/components/execution";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { components } from "@/lib/v1";
@@ -211,6 +213,9 @@ export function ExecutionDetails({
 
 	// Execution status and completion check
 	const executionStatus = execution?.status as ExecutionStatus | undefined;
+	const attemptHistory = execution?.attempt_history as
+		| ExecutionAttemptHistoryView
+		| undefined;
 	const isComplete =
 		executionStatus === "Success" ||
 		executionStatus === "Failed" ||
@@ -661,6 +666,8 @@ export function ExecutionDetails({
 						maxHeight="50vh"
 					/>
 
+					<ExecutionAttemptHistory history={attemptHistory} />
+
 					{/* Extra details — collapsible */}
 					{isComplete && hasExtras && (
 						<Collapsible>
@@ -891,6 +898,8 @@ export function ExecutionDetails({
 								isPlatformAdmin={isPlatformAdmin}
 								maxHeight="70vh"
 							/>
+
+							<ExecutionAttemptHistory history={attemptHistory} />
 						</motion.div>
 					</div>
 

@@ -195,8 +195,27 @@ class TestResolveScope:
         )
         set_execution_context(ctx)
         try:
-            assert resolve_scope("global") is None
+            assert resolve_scope("global") == "global"
             assert resolve_scope(None) is None
+        finally:
+            clear_execution_context()
+
+    def test_global_string_overrides_provider_org_scope(self):
+        from bifrost._context import clear_execution_context, resolve_scope, set_execution_context
+
+        set_execution_context(self._make_ctx(is_provider=True))
+        try:
+            assert resolve_scope("global") == "global"
+        finally:
+            clear_execution_context()
+
+    def test_global_string_override_denied_for_non_provider(self):
+        from bifrost._context import clear_execution_context, resolve_scope, set_execution_context
+
+        set_execution_context(self._make_ctx())
+        try:
+            with pytest.raises(PermissionError, match="Scope override to 'global' denied"):
+                resolve_scope("global")
         finally:
             clear_execution_context()
 

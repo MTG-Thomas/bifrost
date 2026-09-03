@@ -1,7 +1,7 @@
 """Unit tests for SDK transient-5xx retry behavior in ``BifrostClient``.
 
-Workstream E of issue #171: idempotent SDK calls retry on 502/503/504 during
-rolling API deploys. Non-idempotent methods (POST/PATCH) never auto-retry.
+Idempotent SDK calls retry on 502/503/504 during rolling API deploys.
+Mutations retry only when the caller supplies an idempotency contract.
 
 Uses ``httpx.MockTransport`` to count transport calls without hitting the
 network. ``asyncio.sleep`` and ``time.sleep`` are patched so the 36s retry
@@ -147,6 +147,30 @@ async def test_async_post_does_not_retry_on_503(force_no_refresh):
         response = await client.post("/api/things")
         assert response.status_code == 503
         assert len(calls) == 1
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_async_retry_safe_post_retries_transient_503(force_no_refresh):
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(503 if len(requests) == 1 else 200)
+
+    client = _make_fixed_client(handler)
+    try:
+        response = await client.post(
+            "/api/workflows/execute",
+            retry_safe=True,
+            headers={"X-Bifrost-Execution-ID": "fixed-id"},
+        )
+        assert response.status_code == 200
+        assert len(requests) == 2
+        assert {
+            request.headers["X-Bifrost-Execution-ID"] for request in requests
+        } == {"fixed-id"}
     finally:
         await client.close()
 

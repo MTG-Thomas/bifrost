@@ -6,7 +6,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from shared.contract_version import get_contract_version
-from shared.version import MIN_CLI_VERSION, get_version
+from shared.version import LEGACY_MIN_CLI_VERSION, get_version
 from src.services.sdk_package import sdk_contract_version, sdk_fingerprint
 
 router = APIRouter(prefix="/api/version", tags=["version"])
@@ -61,7 +61,7 @@ def get_sdk_fingerprint() -> str:
 async def get_version_info() -> VersionResponse:
     return VersionResponse(
         version=get_version(),
-        min_cli_version=MIN_CLI_VERSION,
+        min_cli_version=LEGACY_MIN_CLI_VERSION,
         contract_version=get_contract_version(),
         # The cold path shells out to node/esbuild (up to 120s). Keep that
         # synchronous build off the API event loop, matching /api/sdk/download.
