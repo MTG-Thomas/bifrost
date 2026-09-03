@@ -77,6 +77,7 @@ type Workflow = components["schemas"]["WorkflowMetadata"];
 type RolePublic = components["schemas"]["RolePublic"];
 
 type WorkflowAccessLevel = "authenticated" | "everyone" | "role_based";
+type RetryFailure = "worker_lost" | "subprocess_crash";
 
 const ACCESS_LEVELS: {
 	value: WorkflowAccessLevel;
@@ -145,6 +146,9 @@ export function WorkflowEditDialog({
 
 	// Execution tab state
 	const [timeoutSeconds, setTimeoutSeconds] = useState(1800);
+	const [retryEnabled, setRetryEnabled] = useState(false);
+	const [retryMaxAttempts, setRetryMaxAttempts] = useState(2);
+	const [retryOn, setRetryOn] = useState<RetryFailure[]>([]);
 
 	// Economics tab state
 	const [timeSaved, setTimeSaved] = useState(0);
@@ -205,6 +209,9 @@ export function WorkflowEditDialog({
 
 			// Execution
 			setTimeoutSeconds(workflow.timeout_seconds ?? 1800);
+			setRetryEnabled(workflow.retry_policy?.enabled ?? false);
+			setRetryMaxAttempts(workflow.retry_policy?.max_attempts ?? 2);
+			setRetryOn((workflow.retry_policy?.retry_on ?? []) as RetryFailure[]);
 
 			// Economics
 			setTimeSaved(workflow.time_saved ?? 0);
@@ -265,6 +272,12 @@ export function WorkflowEditDialog({
 				category: category || "General",
 				tags: tags,
 				timeout_seconds: timeoutSeconds,
+				retry_policy: {
+					version: "execution-retry/v1",
+					enabled: retryEnabled,
+					max_attempts: retryMaxAttempts,
+					retry_on: retryEnabled ? retryOn : [],
+				},
 				execution_mode: executionMode,
 				time_saved: timeSaved,
 				value: value,
@@ -320,6 +333,14 @@ export function WorkflowEditDialog({
 			prev.includes(method)
 				? prev.filter((m) => m !== method)
 				: [...prev, method]
+		);
+	};
+
+	const handleRetryFailureToggle = (failure: RetryFailure) => {
+		setRetryOn((current) =>
+			current.includes(failure)
+				? current.filter((item) => item !== failure)
+				: [...current, failure],
 		);
 	};
 
@@ -523,6 +544,52 @@ export function WorkflowEditDialog({
 								<p className="text-xs text-muted-foreground">
 									Maximum execution time (0-86400 seconds, default 1800). Set to 0 to disable the timeout.
 								</p>
+							</div>
+							<div className="space-y-4 rounded-md border p-4">
+								<div className="flex items-center justify-between gap-4">
+									<div>
+										<Label htmlFor="retry-enabled">Retry infrastructure failures</Label>
+										<p className="text-xs text-muted-foreground">
+											Start a new attempt for selected failures. Your workflow must be safe to replay.
+										</p>
+									</div>
+									<Switch
+										id="retry-enabled"
+										checked={retryEnabled}
+										onCheckedChange={setRetryEnabled}
+									/>
+								</div>
+								{retryEnabled && (
+									<>
+										<div className="space-y-2">
+											<Label htmlFor="retry-max-attempts">Maximum attempts</Label>
+											<Input
+												id="retry-max-attempts"
+												type="number"
+												min={1}
+												max={10}
+												value={retryMaxAttempts}
+												onChange={(event) => setRetryMaxAttempts(Number(event.target.value))}
+											/>
+										</div>
+										<div className="space-y-3">
+											<Label>Retry after</Label>
+											{([
+												["worker_lost", "Worker lease expires"],
+												["subprocess_crash", "Workflow subprocess crashes"],
+											] as const).map(([failure, label]) => (
+												<div key={failure} className="flex items-center justify-between gap-4">
+													<Label htmlFor={`retry-${failure}`} className="font-normal">{label}</Label>
+													<Switch
+														id={`retry-${failure}`}
+														checked={retryOn.includes(failure)}
+														onCheckedChange={() => handleRetryFailureToggle(failure)}
+													/>
+												</div>
+											))}
+										</div>
+									</>
+								)}
 							</div>
 						</TabsContent>
 

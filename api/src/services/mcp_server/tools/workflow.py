@@ -325,7 +325,15 @@ async def get_workflow(
         return error_result(f"Error getting workflow: {str(e)}")
 
 
-async def register_workflow(context: Any, path: str, function_name: str, organization_id: str = "") -> ToolResult:
+async def register_workflow(
+    context: Any,
+    path: str,
+    function_name: str,
+    organization_id: str = "",
+    retry_policy: dict[str, Any] | None = None,
+) -> ToolResult:
+    from src.models.contracts.base import ExecutionRetryPolicy
+
     """Register a decorated Python function as a workflow.
 
     Takes a file path and function name, validates the function has a
@@ -420,6 +428,9 @@ async def register_workflow(context: Any, path: str, function_name: str, organiz
             )
             org_uuid = UUID(organization_id) if organization_id else None
             workflow_id = uuid4()
+            resolved_retry_policy = ExecutionRetryPolicy.model_validate(
+                retry_policy or {}
+            ).model_dump(mode="json")
             new_wf = WorkflowORM(
                 id=workflow_id,
                 name=function_name,
@@ -428,6 +439,7 @@ async def register_workflow(context: Any, path: str, function_name: str, organiz
                 type=wf_type,
                 is_active=True,
                 organization_id=org_uuid,
+                retry_policy=resolved_retry_policy,
             )
             db.add(new_wf)
             await db.flush()
@@ -473,6 +485,7 @@ async def update_workflow(
     description: str | None = None,
     category: str | None = None,
     timeout_seconds: int | None = None,
+    retry_policy: dict[str, Any] | None = None,
     tags: list[str] | None = None,
     endpoint_enabled: bool | None = None,
     public_endpoint: bool | None = None,
@@ -516,7 +529,8 @@ async def update_workflow(
             "name": name,
             "description": description,
             "category": category,
-            "timeout_seconds": timeout_seconds,
+        "timeout_seconds": timeout_seconds,
+        "retry_policy": retry_policy,
             "tags": tags,
             "endpoint_enabled": endpoint_enabled,
             "public_endpoint": public_endpoint,

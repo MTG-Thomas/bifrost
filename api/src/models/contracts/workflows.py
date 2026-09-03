@@ -191,6 +191,10 @@ class RegisterWorkflowRequest(BaseModel):
             "reactivating; pass an empty list to clear."
         ),
     )
+    retry_policy: ExecutionRetryPolicy = Field(
+        default_factory=ExecutionRetryPolicy,
+        description="Policy for retrying eligible infrastructure failures.",
+    )
 
 
 class RegisterWorkflowResponse(BaseModel):
@@ -202,6 +206,7 @@ class RegisterWorkflowResponse(BaseModel):
     type: str = Field(..., description="Executable type: workflow, tool, or data_provider")
     description: str | None = Field(default=None, description="Workflow description")
     organization_id: str | None = Field(default=None, description="Organization ID if org-scoped, null for global")
+    retry_policy: ExecutionRetryPolicy = Field(default_factory=ExecutionRetryPolicy)
 
 
 # ==================== WORKFLOW VALIDATION ====================

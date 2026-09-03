@@ -83,7 +83,7 @@ class WorkflowMetadata(BaseModel):
     parameters: dict
     execution_mode: str
     timeout_seconds: int | None
-    retry_policy: dict | None
+    retry_policy: dict
     endpoint_enabled: bool
     allowed_methods: list[str] | None
     disable_global_key: bool

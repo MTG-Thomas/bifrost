@@ -6,9 +6,22 @@ decorated Python function. Only the update surface needs flag generation.
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, Field
+
+
+class ExecutionRetryFailure(str, Enum):
+    WORKER_LOST = "worker_lost"
+    SUBPROCESS_CRASH = "subprocess_crash"
+
+
+class ExecutionRetryPolicy(BaseModel):
+    version: Literal["execution-retry/v1"] = "execution-retry/v1"
+    enabled: bool = False
+    max_attempts: int = Field(default=2, ge=1, le=10)
+    retry_on: list[ExecutionRetryFailure] = Field(default_factory=list)
 
 
 class WorkflowUpdateRequest(BaseModel):
@@ -29,6 +42,9 @@ class WorkflowUpdateRequest(BaseModel):
     category: str | None = Field(default=None, max_length=100)
     timeout_seconds: int | None = Field(default=None, ge=0, le=86400)
     execution_mode: Literal["sync", "async"] | None = Field(default=None)
+    # Kept as a dict so the shared CLI flag builder accepts JSON or @file input.
+    # The server validates the object against ExecutionRetryPolicy.
+    retry_policy: dict | None = Field(default=None)
     time_saved: int | None = Field(default=None, ge=0)
     value: float | None = Field(default=None, ge=0.0)
     tool_description: str | None = Field(default=None, max_length=1000)

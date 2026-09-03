@@ -2585,6 +2585,32 @@ def test_manifest_workflow_carries_tool_description():
     assert wf2.tool_description is None
 
 
+def test_manifest_workflow_round_trips_execution_retry_policy():
+    from bifrost.manifest import ManifestWorkflow
+    from bifrost.manifest_codec import Destination
+
+    wf = ManifestWorkflow(
+        id="44444444-4444-4444-4444-444444444444",
+        path="workflows/backup.py",
+        function_name="backup",
+        retry_policy={
+            "version": "execution-retry/v1",
+            "enabled": True,
+            "max_attempts": 2,
+            "retry_on": ["worker_lost", "subprocess_crash"],
+        },
+    )
+
+    values = wf.to_orm_values(Destination.GIT_SYNC).direct
+
+    assert values["retry_policy"] == {
+        "version": "execution-retry/v1",
+        "enabled": True,
+        "max_attempts": 2,
+        "retry_on": ["worker_lost", "subprocess_crash"],
+    }
+
+
 # =============================================================================
 # ManifestPolicyRule tests (Task 10)
 # =============================================================================

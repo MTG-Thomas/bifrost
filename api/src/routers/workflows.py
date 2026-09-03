@@ -1512,6 +1512,7 @@ async def register_workflow(
         existing_wf.organization_id = org_uuid
         if request.access_level is not None:
             existing_wf.access_level = request.access_level
+        existing_wf.retry_policy = request.retry_policy.model_dump(mode="json")
         existing_wf.updated_at = datetime.now(timezone.utc)
         await db.flush()
     else:
@@ -1529,6 +1530,7 @@ async def register_workflow(
             is_active=True,
             organization_id=org_uuid,
             access_level=request.access_level if request.access_level is not None else "role_based",
+            retry_policy=request.retry_policy.model_dump(mode="json"),
         )
         try:
             await add_workflow_registration(
@@ -1591,6 +1593,7 @@ async def register_workflow(
         type=workflow.type,
         description=workflow.description,
         organization_id=str(workflow.organization_id) if workflow.organization_id else None,
+        retry_policy=workflow.retry_policy or {},
     )
 
 
@@ -1782,6 +1785,9 @@ async def update_workflow(
                     detail="execution_mode must be 'sync' or 'async'",
                 )
             workflow.execution_mode = request.execution_mode
+
+        if request.retry_policy is not None:
+            workflow.retry_policy = request.retry_policy.model_dump(mode="json")
 
         # Update time_saved if provided
         if request.time_saved is not None:

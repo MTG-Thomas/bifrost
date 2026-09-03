@@ -53,6 +53,7 @@ from bifrost.dto_flags import (
     DTO_REF_LOOKUPS,
     assemble_body,
     build_cli_flags,
+    load_dict_value,
 )
 from bifrost.org_target import org_option, resolve_org_target
 from bifrost.refs import RefResolver
@@ -155,6 +156,12 @@ async def get_workflow(
         "multiple, or pass a comma-separated list."
     ),
 )
+@click.option(
+    "--retry-policy",
+    type=str,
+    default=None,
+    help="Retry policy as JSON or @path to a JSON/YAML file.",
+)
 @click.pass_context
 @pass_resolver
 @run_async
@@ -169,6 +176,7 @@ async def register_workflow(
     function_name: str,
     access_level: str | None,
     role_ids: tuple[str, ...],
+    retry_policy: str | None,
 ) -> None:
     """Register a decorated function from an existing workspace ``.py`` file.
 
@@ -191,6 +199,8 @@ async def register_workflow(
         body["organization_id"] = target.organization_id
     if access_level is not None:
         body["access_level"] = access_level
+    if retry_policy is not None:
+        body["retry_policy"] = load_dict_value(retry_policy)
 
     # Flatten comma-separated role refs and resolve names → UUIDs.
     flattened: list[str] = []
