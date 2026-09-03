@@ -159,11 +159,16 @@ async def test_execution_keeps_retry_policy_from_dispatch(
     assert patch_response.json()["retry_policy"] == first_policy
 
     get_response = e2e_client.get(
-        f"/api/workflows/{scheduled_workflow['id']}",
+        "/api/workflows",
         headers=platform_admin.headers,
     )
     assert get_response.status_code == 200, get_response.text
-    assert get_response.json()["retry_policy"] == first_policy
+    stored_workflow = next(
+        workflow
+        for workflow in get_response.json()
+        if workflow["id"] == scheduled_workflow["id"]
+    )
+    assert stored_workflow["retry_policy"] == first_policy
 
     schedule_response = e2e_client.post(
         "/api/workflows/execute",
