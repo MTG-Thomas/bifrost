@@ -32,6 +32,13 @@ class IntegrationType(str, Enum):
 # ==================== MODELS ====================
 
 
+class ExecutionRetryFailure(str, Enum):
+    """Execution-engine failures that may start another attempt."""
+
+    WORKER_LOST = "worker_lost"
+    SUBPROCESS_CRASH = "subprocess_crash"
+
+
 class ExecutionRetryPolicy(BaseModel):
     """Versioned policy for retries after execution-engine failures."""
 
@@ -43,7 +50,7 @@ class ExecutionRetryPolicy(BaseModel):
         le=10,
         description="Total attempts, including the initial execution",
     )
-    retry_on: list[Literal["worker_lost", "subprocess_crash"]] = Field(
+    retry_on: list[ExecutionRetryFailure] = Field(
         default_factory=list,
         description="Execution-engine failures eligible for another attempt",
     )
