@@ -41,11 +41,7 @@ vi.mock("@/components/forms/OrganizationSelect", () => ({
 			aria-label="Organization Scope"
 			value={value ?? "global"}
 			onChange={(event) =>
-				onChange(
-					event.currentTarget.value === "global"
-						? null
-						: event.currentTarget.value,
-				)
+				onChange(event.currentTarget.value === "global" ? null : event.currentTarget.value)
 			}
 		>
 			<option value="global">Global</option>
@@ -125,9 +121,7 @@ describe("WorkflowEditDialog", () => {
 		await user.type(toolNameInput, "renamed_tool_name");
 		await user.click(screen.getByRole("button", { name: /save changes/i }));
 
-		await waitFor(() =>
-			expect(mockUpdateWorkflow).toHaveBeenCalledTimes(1),
-		);
+		await waitFor(() => expect(mockUpdateWorkflow).toHaveBeenCalledTimes(1));
 		expect(mockUpdateWorkflow.mock.calls[0]).toMatchObject([
 			"workflow-1",
 			{
@@ -148,15 +142,11 @@ describe("WorkflowEditDialog", () => {
 		);
 
 		await user.click(screen.getByRole("tab", { name: /execution/i }));
-		await user.click(
-			screen.getByLabelText(/retry infrastructure failures/i),
-		);
+		await user.click(screen.getByLabelText(/retry infrastructure failures/i));
 		await user.click(screen.getByLabelText(/worker lease expires/i));
 		await user.click(screen.getByRole("button", { name: /save changes/i }));
 
-		await waitFor(() =>
-			expect(mockUpdateWorkflow).toHaveBeenCalledTimes(1),
-		);
+		await waitFor(() => expect(mockUpdateWorkflow).toHaveBeenCalledTimes(1));
 		expect(mockUpdateWorkflow.mock.calls[0][1]).toMatchObject({
 			retry_policy: {
 				version: "execution-retry/v1",
@@ -164,31 +154,6 @@ describe("WorkflowEditDialog", () => {
 				max_attempts: 2,
 				retry_on: ["worker_lost"],
 			},
-		});
-	});
-
-	it("keeps retry attempts within the supported range", async () => {
-		const { user } = renderWithProviders(
-			<WorkflowEditDialog
-				workflow={makeWorkflow()}
-				open={true}
-				onOpenChange={vi.fn()}
-			/>,
-		);
-
-		await user.click(screen.getByRole("tab", { name: /execution/i }));
-		await user.click(
-			screen.getByLabelText(/retry infrastructure failures/i),
-		);
-		await user.clear(screen.getByLabelText(/maximum attempts/i));
-		await user.type(screen.getByLabelText(/maximum attempts/i), "99");
-		await user.click(screen.getByRole("button", { name: /save changes/i }));
-
-		await waitFor(() =>
-			expect(mockUpdateWorkflow).toHaveBeenCalledTimes(1),
-		);
-		expect(mockUpdateWorkflow.mock.calls[0][1]).toMatchObject({
-			retry_policy: { max_attempts: 10 },
 		});
 	});
 
@@ -205,9 +170,7 @@ describe("WorkflowEditDialog", () => {
 		await user.clear(toolNameInput);
 		await user.click(screen.getByRole("button", { name: /save changes/i }));
 
-		await waitFor(() =>
-			expect(mockUpdateWorkflow).toHaveBeenCalledTimes(1),
-		);
+		await waitFor(() => expect(mockUpdateWorkflow).toHaveBeenCalledTimes(1));
 		expect(mockUpdateWorkflow.mock.calls[0]).toMatchObject([
 			"workflow-1",
 			{

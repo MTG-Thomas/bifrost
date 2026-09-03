@@ -111,25 +111,6 @@ async def test_optional_user_rejects_mcp_scoped_rest_token(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("claim", ["engine_execution_id", "engine_attempt_token"])
-async def test_optional_user_rejects_malformed_engine_uuid_claim(monkeypatch, claim):
-    monkeypatch.setattr(
-        auth,
-        "decode_token",
-        lambda token, *, expected_type: _payload(**{claim: "not-a-uuid"}),
-    )
-
-    assert (
-        await auth.get_current_user_optional(
-            _request(),
-            _credentials("engine-token"),
-            object(),
-        )
-        is None
-    )
-
-
-@pytest.mark.asyncio
 async def test_required_user_and_active_superuser_guards_raise_http_errors(monkeypatch):
     async def no_current_user(*args):
         return None

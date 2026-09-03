@@ -69,11 +69,7 @@ import {
 	useAssignRolesToWorkflow,
 	useRemoveRoleFromWorkflow,
 } from "@/hooks/useWorkflowRoles";
-import {
-	useWorkflowKeys,
-	useCreateWorkflowKey,
-	useRevokeWorkflowKey,
-} from "@/hooks/useWorkflowKeys";
+import { useWorkflowKeys, useCreateWorkflowKey, useRevokeWorkflowKey } from "@/hooks/useWorkflowKeys";
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
 import type { components } from "@/lib/v1";
 
@@ -98,8 +94,7 @@ const ACCESS_LEVELS: {
 	{
 		value: "everyone",
 		label: "Everyone",
-		description:
-			"Any signed-in user, including external users, can execute",
+		description: "Any signed-in user, including external users, can execute",
 		icon: <Users className="h-4 w-4" />,
 	},
 	{
@@ -137,11 +132,8 @@ export function WorkflowEditDialog({
 	const isSolutionManaged = workflow?.is_solution_managed ?? false;
 
 	// Access control state
-	const [organizationId, setOrganizationId] = useState<
-		string | null | undefined
-	>(undefined);
-	const [accessLevel, setAccessLevel] =
-		useState<WorkflowAccessLevel>("role_based");
+	const [organizationId, setOrganizationId] = useState<string | null | undefined>(undefined);
+	const [accessLevel, setAccessLevel] = useState<WorkflowAccessLevel>("role_based");
 	const [selectedRoleIds, setSelectedRoleIds] = useState<string[]>([]);
 	const [rolesOpen, setRolesOpen] = useState(false);
 
@@ -173,12 +165,8 @@ export function WorkflowEditDialog({
 	const [allowedMethods, setAllowedMethods] = useState<string[]>(["POST"]);
 	const [publicEndpoint, setPublicEndpoint] = useState(false);
 	const [disableGlobalKey, setDisableGlobalKey] = useState(false);
-	const [executionMode, setExecutionMode] = useState<"sync" | "async">(
-		"sync",
-	);
-	const [newlyGeneratedKey, setNewlyGeneratedKey] = useState<string | null>(
-		null,
-	);
+	const [executionMode, setExecutionMode] = useState<"sync" | "async">("sync");
+	const [newlyGeneratedKey, setNewlyGeneratedKey] = useState<string | null>(null);
 	const [copiedCurl, setCopiedCurl] = useState(false);
 	const [activeTab, setActiveTab] = useState("general");
 
@@ -204,16 +192,13 @@ export function WorkflowEditDialog({
 	// (https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes)
 	// — avoids the extra effect+render cycle of useEffect+setState.
 	const [prevLoadKey, setPrevLoadKey] = useState<string | null>(null);
-	const loadKey =
-		workflow && open ? `${workflow.id}:${initialTab ?? ""}` : null;
+	const loadKey = workflow && open ? `${workflow.id}:${initialTab ?? ""}` : null;
 	if (prevLoadKey !== loadKey) {
 		setPrevLoadKey(loadKey);
 		if (workflow && open) {
 			// Access control
 			setOrganizationId(workflow.organization_id ?? null);
-			setAccessLevel(
-				(workflow.access_level as WorkflowAccessLevel) || "role_based",
-			);
+			setAccessLevel((workflow.access_level as WorkflowAccessLevel) || "role_based");
 
 			// General
 			setWorkflowName(workflow.name ?? "");
@@ -226,9 +211,7 @@ export function WorkflowEditDialog({
 			setTimeoutSeconds(workflow.timeout_seconds ?? 1800);
 			setRetryEnabled(workflow.retry_policy?.enabled ?? false);
 			setRetryMaxAttempts(workflow.retry_policy?.max_attempts ?? 2);
-			setRetryOn(
-				(workflow.retry_policy?.retry_on ?? []) as RetryFailure[],
-			);
+			setRetryOn((workflow.retry_policy?.retry_on ?? []) as RetryFailure[]);
 
 			// Economics
 			setTimeSaved(workflow.time_saved ?? 0);
@@ -309,10 +292,10 @@ export function WorkflowEditDialog({
 			// Handle role changes
 			const currentRoleIds = workflowRolesQuery.data?.role_ids || [];
 			const rolesToAdd = selectedRoleIds.filter(
-				(id) => !currentRoleIds.includes(id),
+				(id) => !currentRoleIds.includes(id)
 			);
 			const rolesToRemove = currentRoleIds.filter(
-				(id) => !selectedRoleIds.includes(id),
+				(id) => !selectedRoleIds.includes(id)
 			);
 
 			if (rolesToAdd.length > 0) {
@@ -330,9 +313,7 @@ export function WorkflowEditDialog({
 			handleClose();
 		} catch (error) {
 			toast.error(
-				error instanceof Error
-					? error.message
-					: "Failed to update workflow",
+				error instanceof Error ? error.message : "Failed to update workflow"
 			);
 		} finally {
 			setIsSaving(false);
@@ -343,7 +324,7 @@ export function WorkflowEditDialog({
 		setSelectedRoleIds((prev) =>
 			prev.includes(roleId)
 				? prev.filter((id) => id !== roleId)
-				: [...prev, roleId],
+				: [...prev, roleId]
 		);
 	};
 
@@ -351,7 +332,7 @@ export function WorkflowEditDialog({
 		setAllowedMethods((prev) =>
 			prev.includes(method)
 				? prev.filter((m) => m !== method)
-				: [...prev, method],
+				: [...prev, method]
 		);
 	};
 
@@ -398,31 +379,27 @@ export function WorkflowEditDialog({
 	const isDataProviderType = workflow?.type === "data_provider";
 
 	// Endpoint tab computed values
-	const baseUrl =
-		typeof window !== "undefined"
-			? `${window.location.protocol}//${window.location.host}`
-			: "";
-	const endpointUrl = workflow?.id
-		? `${baseUrl}/api/endpoints/${workflow.id}`
+	const baseUrl = typeof window !== "undefined"
+		? `${window.location.protocol}//${window.location.host}`
 		: "";
+	const endpointUrl = workflow?.id ? `${baseUrl}/api/endpoints/${workflow.id}` : "";
 	const isPublicEndpoint = publicEndpoint;
 	const apiKeyValue = displayKey || "YOUR_API_KEY";
 
-	const exampleParams =
-		workflow?.parameters?.reduce(
-			(acc, param) => ({
-				...acc,
-				[param.name ?? "param"]:
-					param.type === "string"
-						? "<string>"
-						: param.type === "int"
-							? 0
-							: param.type === "bool"
-								? false
-								: null,
-			}),
-			{} as Record<string, unknown>,
-		) ?? {};
+	const exampleParams = workflow?.parameters?.reduce(
+		(acc, param) => ({
+			...acc,
+			[param.name ?? "param"]:
+				param.type === "string"
+					? "<string>"
+					: param.type === "int"
+						? 0
+						: param.type === "bool"
+							? false
+							: null,
+		}),
+		{} as Record<string, unknown>,
+	) ?? {};
 
 	const curlExample = isPublicEndpoint
 		? `curl -X POST "${endpointUrl}" \\
@@ -447,11 +424,7 @@ export function WorkflowEditDialog({
 					<SolutionManagedBanner entityLabel="workflow" />
 				)}
 
-				<Tabs
-					value={activeTab}
-					onValueChange={setActiveTab}
-					className="flex-1 overflow-hidden flex flex-col"
-				>
+				<Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 overflow-hidden flex flex-col">
 					<TabsList className="w-full flex-shrink-0">
 						<TabsTrigger value="general" className="gap-1.5">
 							<Settings className="h-3.5 w-3.5" />
@@ -472,10 +445,7 @@ export function WorkflowEditDialog({
 							</TabsTrigger>
 						)}
 						{isDataProviderType && (
-							<TabsTrigger
-								value="dataprovider"
-								className="gap-1.5"
-							>
+							<TabsTrigger value="dataprovider" className="gap-1.5">
 								<Database className="h-3.5 w-3.5" />
 								Cache
 							</TabsTrigger>
@@ -498,38 +468,24 @@ export function WorkflowEditDialog({
 								<Input
 									id="workflow-name"
 									value={workflowName}
-									onChange={(e) =>
-										setWorkflowName(e.target.value)
-									}
-									placeholder={
-										workflow?.function_name ??
-										"workflow_name"
-									}
+									onChange={(e) => setWorkflowName(e.target.value)}
+									placeholder={workflow?.function_name ?? "workflow_name"}
 								/>
 								<p className="text-xs text-muted-foreground">
-									Used when this workflow is exposed as an MCP
-									tool. Leave empty to reset to the Python
-									function name.
+									Used when this workflow is exposed as an MCP tool. Leave empty to reset to the Python function name.
 								</p>
 							</div>
 
 							<div className="space-y-2">
-								<Label htmlFor="display-name">
-									Display Name
-								</Label>
+								<Label htmlFor="display-name">Display Name</Label>
 								<Input
 									id="display-name"
 									value={displayName}
-									onChange={(e) =>
-										setDisplayName(e.target.value)
-									}
-									placeholder={
-										workflow?.name ?? "Workflow name"
-									}
+									onChange={(e) => setDisplayName(e.target.value)}
+									placeholder={workflow?.name ?? "Workflow name"}
 								/>
 								<p className="text-xs text-muted-foreground">
-									Optional UI label. Leave empty to use the
-									tool name.
+									Optional UI label. Leave empty to use the tool name.
 								</p>
 							</div>
 
@@ -538,15 +494,12 @@ export function WorkflowEditDialog({
 								<Textarea
 									id="description"
 									value={description}
-									onChange={(e) =>
-										setDescription(e.target.value)
-									}
+									onChange={(e) => setDescription(e.target.value)}
 									placeholder="Describe what this workflow does..."
 									rows={3}
 								/>
 								<p className="text-xs text-muted-foreground">
-									Initially set from code. Can be edited here
-									or in manifest YAML.
+									Initially set from code. Can be edited here or in manifest YAML.
 								</p>
 							</div>
 
@@ -555,14 +508,11 @@ export function WorkflowEditDialog({
 								<Input
 									id="category"
 									value={category}
-									onChange={(e) =>
-										setCategory(e.target.value)
-									}
+									onChange={(e) => setCategory(e.target.value)}
 									placeholder="General"
 								/>
 								<p className="text-xs text-muted-foreground">
-									Initially set from code. Can be edited here
-									or in manifest YAML.
+									Initially set from code. Can be edited here or in manifest YAML.
 								</p>
 							</div>
 
@@ -580,42 +530,27 @@ export function WorkflowEditDialog({
 						</TabsContent>
 
 						{/* Execution Tab */}
-						<TabsContent
-							value="execution"
-							className="mt-0 space-y-4"
-						>
+						<TabsContent value="execution" className="mt-0 space-y-4">
 							<div className="space-y-2">
-								<Label htmlFor="timeout">
-									Timeout (seconds)
-								</Label>
+								<Label htmlFor="timeout">Timeout (seconds)</Label>
 								<Input
 									id="timeout"
 									type="number"
 									min={0}
 									max={86400}
 									value={timeoutSeconds}
-									onChange={(e) =>
-										setTimeoutSeconds(
-											Number(e.target.value),
-										)
-									}
+									onChange={(e) => setTimeoutSeconds(Number(e.target.value))}
 								/>
 								<p className="text-xs text-muted-foreground">
-									Maximum execution time (0-86400 seconds,
-									default 1800). Set to 0 to disable the
-									timeout.
+									Maximum execution time (0-86400 seconds, default 1800). Set to 0 to disable the timeout.
 								</p>
 							</div>
 							<div className="space-y-4 rounded-md border p-4">
 								<div className="flex items-center justify-between gap-4">
 									<div>
-										<Label htmlFor="retry-enabled">
-											Retry infrastructure failures
-										</Label>
+										<Label htmlFor="retry-enabled">Retry infrastructure failures</Label>
 										<p className="text-xs text-muted-foreground">
-											Start a new attempt for selected
-											failures. Your workflow must be safe
-											to replay.
+											Start a new attempt for selected failures. Your workflow must be safe to replay.
 										</p>
 									</div>
 									<Switch
@@ -627,69 +562,28 @@ export function WorkflowEditDialog({
 								{retryEnabled && (
 									<>
 										<div className="space-y-2">
-											<Label htmlFor="retry-max-attempts">
-												Maximum attempts
-											</Label>
+											<Label htmlFor="retry-max-attempts">Maximum attempts</Label>
 											<Input
 												id="retry-max-attempts"
 												type="number"
 												min={1}
 												max={10}
 												value={retryMaxAttempts}
-												onChange={(event) => {
-													const value =
-														event.currentTarget
-															.valueAsNumber;
-													if (!Number.isNaN(value)) {
-														setRetryMaxAttempts(
-															Math.min(
-																10,
-																Math.max(
-																	1,
-																	Math.round(
-																		value,
-																	),
-																),
-															),
-														);
-													}
-												}}
+												onChange={(event) => setRetryMaxAttempts(Number(event.target.value))}
 											/>
 										</div>
 										<div className="space-y-3">
 											<Label>Retry after</Label>
-											{(
-												[
-													[
-														"worker_lost",
-														"Worker lease expires",
-													],
-													[
-														"subprocess_crash",
-														"Workflow subprocess crashes",
-													],
-												] as const
-											).map(([failure, label]) => (
-												<div
-													key={failure}
-													className="flex items-center justify-between gap-4"
-												>
-													<Label
-														htmlFor={`retry-${failure}`}
-														className="font-normal"
-													>
-														{label}
-													</Label>
+											{([
+												["worker_lost", "Worker lease expires"],
+												["subprocess_crash", "Workflow subprocess crashes"],
+											] as const).map(([failure, label]) => (
+												<div key={failure} className="flex items-center justify-between gap-4">
+													<Label htmlFor={`retry-${failure}`} className="font-normal">{label}</Label>
 													<Switch
 														id={`retry-${failure}`}
-														checked={retryOn.includes(
-															failure,
-														)}
-														onCheckedChange={() =>
-															handleRetryFailureToggle(
-																failure,
-															)
-														}
+														checked={retryOn.includes(failure)}
+														onCheckedChange={() => handleRetryFailureToggle(failure)}
 													/>
 												</div>
 											))}
@@ -700,73 +594,52 @@ export function WorkflowEditDialog({
 						</TabsContent>
 
 						{/* Economics Tab */}
-						<TabsContent
-							value="economics"
-							className="mt-0 space-y-4"
-						>
+						<TabsContent value="economics" className="mt-0 space-y-4">
 							<div className="space-y-2">
-								<Label htmlFor="time-saved">
-									Time Saved (minutes per execution)
-								</Label>
+								<Label htmlFor="time-saved">Time Saved (minutes per execution)</Label>
 								<Input
 									id="time-saved"
 									type="number"
 									min={0}
 									value={timeSaved}
-									onChange={(e) =>
-										setTimeSaved(Number(e.target.value))
-									}
+									onChange={(e) => setTimeSaved(Number(e.target.value))}
 								/>
 								<p className="text-xs text-muted-foreground">
-									Estimated minutes saved each time this
-									workflow runs (for ROI reporting)
+									Estimated minutes saved each time this workflow runs (for ROI reporting)
 								</p>
 							</div>
 
 							<div className="space-y-2">
-								<Label htmlFor="value">
-									Value (per execution)
-								</Label>
+								<Label htmlFor="value">Value (per execution)</Label>
 								<Input
 									id="value"
 									type="number"
 									min={0}
 									step={0.01}
 									value={value}
-									onChange={(e) =>
-										setValue(Number(e.target.value))
-									}
+									onChange={(e) => setValue(Number(e.target.value))}
 								/>
 								<p className="text-xs text-muted-foreground">
-									Flexible value unit per execution (e.g.,
-									cost savings, revenue)
+									Flexible value unit per execution (e.g., cost savings, revenue)
 								</p>
 							</div>
 						</TabsContent>
 
 						{/* Tool Config Tab (only for type='tool') */}
 						{isToolType && (
-							<TabsContent
-								value="tool"
-								className="mt-0 space-y-4"
-							>
+							<TabsContent value="tool" className="mt-0 space-y-4">
 								<div className="space-y-2">
-									<Label htmlFor="tool-description">
-										Tool Description
-									</Label>
+									<Label htmlFor="tool-description">Tool Description</Label>
 									<Textarea
 										id="tool-description"
 										value={toolDescription}
-										onChange={(e) =>
-											setToolDescription(e.target.value)
-										}
+										onChange={(e) => setToolDescription(e.target.value)}
 										placeholder="Describe what this tool does for AI agent selection..."
 										rows={4}
 									/>
 									<p className="text-xs text-muted-foreground">
-										Description optimized for AI tool
-										selection. This helps agents decide when
-										to use this tool.
+										Description optimized for AI tool selection. This helps agents
+										decide when to use this tool.
 									</p>
 								</div>
 							</TabsContent>
@@ -774,30 +647,19 @@ export function WorkflowEditDialog({
 
 						{/* Data Provider Config Tab (only for type='data_provider') */}
 						{isDataProviderType && (
-							<TabsContent
-								value="dataprovider"
-								className="mt-0 space-y-4"
-							>
+							<TabsContent value="dataprovider" className="mt-0 space-y-4">
 								<div className="space-y-2">
-									<Label htmlFor="cache-ttl">
-										Cache TTL (seconds)
-									</Label>
+									<Label htmlFor="cache-ttl">Cache TTL (seconds)</Label>
 									<Input
 										id="cache-ttl"
 										type="number"
 										min={0}
 										max={86400}
 										value={cacheTtlSeconds}
-										onChange={(e) =>
-											setCacheTtlSeconds(
-												Number(e.target.value),
-											)
-										}
+										onChange={(e) => setCacheTtlSeconds(Number(e.target.value))}
 									/>
 									<p className="text-xs text-muted-foreground">
-										How long to cache results (0-86400
-										seconds, default 300). Set to 0 to
-										disable caching.
+										How long to cache results (0-86400 seconds, default 300). Set to 0 to disable caching.
 									</p>
 								</div>
 							</TabsContent>
@@ -815,8 +677,7 @@ export function WorkflowEditDialog({
 									placeholder="Select organization..."
 								/>
 								<p className="text-xs text-muted-foreground">
-									Global workflows are available to all
-									organizations
+									Global workflows are available to all organizations
 								</p>
 							</div>
 
@@ -833,16 +694,11 @@ export function WorkflowEditDialog({
 									</SelectTrigger>
 									<SelectContent>
 										{ACCESS_LEVELS.map((level) => (
-											<SelectItem
-												key={level.value}
-												value={level.value}
-											>
+											<SelectItem key={level.value} value={level.value}>
 												<div className="flex items-center gap-2">
 													{level.icon}
 													<div className="flex flex-col">
-														<span>
-															{level.label}
-														</span>
+														<span>{level.label}</span>
 														<span className="text-xs text-muted-foreground">
 															{level.description}
 														</span>
@@ -858,13 +714,9 @@ export function WorkflowEditDialog({
 								<div className="space-y-2">
 									<Label>
 										Assigned Roles{" "}
-										{selectedRoleIds.length > 0 &&
-											`(${selectedRoleIds.length})`}
+										{selectedRoleIds.length > 0 && `(${selectedRoleIds.length})`}
 									</Label>
-									<Popover
-										open={rolesOpen}
-										onOpenChange={setRolesOpen}
-									>
+									<Popover open={rolesOpen} onOpenChange={setRolesOpen}>
 										<PopoverTrigger asChild>
 											<Button
 												variant="outline"
@@ -885,48 +737,27 @@ export function WorkflowEditDialog({
 											<Command>
 												<CommandInput placeholder="Search roles..." />
 												<CommandList>
-													<CommandEmpty>
-														No roles found.
-													</CommandEmpty>
+													<CommandEmpty>No roles found.</CommandEmpty>
 													<CommandGroup>
-														{roles?.map(
-															(
-																role: RolePublic,
-															) => (
-																<CommandItem
-																	key={
-																		role.id
-																	}
-																	value={
-																		role.name ||
-																		""
-																	}
-																	data-checked={selectedRoleIds.includes(
-																		role.id,
-																	)}
-																	onSelect={() =>
-																		handleRoleToggle(
-																			role.id,
-																		)
-																	}
-																>
-																	<div className="flex flex-col flex-1">
-																		<span className="font-medium">
-																			{
-																				role.name
-																			}
+														{roles?.map((role: RolePublic) => (
+															<CommandItem
+																key={role.id}
+																value={role.name || ""}
+																data-checked={selectedRoleIds.includes(role.id)}
+																onSelect={() => handleRoleToggle(role.id)}
+															>
+																<div className="flex flex-col flex-1">
+																	<span className="font-medium">
+																		{role.name}
+																	</span>
+																	{role.description && (
+																		<span className="text-xs text-muted-foreground">
+																			{role.description}
 																		</span>
-																		{role.description && (
-																			<span className="text-xs text-muted-foreground">
-																				{
-																					role.description
-																				}
-																			</span>
-																		)}
-																	</div>
-																</CommandItem>
-															),
-														)}
+																	)}
+																</div>
+															</CommandItem>
+														))}
 													</CommandGroup>
 												</CommandList>
 											</Command>
@@ -937,8 +768,7 @@ export function WorkflowEditDialog({
 										<div className="flex flex-wrap gap-2 rounded-md bg-muted/50 p-2 ring-1 ring-foreground/5">
 											{selectedRoleIds.map((roleId) => {
 												const role = roles?.find(
-													(r: RolePublic) =>
-														r.id === roleId,
+													(r: RolePublic) => r.id === roleId
 												);
 												return (
 													<Badge
@@ -949,11 +779,7 @@ export function WorkflowEditDialog({
 														{role?.name || roleId}
 														<X
 															className="h-3 w-3 cursor-pointer"
-															onClick={() =>
-																handleRoleToggle(
-																	roleId,
-																)
-															}
+															onClick={() => handleRoleToggle(roleId)}
 														/>
 													</Badge>
 												);
@@ -962,14 +788,14 @@ export function WorkflowEditDialog({
 									)}
 
 									<p className="text-xs text-muted-foreground">
-										Users must have at least one of these
-										roles to execute this workflow
+										Users must have at least one of these roles to execute this
+										workflow
 									</p>
 
 									{selectedRoleIds.length === 0 && (
 										<p className="text-xs text-yellow-600 dark:text-yellow-500">
-											No roles assigned - only platform
-											admins can execute this workflow
+											No roles assigned - only platform admins can execute this
+											workflow
 										</p>
 									)}
 								</div>
@@ -977,16 +803,12 @@ export function WorkflowEditDialog({
 						</TabsContent>
 
 						{/* Endpoint Tab */}
-						<TabsContent
-							value="endpoint"
-							className="mt-0 space-y-4"
-						>
+						<TabsContent value="endpoint" className="mt-0 space-y-4">
 							<div className="flex items-center justify-between">
 								<div className="space-y-0.5">
 									<Label>Enable HTTP Endpoint</Label>
 									<p className="text-xs text-muted-foreground">
-										Expose this workflow as an HTTP API
-										endpoint
+										Expose this workflow as an HTTP API endpoint
 									</p>
 								</div>
 								<Switch
@@ -1002,11 +824,7 @@ export function WorkflowEditDialog({
 										<Label>Execution Mode</Label>
 										<Select
 											value={executionMode}
-											onValueChange={(v) =>
-												setExecutionMode(
-													v as "sync" | "async",
-												)
-											}
+											onValueChange={(v) => setExecutionMode(v as "sync" | "async")}
 										>
 											<SelectTrigger>
 												<SelectValue />
@@ -1016,27 +834,22 @@ export function WorkflowEditDialog({
 													<div className="flex flex-col">
 														<span>Synchronous</span>
 														<span className="text-xs text-muted-foreground">
-															Wait for result
-															before responding
+															Wait for result before responding
 														</span>
 													</div>
 												</SelectItem>
 												<SelectItem value="async">
 													<div className="flex flex-col">
-														<span>
-															Asynchronous
-														</span>
+														<span>Asynchronous</span>
 														<span className="text-xs text-muted-foreground">
-															Return immediately,
-															poll for result
+															Return immediately, poll for result
 														</span>
 													</div>
 												</SelectItem>
 											</SelectContent>
 										</Select>
 										<p className="text-xs text-muted-foreground">
-											Controls whether HTTP endpoint calls
-											wait for the result
+											Controls whether HTTP endpoint calls wait for the result
 										</p>
 									</div>
 
@@ -1049,18 +862,12 @@ export function WorkflowEditDialog({
 													key={method}
 													type="button"
 													variant={
-														allowedMethods.includes(
-															method,
-														)
+														allowedMethods.includes(method)
 															? "default"
 															: "outline"
 													}
 													size="sm"
-													onClick={() =>
-														handleMethodToggle(
-															method,
-														)
-													}
+													onClick={() => handleMethodToggle(method)}
 												>
 													{method}
 												</Button>
@@ -1072,8 +879,7 @@ export function WorkflowEditDialog({
 										<div className="space-y-0.5">
 											<Label>Public Endpoint</Label>
 											<p className="text-xs text-muted-foreground">
-												Skip authentication (use for
-												incoming webhooks)
+												Skip authentication (use for incoming webhooks)
 											</p>
 										</div>
 										<Switch
@@ -1084,19 +890,14 @@ export function WorkflowEditDialog({
 
 									<div className="flex items-center justify-between">
 										<div className="space-y-0.5">
-											<Label>
-												Disable Global API Key
-											</Label>
+											<Label>Disable Global API Key</Label>
 											<p className="text-xs text-muted-foreground">
-												Only workflow-specific API keys
-												will work
+												Only workflow-specific API keys will work
 											</p>
 										</div>
 										<Switch
 											checked={disableGlobalKey}
-											onCheckedChange={
-												setDisableGlobalKey
-											}
+											onCheckedChange={setDisableGlobalKey}
 										/>
 									</div>
 
@@ -1125,23 +926,11 @@ export function WorkflowEditDialog({
 													<Button
 														variant="outline"
 														size="sm"
-														onClick={
-															handleGenerateKey
-														}
-														disabled={
-															createKeyMutation.isPending ||
-															revokeKeyMutation.isPending
-														}
+														onClick={handleGenerateKey}
+														disabled={createKeyMutation.isPending || revokeKeyMutation.isPending}
 														title="Regenerate API key"
 													>
-														<RefreshCw
-															className={cn(
-																"h-4 w-4",
-																(createKeyMutation.isPending ||
-																	revokeKeyMutation.isPending) &&
-																	"animate-spin",
-															)}
-														/>
+														<RefreshCw className={cn("h-4 w-4", (createKeyMutation.isPending || revokeKeyMutation.isPending) && "animate-spin")} />
 													</Button>
 												</div>
 											) : (
@@ -1152,12 +941,8 @@ export function WorkflowEditDialog({
 													<Button
 														variant="default"
 														size="sm"
-														onClick={
-															handleGenerateKey
-														}
-														disabled={
-															createKeyMutation.isPending
-														}
+														onClick={handleGenerateKey}
+														disabled={createKeyMutation.isPending}
 													>
 														{createKeyMutation.isPending ? (
 															<>
@@ -1189,9 +974,7 @@ export function WorkflowEditDialog({
 												variant="ghost"
 												size="sm"
 												className="absolute top-2 right-2"
-												onClick={() =>
-													copyToClipboard(curlExample)
-												}
+												onClick={() => copyToClipboard(curlExample)}
 											>
 												{copiedCurl ? (
 													<Check className="h-3 w-3" />
@@ -1208,20 +991,11 @@ export function WorkflowEditDialog({
 				</Tabs>
 
 				<DialogFooter>
-					<Button
-						variant="outline"
-						onClick={handleClose}
-						disabled={isSaving}
-					>
+					<Button variant="outline" onClick={handleClose} disabled={isSaving}>
 						Cancel
 					</Button>
-					<Button
-						onClick={handleSave}
-						disabled={isSaving || isSolutionManaged}
-					>
-						{isSaving && (
-							<Loader2 className="mr-2 h-4 w-4 animate-spin" />
-						)}
+					<Button onClick={handleSave} disabled={isSaving || isSolutionManaged}>
+						{isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
 						{isSaving ? "Saving..." : "Save Changes"}
 					</Button>
 				</DialogFooter>
