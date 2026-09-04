@@ -255,6 +255,16 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
             ),
         )
 
+    # Enforce source coherence at the shared execution boundary. Most jobs use
+    # the forked simple-worker path, which already performs this check, but
+    # direct worker executions must evict inherited workspace modules too.
+    # Otherwise a newly pinned immutable release can execute its entry module
+    # while resolving dependencies from an older release in ``sys.modules``.
+    from src.services.execution.simple_worker import _clear_workspace_modules
+
+    workspace_refresh = _clear_workspace_modules()
+    set_workspace_generation_context(workspace_refresh.generation)
+
     # Install the hook only after this execution's credentials and source root
     # are active. Importing this module also happens in the API process and in
     # test collection, where a process-global finder would redirect unrelated
