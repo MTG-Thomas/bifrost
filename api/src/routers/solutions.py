@@ -99,7 +99,11 @@ from src.jobs.platform.solution_deploy import (
 from src.services.github_actions_oidc import (
     workspace_source_release_tracking_organization_id,
 )
-from src.services.platform_jobs import enqueue_platform_job, publish_platform_job_update
+from src.services.platform_jobs import (
+    enqueue_platform_job,
+    ensure_platform_job_notification,
+    publish_platform_job_update,
+)
 from src.services.platform_job_memory_profiles import build_solution_memory_profile_key
 from src.services.solutions.deploy_job_storage import SolutionDeployJobStorage
 from src.services.solutions.deploy import (
@@ -2570,6 +2574,7 @@ async def reconcile_solution_deployment(
         title="Reconcile Solution deployment accountability",
         action_url=f"/solutions/{solution_id}",
     )
+    await ensure_platform_job_notification(ctx.db, job)
     await ctx.db.commit()
     await publish_platform_job_update(job)
     response.headers["Location"] = f"/api/platform-jobs/{job.id}"

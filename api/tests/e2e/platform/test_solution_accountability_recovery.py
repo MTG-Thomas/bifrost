@@ -162,6 +162,7 @@ async def test_recovery_releases_obligation_without_redeploying(
         recovered = e2e_client.post(route, headers=headers)
         assert recovered.status_code == 202, recovered.text
         recovery_job_id = recovered.json()["job_id"]
+        assert recovered.json()["notification_id"]
         assert recovered.headers["location"] == f"/api/platform-jobs/{recovery_job_id}"
         body = await _wait_for_platform_job(e2e_client, headers, recovery_job_id)
         assert body["job_type"] == "solution.deploy.reconcile"
