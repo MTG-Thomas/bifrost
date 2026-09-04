@@ -168,6 +168,28 @@ async def test_notification_projection_precedes_platform_job_broadcasts(
 
 
 @pytest.mark.asyncio
+async def test_notification_projection_preserves_canonical_job_id(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = await _enqueue(db_session)
+    job.notification_id = uuid4()
+    job.status = "succeeded"
+    job.result = {"job_id": "untrusted", "ok": True}
+    await db_session.commit()
+
+    notifications = MagicMock()
+    notifications.update_notification = AsyncMock()
+    monkeypatch.setattr(service, "get_notification_service", lambda: notifications)
+    monkeypatch.setattr(service.pubsub_manager, "broadcast", AsyncMock())
+
+    await service.publish_platform_job_update(job)
+
+    update = notifications.update_notification.await_args.args[1]
+    assert update.result == {"job_id": str(job.id), "ok": True}
+
+
+@pytest.mark.asyncio
 async def test_progress_and_terminal_writes_are_fenced(
     db_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,

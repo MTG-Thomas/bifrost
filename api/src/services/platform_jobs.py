@@ -127,7 +127,7 @@ async def publish_platform_job_update(job: PlatformJob) -> None:
                     percent=job.progress_percent,
                     error=job.error_message[:1000] if job.error_message else None,
                     result=(
-                        {"job_id": str(job.id), **(job.result or {})}
+                        {**(job.result or {}), "job_id": str(job.id)}
                         if job.status == "succeeded"
                         else None
                     ),
