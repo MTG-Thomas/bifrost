@@ -262,7 +262,13 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
     # while resolving dependencies from an older release in ``sys.modules``.
     from src.services.execution.simple_worker import _clear_workspace_modules
 
-    workspace_refresh = _clear_workspace_modules()
+    try:
+        workspace_refresh = _clear_workspace_modules()
+    except BaseException:
+        clear_solution_context()
+        clear_workspace_release_context()
+        clear_workspace_generation_context()
+        raise
     set_workspace_generation_context(workspace_refresh.generation)
 
     # Install the hook only after this execution's credentials and source root
