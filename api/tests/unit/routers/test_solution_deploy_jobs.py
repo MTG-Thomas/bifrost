@@ -13,6 +13,7 @@ from src.models.orm.solutions import Solution
 from src.routers.solutions import (
     _enqueue_solution_deploy_job,
     _run_deploy_job,
+    _source_accountability_organization_id,
     _solution_candidate_id,
 )
 
@@ -23,6 +24,18 @@ def test_solution_candidate_id_hashes_exact_staged_bytes(tmp_path):
     assert _solution_candidate_id(path) == (
         "sha256:e308919039cd35ee393feae0740fd24b356d6279fff339e18411316b7eb846e1"
     )
+
+
+def test_solution_accountability_uses_the_producer_organization(monkeypatch):
+    producer_organization_id = uuid4()
+    monkeypatch.setattr(
+        "src.routers.solutions.get_settings",
+        lambda: SimpleNamespace(
+            workspace_source_release_oidc_organization_id=str(producer_organization_id)
+        ),
+    )
+
+    assert _source_accountability_organization_id() == str(producer_organization_id)
 
 
 @pytest.mark.asyncio
@@ -254,7 +267,9 @@ async def test_deploy_accountability_runs_after_storage_finalize(
 
 
 @pytest.mark.asyncio
-async def test_deploy_snapshots_slug_before_commit_expires_solution(tmp_path, monkeypatch):
+async def test_deploy_snapshots_slug_before_commit_expires_solution(
+    tmp_path, monkeypatch
+):
     events: list[str] = []
     job = SolutionDeployJob(id=uuid4(), install_id=uuid4(), status="queued")
 
@@ -297,13 +312,20 @@ async def test_deploy_snapshots_slug_before_commit_expires_solution(tmp_path, mo
 
     result = SimpleNamespace(
         finalize_s3=finalize_s3,
-        workflows_upserted=1, workflows_deleted=0,
-        tables_upserted=0, tables_deleted=0,
-        apps_upserted=0, apps_deleted=0,
-        forms_upserted=0, forms_deleted=0,
-        agents_upserted=0, agents_deleted=0,
-        claims_upserted=0, claims_deleted=0,
-        integrations_shell_created=0, roles_created=[],
+        workflows_upserted=1,
+        workflows_deleted=0,
+        tables_upserted=0,
+        tables_deleted=0,
+        apps_upserted=0,
+        apps_deleted=0,
+        forms_upserted=0,
+        forms_deleted=0,
+        agents_upserted=0,
+        agents_deleted=0,
+        claims_upserted=0,
+        claims_deleted=0,
+        integrations_shell_created=0,
+        roles_created=[],
     )
 
     async def reconcile(*_args, **kwargs):
@@ -316,13 +338,17 @@ async def test_deploy_snapshots_slug_before_commit_expires_solution(tmp_path, mo
 
     monkeypatch.setattr(database_module, "get_db_context", fake_db_context)
     monkeypatch.setattr(write_lock, "solution_write_lock", fake_write_lock)
-    monkeypatch.setattr(zip_install, "deploy_zip_to_solution_path", AsyncMock(return_value=result))
+    monkeypatch.setattr(
+        zip_install, "deploy_zip_to_solution_path", AsyncMock(return_value=result)
+    )
     monkeypatch.setattr(
         source_artifact,
         "SolutionSourceArtifactStorage",
         lambda _solution_id: SimpleNamespace(read=AsyncMock(return_value=b"artifact")),
     )
-    monkeypatch.setattr(solution_deploy_obligations, "reconcile_solution_deploy_obligation", reconcile)
+    monkeypatch.setattr(
+        solution_deploy_obligations, "reconcile_solution_deploy_obligation", reconcile
+    )
     zip_path = tmp_path / "deploy.zip"
     zip_path.write_bytes(b"artifact")
 
