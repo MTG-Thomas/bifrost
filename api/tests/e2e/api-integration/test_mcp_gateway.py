@@ -555,7 +555,7 @@ class TestMCPAgentGateway:
         found = _call_gateway(
             self.token,
             "bifrost_search_capabilities",
-            {"query": self.agent_name},
+            {"query": self.agent_name, "discovery_scope": "all"},
         )
         assert any(
             agent["id"] == self.agent_id for agent in found["agents"]

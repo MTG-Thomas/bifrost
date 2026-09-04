@@ -94,10 +94,10 @@ class ExecutionSummary(BaseModel):
     result_type: str | None = None  # How to render result (json, html, text)
     error_message: str | None = None
     duration_ms: int | None = None
-    created_at: datetime
     started_at: datetime | None = None  # May be None if not started yet
     completed_at: datetime | None = None
     scheduled_at: datetime | None = None  # For Scheduled rows, when the row is due to promote
+    created_at: datetime | None = None  # Fallback timeline anchor before a run starts
     # CLI session tracking
     session_id: str | None = None  # CLI session ID if executed from local runner
     # Resource metrics (admin only, null for non-admins)

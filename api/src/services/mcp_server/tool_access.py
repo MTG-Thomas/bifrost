@@ -13,6 +13,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from shared.scope_resolver import has_scope_bypass
 from src.core.system_agents import PLATFORM_ADMIN_SYSTEM_TOOLS
 from src.models.contracts.agents import ToolInfo
 from src.models.enums import AgentAccessLevel
@@ -62,7 +63,7 @@ class MCPToolAccessService:
     async def get_accessible_tools(
         self,
         user_roles: list[str],
-        is_superuser: bool,
+        is_superuser: bool = False,
         user_id: UUID | str | None = None,
         org_id: UUID | str | None = None,
         is_external: bool = False,
@@ -77,7 +78,10 @@ class MCPToolAccessService:
 
         Args:
             user_roles: List of role names the user has (from JWT claims)
-            is_superuser: Whether user is platform admin
+            is_superuser: Whether the caller is a platform administrator. This
+                is used by the REST settings inventory, not ordinary MCP
+                discovery, so administrators can configure the global MCP
+                allow/block lists without changing their normal tool surface.
             user_id: User UUID for per-workflow role check (from JWT claims).
                 Required for non-superusers — without it, role-based workflows
                 fall back to "deny" because role membership cannot be checked.
@@ -152,6 +156,7 @@ class MCPToolAccessService:
         agent_id: UUID | str,
         user_roles: list[str],
         is_superuser: bool,
+        is_provider_org: bool = False,
         user_id: UUID | str | None = None,
         org_id: UUID | str | None = None,
         is_external: bool = False,
@@ -167,12 +172,18 @@ class MCPToolAccessService:
             agent_id: The agent UUID to scope to
             user_roles: List of role names the user has (from JWT claims)
             is_superuser: Whether user is platform admin
+            is_provider_org: Whether the caller belongs to the platform/provider org
             user_id: User UUID for per-workflow role check (from JWT claims).
             org_id: User's org UUID for per-workflow org scope check (from claims).
 
         Returns:
             AgentScopedToolResult if agent exists and user has access, None otherwise
         """
+        scope_bypass = has_scope_bypass(
+            is_platform_admin=is_superuser,
+            is_provider_org=is_provider_org,
+        )
+
         # Query the specific agent with tools and roles eagerly loaded.
         # Org-scope IN THE DATABASE (LEAK #2): a by-id fetch must not reach an
         # agent outside the caller's org cascade — otherwise a role_based agent
@@ -186,9 +197,11 @@ class MCPToolAccessService:
             .where(Agent.id == str(agent_id))
             .where(Agent.is_active.is_(True))
         )
-        query = self._apply_agent_org_scope(query, org_id=org_id, is_superuser=is_superuser)
+        query = self._apply_agent_org_scope(
+            query, org_id=org_id, is_superuser=scope_bypass
+        )
 
-        if not is_superuser:
+        if not scope_bypass:
             scope_org = UUID(org_id) if isinstance(org_id, str) and org_id else org_id
             if scope_org is not None:
                 query = query.where(
@@ -208,14 +221,16 @@ class MCPToolAccessService:
             return None
 
         # Check access using same rules as _get_accessible_agents
-        if not self._agent_in_org_scope(agent, org_id=org_id, is_superuser=is_superuser):
+        if not self._agent_in_org_scope(
+            agent, org_id=org_id, is_superuser=scope_bypass
+        ):
             logger.warning(f"User denied org-scoped access to agent {agent_id}")
             return None
 
         if not self._check_agent_access(
             agent,
             user_roles,
-            is_superuser,
+            scope_bypass,
             user_id=user_id,
             is_external=is_external,
         ):
@@ -226,7 +241,7 @@ class MCPToolAccessService:
         tools: list[ToolInfo] = []
 
         for system_tool_id in self._effective_system_tool_ids(agent):
-            if not is_superuser and system_tool_id in PLATFORM_ADMIN_SYSTEM_TOOLS:
+            if not scope_bypass and system_tool_id in PLATFORM_ADMIN_SYSTEM_TOOLS:
                 continue
             if system_tool_id in self._SYSTEM_TOOL_MAP:
                 tools.append(self._SYSTEM_TOOL_MAP[system_tool_id])
@@ -245,7 +260,7 @@ class MCPToolAccessService:
         # the executor). seen_tool_ids is fresh because this is an
         # agent-scoped call: no cross-agent dedup needed.
         workflow_repo = self._build_workflow_repo(
-            user_id=user_id, org_id=org_id, is_superuser=is_superuser,
+            user_id=user_id, org_id=org_id, is_superuser=scope_bypass,
             is_external=is_external,
         )
         for workflow_info in await self._visible_workflows_for_agent(

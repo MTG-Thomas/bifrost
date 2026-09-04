@@ -16,6 +16,12 @@ class _Db:
     async def commit(self):
         self.committed = True
 
+    async def get(self, _model, event_source_id):
+        for webhook in _Repo.by_id.values():
+            if webhook.event_source_id == event_source_id:
+                return webhook.event_source
+        return None
+
 
 class _Repo:
     expiring = []
@@ -43,7 +49,12 @@ def _webhook(*, adapter_name="graph", renewal=True, has_event_source=True):
         integration_id=uuid4(),
         integration=SimpleNamespace(id=uuid4()),
         event_source_id=uuid4(),
-        event_source=SimpleNamespace(error_message=None) if has_event_source else None,
+        event_source=(
+            SimpleNamespace(error_message=None, organization_id=uuid4())
+            if has_event_source
+            else None
+        ),
+        config={"resource": "tickets"},
         expires_at=datetime(2026, 7, 6, tzinfo=timezone.utc),
         updated_at=None,
         renewal=renewal,
@@ -84,6 +95,7 @@ async def test_renew_expiring_webhooks_persists_successful_renewal(monkeypatch):
     expires_at = datetime(2026, 7, 10, tzinfo=timezone.utc)
 
     adapter = SimpleNamespace(
+        requires_integration=False,
         renewal_interval=3600,
         renew=AsyncMock(
             return_value=SimpleNamespace(
@@ -103,7 +115,8 @@ async def test_renew_expiring_webhooks_persists_successful_renewal(monkeypatch):
     adapter.renew.assert_awaited_once_with(
         external_id=webhook.external_id,
         state={"old": True},
-        integration=webhook.integration,
+        config={"resource": "tickets"},
+        integration=None,
     )
     assert persisted.expires_at == expires_at
     assert persisted.state == {"old": True, "fresh": True}
@@ -122,8 +135,10 @@ async def test_renew_expiring_webhooks_tracks_unsupported_and_failed(monkeypatch
     adapters = {
         "unsupported": SimpleNamespace(renewal_interval=None),
         "graph": SimpleNamespace(
+            requires_integration=False,
             renewal_interval=3600,
             renew=AsyncMock(return_value=None),
+            subscribe=AsyncMock(side_effect=RuntimeError("renewal rejected")),
         ),
     }
     monkeypatch.setattr(webhook_renewal, "get_adapter", lambda name: adapters[name])
@@ -136,7 +151,7 @@ async def test_renew_expiring_webhooks_tracks_unsupported_and_failed(monkeypatch
     assert result["renewal_failed"] == 1
     assert result["errors"][0]["webhook_id"] == str(failed.id)
     assert failed.event_source.error_message == (
-        "Webhook subscription expired and could not be renewed"
+        "Provider subscription renewal failed: renewal rejected"
     )
     assert dbs[-1].committed is True
 
@@ -148,6 +163,7 @@ async def test_renew_expiring_webhooks_records_adapter_exception(monkeypatch):
     _Repo.expiring = [webhook]
 
     adapter = SimpleNamespace(
+        requires_integration=False,
         renewal_interval=3600,
         renew=AsyncMock(side_effect=RuntimeError("provider down")),
     )

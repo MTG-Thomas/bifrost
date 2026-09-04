@@ -595,7 +595,7 @@ class EventDeliveryRepository(BaseRepository[EventDelivery]):
         Update event status based on delivery statuses.
 
         Sets event to:
-        - COMPLETED if all deliveries succeeded
+        - COMPLETED if all deliveries reached a non-failed terminal status
         - FAILED if any delivery failed
         - PROCESSING if any delivery is pending
         """

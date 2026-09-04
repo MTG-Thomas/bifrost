@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 
 from src.core.principal import UserPrincipal
+from src.jobs.consumers import agent_run as agent_run_consumer
 from src.routers import websocket as ws_mod
 
 
@@ -667,7 +668,7 @@ async def test_generate_conversation_title_strips_quotes_and_truncates():
         "src.services.llm.get_llm_client",
         new=AsyncMock(return_value=llm_client),
     ):
-        result = await ws_mod._generate_conversation_title(
+        result = await agent_run_consumer._generate_conversation_title(
             db=object(),
             conversation=SimpleNamespace(id=uuid4()),
             user_message="Please summarize this support issue.",
@@ -687,7 +688,7 @@ async def test_generate_conversation_title_returns_none_on_empty_or_failure():
         "src.services.llm.get_llm_client",
         new=AsyncMock(return_value=empty_client),
     ):
-        assert await ws_mod._generate_conversation_title(
+        assert await agent_run_consumer._generate_conversation_title(
             db=object(),
             conversation=SimpleNamespace(id=uuid4()),
             user_message="hello",
@@ -697,7 +698,7 @@ async def test_generate_conversation_title_returns_none_on_empty_or_failure():
         "src.services.llm.get_llm_client",
         new=AsyncMock(side_effect=RuntimeError("llm unavailable")),
     ):
-        assert await ws_mod._generate_conversation_title(
+        assert await agent_run_consumer._generate_conversation_title(
             db=object(),
             conversation=SimpleNamespace(id=uuid4()),
             user_message="hello",

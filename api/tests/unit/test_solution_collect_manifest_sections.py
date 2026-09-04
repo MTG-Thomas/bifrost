@@ -636,6 +636,9 @@ def test_swap_slugs_reports_resolution_and_swap_failures(monkeypatch):
         async def get(self, path):
             return Response(404, text="missing")
 
+        async def post(self, path, json):
+            raise AssertionError("slug swap must not run after resolution fails")
+
     monkeypatch.setattr(
         "bifrost.commands.solution.BifrostClient.get_instance",
         staticmethod(lambda **kwargs: MissingClient()),

@@ -54,8 +54,6 @@ from src.models.orm.events import (
     ScheduleSource,
     WebhookSource,
 )
-from src.models.orm.integrations import Integration
-from src.models.orm.oauth import OAuthProvider
 from src.repositories.events import (
     EventDeliveryRepository,
     EventRepository,
@@ -67,6 +65,14 @@ from src.services.events import emit_event
 from src.services.events.registry import CURATED_TOPICS
 from src.services.events.validation import validate_topic
 from src.services.webhooks.registry import get_adapter_registry
+from src.services.webhooks.auth import (
+    build_webhook_integration_credentials,
+    resolve_webhook_integration_auth,
+)
+from src.services.webhooks.lifecycle import (
+    resubscribe_provider,
+    unsubscribe_provider,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +82,11 @@ router = APIRouter(prefix="/api/events", tags=["Events"])
 def _build_callback_url(source_id: UUID) -> str:
     """Build public callback URL from event source ID."""
     return f"{get_settings().public_url.rstrip('/')}/api/hooks/{source_id}"
+
+
+def _build_public_callback_url(source_id: UUID) -> str:
+    """Build the externally reachable callback URL sent to webhook providers."""
+    return _build_callback_url(source_id)
 
 
 async def _get_rate_limited_count(source_id: str) -> int:
@@ -112,6 +123,11 @@ async def _build_event_source_response(
             config=ws.config or {},
             callback_url=_build_callback_url(source.id),
             external_id=ws.external_id,
+            provider_metadata=(
+                adapter.get_public_metadata(ws.config or {}, ws.state or {})
+                if (adapter := get_adapter_registry().get(ws.adapter_name))
+                else {}
+            ),
             expires_at=ws.expires_at,
             rate_limit_per_minute=ws.rate_limit_per_minute,
             rate_limit_window_seconds=ws.rate_limit_window_seconds,
@@ -244,8 +260,6 @@ async def get_dynamic_values(
 
     Returns a list of option objects that the UI uses to populate dropdowns.
     """
-    from src.models.orm.integrations import Integration
-
     # Get adapter
     registry = get_adapter_registry()
     adapter = registry.get(adapter_name)
@@ -256,19 +270,21 @@ async def get_dynamic_values(
             detail=f"Unknown adapter: {adapter_name}",
         )
 
-    # Load integration if provided
+    # Resolve organization-scoped OAuth credentials if the adapter needs them.
     integration = None
     if request.integration_id:
-        result = await db.execute(
-            select(Integration).where(Integration.id == request.integration_id)
-        )
-        integration = result.scalar_one_or_none()
-
-        if not integration:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Integration not found",
+        try:
+            credentials = await build_webhook_integration_credentials(
+                db,
+                request.integration_id,
+                request.organization_id,
             )
+            integration = await resolve_webhook_integration_auth(credentials)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e),
+            ) from e
 
     # Call adapter's get_dynamic_values
     try:
@@ -457,17 +473,18 @@ async def create_source(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Adapter '{adapter_name}' requires integration",
                 )
-            integration_result = await db.execute(
-                select(Integration)
-                .options(joinedload(Integration.oauth_provider).joinedload(OAuthProvider.tokens))
-                .where(Integration.id == request.webhook.integration_id)
-            )
-            integration = integration_result.unique().scalar_one_or_none()
-            if not integration:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Integration not found",
+            try:
+                credentials = await build_webhook_integration_credentials(
+                    db,
+                    request.webhook.integration_id,
+                    target_org_id,
                 )
+                integration = await resolve_webhook_integration_auth(credentials)
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(e),
+                ) from e
 
         # Create webhook source record
         webhook_source = WebhookSource(
@@ -481,9 +498,18 @@ async def create_source(
             created_at=now,
             updated_at=now,
         )
+        db.add(webhook_source)
+        await db.flush()
+
+        # Graph validates the callback synchronously while creating a
+        # subscription. Commit the local source first so that validation's
+        # separate request can resolve it. If provider setup fails, remove the
+        # provisional source below so the create operation remains clean from
+        # the caller's perspective.
+        await db.commit()
 
         # Call adapter subscribe (for external subscriptions)
-        callback_url = _build_callback_url(source.id)
+        callback_url = _build_public_callback_url(source.id)
         try:
             result = await adapter.subscribe(
                 callback_url=callback_url,
@@ -497,9 +523,13 @@ async def create_source(
 
         except Exception as e:
             logger.error(f"Failed to subscribe webhook: {e}", exc_info=True)
-            source.error_message = str(e)
+            await db.delete(source)
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to create provider subscription: {e}",
+            ) from e
 
-        db.add(webhook_source)
         await db.flush()
 
     # Handle schedule-specific configuration
@@ -663,6 +693,63 @@ async def update_source(
     return await _build_event_source_response(source, db)
 
 
+@router.post(
+    "/sources/{source_id}/resubscribe",
+    response_model=EventSourceResponse,
+    summary="Recreate an event source provider subscription",
+    description="Replace the external webhook registration while preserving the Bifrost event source.",
+)
+async def resubscribe_source(
+    source_id: UUID,
+    ctx: Context,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> EventSourceResponse:
+    """Replace an external provider subscription for a webhook source."""
+    repo = EventSourceRepository(db)
+    source = await repo.get_by_id_with_details(source_id)
+    if not source:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Event source not found",
+        )
+
+    from src.services.solutions.guard import assert_not_solution_managed
+
+    assert_not_solution_managed(source)
+    if source.source_type != EventSourceType.WEBHOOK or not source.webhook_source:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only provider-managed webhook sources can be resubscribed",
+        )
+
+    try:
+        await resubscribe_provider(
+            db,
+            source,
+            _build_public_callback_url(source.id),
+        )
+    except Exception as exc:
+        logger.error(
+            "Failed to resubscribe webhook %s: %s",
+            log_safe(source_id),
+            log_safe(exc),
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to recreate provider subscription: {exc}",
+        ) from exc
+
+    source = await repo.get_by_id_with_details(source_id)
+    if source is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Event source not found after resubscription",
+        )
+    return await _build_event_source_response(source, db)
+
+
 @router.delete(
     "/sources/{source_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -698,19 +785,28 @@ async def delete_source(
 
     assert_not_solution_managed(source)
 
-    # Call adapter unsubscribe for webhooks
+    # Confirm provider cleanup before deleting the local source. Retaining the
+    # local record on failure keeps the orphan visible and retryable.
     if source.source_type == EventSourceType.WEBHOOK and source.webhook_source:
-        ws = source.webhook_source
-        adapter = get_adapter_registry().get(ws.adapter_name)
-        if adapter:
-            try:
-                await adapter.unsubscribe(
-                    external_id=ws.external_id,
-                    state=ws.state or {},
-                    integration=ws.integration,
-                )
-            except Exception as e:
-                logger.warning(f"Failed to unsubscribe webhook: {e}")
+        try:
+            await unsubscribe_provider(db, source)
+        except Exception as exc:
+            source.error_message = f"Provider deletion failed: {exc}"
+            source.updated_at = datetime.now(timezone.utc)
+            await db.commit()
+            logger.error(
+                "Refusing to delete webhook %s because provider cleanup failed: %s",
+                log_safe(source_id),
+                log_safe(exc),
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "The provider subscription could not be deleted. The Bifrost "
+                    f"event source was retained so you can retry: {exc}"
+                ),
+            ) from exc
 
     await db.delete(source)
     await db.flush()

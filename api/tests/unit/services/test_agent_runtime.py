@@ -190,6 +190,20 @@ def test_openai_uses_pydantic_default_model() -> None:
     ) is False
 
 
+def test_openai_uses_detected_chat_completions_transport() -> None:
+    from pydantic_ai.models.openai import OpenAIChatModel
+
+    config = LLMConfig(
+        provider="openai",
+        model="chat-only-model",
+        api_key="test-key",
+        endpoint="https://models.example.test/v1",
+        openai_transport="chat_completions",
+    )
+
+    assert isinstance(create_agent_model(config), OpenAIChatModel)
+
+
 @pytest.mark.asyncio
 async def test_openai_stream_uses_terminal_served_model(monkeypatch) -> None:
     from types import SimpleNamespace

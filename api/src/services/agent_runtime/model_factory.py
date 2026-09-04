@@ -143,7 +143,7 @@ def create_agent_model(config: LLMConfig, *, model: str | None = None) -> Model:
             )
 
         from openai import AsyncOpenAI
-        from pydantic_ai.models.openai import OpenAIResponsesModel
+        from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
         from pydantic_ai.providers.openai import OpenAIProvider
 
         class BifrostOpenAIResponsesModel(OpenAIResponsesModel):
@@ -172,6 +172,8 @@ def create_agent_model(config: LLMConfig, *, model: str | None = None) -> Model:
             max_retries=0,
         )
         provider = OpenAIProvider(openai_client=client)
+        if config.openai_transport == "chat_completions":
+            return OpenAIChatModel(model_name, provider=provider)
         return BifrostOpenAIResponsesModel(model_name, provider=provider)
 
     if config.provider == "anthropic":

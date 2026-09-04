@@ -63,6 +63,33 @@ def test_mtg_candidate_images_are_promoted_without_rebuild() -> None:
     assert "--main-source-sha" in source
 
 
+def test_release_tags_pass_skipped_candidate_jobs_through_manifest_gate() -> None:
+    jobs = _load_workflow(CI_WORKFLOW)["jobs"]
+    verification = jobs["verify-release-manifest"]
+    prerequisites = {"test-unit", "test-e2e-gate", "lint", "mcp-conformance"}
+
+    assert set(verification["needs"]) == prerequisites
+    verification_condition = " ".join(verification["if"].split())
+    assert "always()" in verification_condition
+    assert "startsWith(github.ref, 'refs/tags/v')" in verification_condition
+    for prerequisite in prerequisites:
+        assert f"needs.{prerequisite}.result == 'success'" in verification_condition
+
+    for job_name in ("build-api", "build-client", "build-worker"):
+        job = jobs[job_name]
+        assert job["needs"] == ["verify-release-manifest"]
+        condition = " ".join(job["if"].split())
+        assert "always()" in condition
+        assert "needs.verify-release-manifest.result == 'success'" in condition
+
+    release = jobs["create-release"]
+    assert set(release["needs"]) == {"build-api", "build-client", "build-worker"}
+    release_condition = " ".join(release["if"].split())
+    assert "always()" in release_condition
+    for prerequisite in release["needs"]:
+        assert f"needs.{prerequisite}.result == 'success'" in release_condition
+
+
 def test_action_pin_versions_are_verified_in_ci() -> None:
     lint = _load_workflow(CI_WORKFLOW)["jobs"]["lint"]
     step = next(

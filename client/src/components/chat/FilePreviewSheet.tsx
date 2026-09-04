@@ -277,16 +277,16 @@ export function FilePreviewSheet({
 									<div className="flex min-h-11 w-full shrink-0 items-center justify-between gap-1 sm:min-h-0 sm:w-auto sm:justify-start">
 										{canNavigate && (
 											<>
-											<Button variant="ghost" size="icon-sm" className="size-11 shrink-0 sm:size-7" onClick={() => navigateGallery(-1)} aria-label="Previous media">
+												<Button variant="ghost" size="icon-sm" className="size-12 shrink-0 sm:size-7" onClick={() => navigateGallery(-1)} aria-label="Previous media">
 													<ChevronLeft className="h-4 w-4" />
 												</Button>
 												<span className="px-1 text-xs text-muted-foreground">{galleryIndex + 1} / {gallery.length}</span>
-											<Button variant="ghost" size="icon-sm" className="size-11 shrink-0 sm:size-7" onClick={() => navigateGallery(1)} aria-label="Next media">
+												<Button variant="ghost" size="icon-sm" className="size-12 shrink-0 sm:size-7" onClick={() => navigateGallery(1)} aria-label="Next media">
 													<ChevronRight className="h-4 w-4" />
 												</Button>
 											</>
 										)}
-										<Button variant="outline" size="sm" className="h-11 shrink-0 sm:h-7" onClick={download} disabled={downloading}>
+										<Button variant="outline" size="sm" className="h-12 shrink-0 sm:h-7" onClick={download} disabled={downloading}>
 											{downloading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
 											Download
 										</Button>
@@ -324,7 +324,7 @@ export function FilePreviewSheet({
 											<Button
 												variant="ghost"
 												size="icon-sm"
-												className="size-11 shrink-0 sm:size-7"
+												className="size-12 shrink-0 sm:size-7"
 												onClick={() => navigateGallery(-1)}
 												aria-label="Previous media"
 											>
@@ -336,7 +336,7 @@ export function FilePreviewSheet({
 											<Button
 												variant="ghost"
 												size="icon-sm"
-												className="size-11 shrink-0 sm:size-7"
+												className="size-12 shrink-0 sm:size-7"
 												onClick={() => navigateGallery(1)}
 												aria-label="Next media"
 											>
@@ -347,7 +347,7 @@ export function FilePreviewSheet({
 									<Button
 										variant="outline"
 										size="sm"
-										className="h-11 shrink-0 sm:h-7"
+										className="h-12 shrink-0 sm:h-7"
 										onClick={download}
 										disabled={downloading}
 									>

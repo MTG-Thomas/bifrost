@@ -18,7 +18,7 @@
  * deployed. The v1 globalThis path is untouched.
  */
 import {
-  createContext,
+	createContext,
   useCallback,
   useContext,
   useEffect,
@@ -28,12 +28,13 @@ import {
   type ReactNode,
 } from "react";
 
+import { setDefaultFileScope } from "./files";
 import { setBifrostTransport, setDefaultAppScope } from "./tables";
 
 export interface BifrostContextValue {
   /** Absolute base URL of the Bifrost API (no trailing slash). */
   baseUrl: string;
-  /** Bearer access token for API calls. */
+	/** Current bearer access token for API calls. */
   token: string;
   /** Active organization scope (UUID), or null for the caller's default. */
   orgScope: string | null;
@@ -44,7 +45,7 @@ export interface BifrostContextValue {
    * when the host doesn't supply it.
    */
   appId: string | null;
-  /** `fetch` that joins `baseUrl` and attaches the bearer token. */
+	/** `fetch` that joins `baseUrl`, follows token rotation, and retries one 401. */
   authedFetch: typeof fetch;
   /** Log the user out. No-op if the app did not supply `onLogout`. */
   logout: () => void;
@@ -72,6 +73,21 @@ export type Theme = "light" | "dark";
 const BifrostContext = createContext<BifrostContextValue | null>(null);
 
 const THEME_KEY = "theme";
+
+interface PlatformAuthBridge {
+	getAccessToken: () => string | null;
+	canRefreshAccessToken: () => boolean;
+	refreshAccessToken: () => Promise<boolean>;
+	handleAuthenticationFailure: () => void;
+}
+
+type PlatformAuthGlobal = typeof globalThis & {
+	__BIFROST_PLATFORM_AUTH_V1__?: PlatformAuthBridge;
+};
+
+function platformAuth(): PlatformAuthBridge | undefined {
+	return (globalThis as PlatformAuthGlobal).__BIFROST_PLATFORM_AUTH_V1__;
+}
 
 export interface BifrostProviderProps {
   baseUrl: string;
@@ -143,7 +159,9 @@ export function BifrostProvider({
   // Theme state: seed from the host prop, else the shared localStorage key.
   // Apply the `dark` root class on mount + every change so the app (and the
   // platform) stay visually in sync through one contract.
-  const [theme, setThemeState] = useState<Theme>(() => readStoredTheme(themeProp));
+	const [theme, setThemeState] = useState<Theme>(() =>
+		readStoredTheme(themeProp),
+	);
   useEffect(() => {
     applyThemeClass(theme);
   }, [theme]);
@@ -159,7 +177,8 @@ export function BifrostProvider({
   const setTheme = useCallback(
     (next: Theme) => {
       setThemeState(next);
-      if (typeof localStorage !== "undefined") localStorage.setItem(THEME_KEY, next);
+			if (typeof localStorage !== "undefined")
+				localStorage.setItem(THEME_KEY, next);
       applyThemeClass(next);
       onThemeChange?.(next);
     },
@@ -172,10 +191,17 @@ export function BifrostProvider({
 
   const value = useMemo<BifrostContextValue>(() => {
     const baseFetch = fetchImpl ?? globalThis.fetch;
-    const authedFetch: typeof fetch = (input, init) => {
-      const headers = new Headers(init?.headers);
-      if (!headers.has("Authorization")) {
-        headers.set("Authorization", `Bearer ${token}`);
+		const currentToken = () => {
+			const auth = platformAuth();
+			return auth ? auth.getAccessToken() : token;
+		};
+		const authedFetch: typeof fetch = async (input, init) => {
+			const callerHeaders = new Headers(init?.headers);
+			const managesAuthorization = !callerHeaders.has("Authorization");
+			const requestWithToken = (accessToken: string | null) => {
+				const headers = new Headers(callerHeaders);
+				if (managesAuthorization && accessToken) {
+					headers.set("Authorization", `Bearer ${accessToken}`);
       }
       if (orgScope && !headers.has("X-Bifrost-Org")) {
         headers.set("X-Bifrost-Org", orgScope);
@@ -188,10 +214,41 @@ export function BifrostProvider({
       }
       return baseFetch(joinUrl(baseUrl, input), { ...init, headers });
     };
+
+			const attemptedToken = currentToken();
+			let response = await requestWithToken(attemptedToken);
+			const auth = platformAuth();
+			if (
+				response.status !== 401 ||
+				!managesAuthorization ||
+				!auth?.canRefreshAccessToken()
+			) {
+				return response;
+			}
+
+			// The host may already have rotated the token while this request was
+			// in flight. Prefer that value before asking it to rotate again.
+			let freshToken = auth.getAccessToken();
+			if (!freshToken || freshToken === attemptedToken) {
+				const refreshed = await auth.refreshAccessToken();
+				freshToken = refreshed ? auth.getAccessToken() : null;
+			}
+
+			if (!freshToken) {
+				auth.handleAuthenticationFailure();
+				return response;
+			}
+
+			response = await requestWithToken(freshToken);
+			if (response.status === 401) auth.handleAuthenticationFailure();
+			return response;
+		};
     const logout = () => onLogout?.();
     return {
       baseUrl: baseUrl.replace(/\/$/, ""),
-      token,
+			get token() {
+				return currentToken() ?? "";
+			},
       orgScope,
       appId,
       authedFetch,
@@ -201,7 +258,18 @@ export function BifrostProvider({
       toggleTheme,
       supportsTheme,
     };
-  }, [baseUrl, token, orgScope, appId, fetchImpl, onLogout, theme, setTheme, toggleTheme, supportsTheme]);
+	}, [
+		baseUrl,
+		token,
+		orgScope,
+		appId,
+		fetchImpl,
+		onLogout,
+		theme,
+		setTheme,
+		toggleTheme,
+		supportsTheme,
+	]);
 
   // Route the data SDK (tables.*/useTable) through this provider so a v2 app
   // in `npm run dev` (different origin) reaches the configured Bifrost API with
@@ -220,10 +288,11 @@ export function BifrostProvider({
   const installKey = `${baseUrl}|${token}|${orgScope ?? ""}|${appId ?? ""}`;
   const installedRef = useRef<{
     key: string;
-    fetchImpl: typeof fetch | undefined;
-    restoreTransport: () => void;
-    restoreScope: () => void;
-  } | null>(null);
+		fetchImpl: typeof fetch | undefined;
+		restoreTransport: () => void;
+		restoreScope: () => void;
+		restoreFileScope: () => void;
+	} | null>(null);
   // Restore scheduled by the effect cleanup, pending in a microtask. A
   // re-install (render-time or effect re-run) cancels it by replacing the
   // marker, so StrictMode's synthetic cleanup→re-setup never actually
@@ -236,25 +305,30 @@ export function BifrostProvider({
       // Raw token for the ws client (query-param auth — WebSocket can't send
       // an Authorization header). HTTP calls use the header below.
       token,
-      fetchImpl,
+			getToken: () => {
+				const auth = platformAuth();
+				return auth ? (auth.getAccessToken() ?? undefined) : token;
+			},
+			fetchImpl: value.authedFetch,
       headers: {
-        Authorization: `Bearer ${token}`,
         // Identify the calling app so the server resolves a `useTable("name")`
         // call to THIS install's own deployed table, not a sibling install's
         // (the table equivalent of the useWorkflow app_id, Codex #15).
         ...(appId ? { "X-Bifrost-App": appId } : {}),
       },
-    });
-    const restoreScope = setDefaultAppScope(orgScope);
-    const prev = installedRef.current;
+		});
+		const restoreScope = setDefaultAppScope(orgScope);
+		const restoreFileScope = setDefaultFileScope(orgScope);
+		const prev = installedRef.current;
     installedRef.current = {
       key: installKey,
       fetchImpl,
       // Keep the FIRST install's restores: unmount must return to the
       // pre-mount transport/scope, not to one of our own intermediates.
-      restoreTransport: prev?.restoreTransport ?? restoreTransport,
-      restoreScope: prev?.restoreScope ?? restoreScope,
-    };
+			restoreTransport: prev?.restoreTransport ?? restoreTransport,
+			restoreScope: prev?.restoreScope ?? restoreScope,
+			restoreFileScope: prev?.restoreFileScope ?? restoreFileScope,
+		};
   };
   const installRef = useRef(install);
   installRef.current = install;
@@ -287,15 +361,18 @@ export function BifrostProvider({
       queueMicrotask(() => {
         if (pendingRestoreRef.current !== pending) return;
         pendingRestoreRef.current = null;
-        installedRef.current = null;
-        installed.restoreTransport();
-        installed.restoreScope();
-      });
+				installedRef.current = null;
+				installed.restoreTransport();
+				installed.restoreScope();
+				installed.restoreFileScope();
+			});
     };
   }, []);
 
   return (
-    <BifrostContext.Provider value={value}>{children}</BifrostContext.Provider>
+		<BifrostContext.Provider value={value}>
+			{children}
+		</BifrostContext.Provider>
   );
 }
 

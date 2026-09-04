@@ -508,7 +508,12 @@ async def test_mcp_update_agent_refuses_managed_without_deleting_tools(db_sessio
 
     monkeypatch.setattr(mcp_agents, "get_tool_db", _fake_tool_db)
 
-    context = SimpleNamespace(is_platform_admin=True, org_id=None, user_id=uuid.uuid4())
+    context = SimpleNamespace(
+        is_platform_admin=True,
+        has_scope_bypass=True,
+        org_id=None,
+        user_id=uuid.uuid4(),
+    )
     result = await mcp_agents.update_agent(context, agent_id=str(aid), tool_ids=[])
 
     text = str(result.model_dump() if hasattr(result, "model_dump") else result)
