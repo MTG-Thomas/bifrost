@@ -9644,6 +9644,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/solutions/{solution_id}/deploy-jobs/{deploy_job_id}/reconcile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reconcile a successful Solution deployment's accountability (admin only) */
+        post: operations["reconcile_solution_deployment_api_solutions__solution_id__deploy_jobs__deploy_job_id__reconcile_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/solutions/{solution_id}/deployments/capabilities": {
         parameters: {
             query?: never;
@@ -48273,6 +48290,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SolutionDeployEnqueued"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reconcile_solution_deployment_api_solutions__solution_id__deploy_jobs__deploy_job_id__reconcile_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+                deploy_job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformJobAccepted"];
                 };
             };
             /** @description Validation Error */

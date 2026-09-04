@@ -11,6 +11,7 @@ from src.jobs.platform.embedding_reindex import EMBEDDING_REINDEX_DEFINITION
 from src.jobs.platform.git_operation import GIT_OPERATION_DEFINITION
 from src.jobs.platform.reimport import WORKSPACE_REIMPORT_DEFINITION
 from src.jobs.platform.solution_deploy import SOLUTION_DEPLOY_DEFINITION
+from src.jobs.platform.solution_accountability_reconcile import SOLUTION_ACCOUNTABILITY_RECONCILE_DEFINITION
 from src.jobs.platform.solution_export import SOLUTION_EXPORT_DEFINITION
 from src.jobs.platform.summary_backfill import SUMMARY_BACKFILL_DEFINITION
 from src.jobs.platform.system_maintenance import (
@@ -35,6 +36,7 @@ from src.jobs.platform.workspace_release_prepare import (
 )
 
 _DEFINITIONS = {
+    SOLUTION_ACCOUNTABILITY_RECONCILE_DEFINITION.job_type: SOLUTION_ACCOUNTABILITY_RECONCILE_DEFINITION,
     APPLICATION_DEPLOY_DEFINITION.job_type: APPLICATION_DEPLOY_DEFINITION,
     APPLICATION_PUBLISH_DEFINITION.job_type: APPLICATION_PUBLISH_DEFINITION,
     OAUTH_REFRESH_DEFINITION.job_type: OAUTH_REFRESH_DEFINITION,

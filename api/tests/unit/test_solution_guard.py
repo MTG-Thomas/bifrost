@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy.orm import Session, make_transient_to_detached
 
 from src.services.solutions.guard import (
     SOLUTION_MANAGED_MESSAGE,
@@ -42,6 +43,64 @@ def test_message_is_the_locked_wording() -> None:
     assert SOLUTION_MANAGED_MESSAGE == (
         "Solution-managed entities can only be managed by deployment methods."
     )
+
+
+@pytest.mark.parametrize("already_bound", [False, True])
+def test_obligation_evidence_update_passes_flush_guard(already_bound: bool) -> None:
+    """Reconciliation binds an existing obligation before flushing evidence."""
+    from src.models.orm.workspace_promotions import SolutionDeployObligation
+
+    solution_id = uuid.uuid4()
+    obligation = SolutionDeployObligation(
+        id=uuid.uuid4(),
+        solution_id=solution_id if already_bound else None,
+        disposition="pending",
+    )
+    # Attach a persisted row without a database: exercise the real Session
+    # before_flush listeners, stopping before SQL emission.
+    make_transient_to_detached(obligation)
+    with Session() as session:
+        session.add(obligation)
+        obligation.solution_id = solution_id
+        obligation.disposition = "attention_required"
+        obligation.reason = "Source content does not match the installed candidate"
+        obligation.completion_evidence = {"candidate_id": "sha256:" + "a" * 64}
+
+        assert obligation in session.dirty
+        assert session.is_modified(obligation, include_collections=False)
+        assert_not_solution_managed(obligation)
+        session.dispatch.before_flush(session, None, None)
+
+
+@pytest.mark.parametrize("entity_type", ["application", "workflow"])
+@pytest.mark.parametrize("operation", ["update", "delete"])
+def test_obligation_exemption_keeps_authored_entities_guarded(
+    entity_type: str, operation: str,
+) -> None:
+    from src.models.orm.applications import Application
+    from src.models.orm.workflows import Workflow
+    from src.services.solutions.guard import SolutionManagedWriteError
+
+    model = Application if entity_type == "application" else Workflow
+    entity = model(id=uuid.uuid4(), solution_id=uuid.uuid4(), name="authored")
+    if isinstance(entity, Workflow):
+        entity.workflow_roles = []
+    else:
+        entity.roles = []
+        entity.embed_secrets = []
+    make_transient_to_detached(entity)
+    with Session() as session:
+        session.add(entity)
+        if operation == "update":
+            entity.name = "outside-deployment"
+        else:
+            session.delete(entity)
+
+        with pytest.raises(HTTPException) as exc:
+            assert_not_solution_managed(entity)
+        assert exc.value.status_code == 409
+        with pytest.raises(SolutionManagedWriteError):
+            session.dispatch.before_flush(session, None, None)
 
 
 @pytest.mark.e2e

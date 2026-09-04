@@ -30,12 +30,13 @@ SOLUTION_MANAGED_MESSAGE = (
 
 _SOLUTION_SCOPED_OPERATIONAL_MODELS = {
     "PendingCaptureORM",
+    "SolutionDeployObligation",
     "SolutionExportJob",
 }
 
 
 def _is_solution_scoped_operational_row(entity: Any) -> bool:
-    """Rows tied to a solution but written by runtime queues/schedulers."""
+    """Operational jobs/evidence tied to a solution, not portable entities."""
     return entity.__class__.__name__ in _SOLUTION_SCOPED_OPERATIONAL_MODELS
 
 
