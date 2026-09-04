@@ -21,8 +21,6 @@ import tempfile
 from pathlib import Path
 from uuid import UUID
 
-from aiobotocore.session import get_session
-
 from src.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
@@ -41,7 +39,23 @@ class SolutionAppBuilder:
 
     def __init__(self, settings: Settings | None = None):
         self._settings = settings or get_settings()
-        self._bucket: str = self._settings.s3_bucket or ""
+        if self._settings.object_storage_provider == "azure_blob":
+            from src.services.file_storage.azure_blob_client import (
+                AzureBlobStorageClient,
+            )
+
+            self._storage = AzureBlobStorageClient(self._settings)
+            self._bucket = self._settings.azure_blob_container or ""
+        elif self._settings.object_storage_provider == "s3":
+            from src.services.file_storage.s3_client import S3StorageClient
+
+            self._storage = S3StorageClient(self._settings)
+            self._bucket = self._settings.s3_bucket or ""
+        else:
+            raise ValueError(
+                "Unsupported object_storage_provider: "
+                f"{self._settings.object_storage_provider}"
+            )
 
     def _dist_key(
         self,
@@ -58,14 +72,7 @@ class SolutionAppBuilder:
         return f"{base}{rel.lstrip('/')}" if rel else base
 
     def _client(self):
-        session = get_session()
-        return session.create_client(
-            "s3",
-            endpoint_url=self._settings.s3_endpoint_url,
-            aws_access_key_id=self._settings.s3_access_key,
-            aws_secret_access_key=self._settings.s3_secret_key,
-            region_name=self._settings.s3_region,
-        )
+        return self._storage.get_client()
 
     def compile_dist(
         self,
