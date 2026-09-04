@@ -54,7 +54,7 @@ Report: any uncommitted changes, how many commits ahead of origin.
 
 ### 3. Documentation freshness check
 
-Run the helper script — it compares last-commit timestamps on `bifrost` vs `gobifrost` and lists any user-facing files changed since docs were last updated:
+Run the helper script. The public `gobifrost.com` documentation pipeline belongs to upstream, so the helper detects repository identity and waives this check for forks. On `gobifrost/bifrost`, it compares last-commit timestamps and lists user-facing files changed since docs were last updated:
 
 ```bash
 ./scripts/release/check-docs-freshness.sh
@@ -62,7 +62,7 @@ Run the helper script — it compares last-commit timestamps on `bifrost` vs `go
 
 Exit codes:
 
-- `0` — docs are current (at or ahead of bifrost, OR no user-facing surface-area changes). Proceed.
+- `0` — docs are current (at or ahead of bifrost, OR no user-facing surface-area changes), or the helper reports that the upstream check is waived for a fork. Proceed. For a fork waiver, do not clone or update the upstream docs repo and do not invoke the documentation skill.
 - `1` — drift detected. Surface to the user with the script's output:
 
   > "Docs were last updated `<DOCS_LAST>`, bifrost main has moved since (`<N>` commits, `<M>` user-facing files touched — see list above). Want me to run the **bifrost-documentation** skill in `diff` mode before pushing? It'll re-capture screenshots for any pages whose source globs changed and open a docs PR."
@@ -186,15 +186,19 @@ Ask: "What version? (current git describe: run `git describe --tags --always`)"
 
 The tag must start with `v` — e.g., `v2.1.0`.
 
-### 1b. Documentation freshness check (REQUIRED for full release)
+### 1b. Upstream documentation freshness check (REQUIRED upstream; waived for forks)
 
-A versioned release should ship with current docs. Run:
+A versioned upstream release should ship with current docs. Run:
 
 ```bash
 ./scripts/release/check-docs-freshness.sh
 ```
 
+If the helper reports that the upstream documentation check is waived for a fork, skip the rest of Step 1b and proceed directly to Step 2. Do not clone, unarchive, update, or dispatch work against the upstream website for a fork release.
+
 If the script exits `2` (missing docs repo), follow its instructions to clone before proceeding.
+
+The remaining Step 1b instructions apply only to `gobifrost/bifrost`.
 
 #### 1b-i. Identify net-new feature surface (REQUIRED)
 
