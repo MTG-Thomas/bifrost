@@ -24,6 +24,7 @@ Assume **Persona A** unless the task clearly changes `api/`, `client/`, migratio
 - Treat `.bifrost/` as export-only. Mutate platform entities through the CLI or MCP tools — not by hand-editing manifest YAML.
 - New MCP tools must be thin HTTP wrappers around REST endpoints. Do not add direct ORM/repository access in MCP tools.
 - When merging upstream `gobifrost/bifrost` changes into this fork, do not recreate or re-enable DigitalOcean deployment CI/CD for `MTG-Thomas/bifrost`. MTG deploys from `bifrost-infra` to Azure. Keep the `.github/workflows/ci.yml` `deploy-dev` job guarded with `github.repository == 'gobifrost/bifrost'`; CI runs `api/scripts/check_mtg_ci_boundaries.py` to fail fast if that guard is removed or weakened.
+- The upstream `gobifrost.com` documentation pipeline is not a release gate for this fork. `scripts/release/check-docs-freshness.sh` intentionally exits successfully outside `gobifrost/bifrost`; do not clone, unarchive, update, or block a Midtown release on the upstream website unless the user explicitly asks.
 
 ## Long-running platform jobs (CRITICAL)
 

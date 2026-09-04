@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Compare last-commit timestamps between bifrost and gobifrost.
+# Compare last-commit timestamps between upstream bifrost and gobifrost.
 # Print drift summary and list user-facing files changed since docs were last updated.
+# Forks do not publish the upstream website, so they exit successfully before
+# looking for a docs checkout.
 #
 # Used by the bifrost-release skill (Step 3 dev push, Step 1b full release) to
 # decide whether to offer a docs-refresh dispatch before pushing or tagging.
@@ -12,8 +14,32 @@
 
 set -euo pipefail
 
-BIFROST_REPO="${BIFROST_REPO:-$HOME/GitHub/bifrost}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIFROST_REPO="${BIFROST_REPO:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 DOCS_REPO="${DOCS_REPO:-$HOME/GitHub/gobifrost}"
+
+repository_from_origin() {
+    local origin_url repository
+
+    origin_url=$(git -C "$BIFROST_REPO" remote get-url origin 2>/dev/null) || return 0
+    case "$origin_url" in
+        https://github.com/*)
+            repository="${origin_url#https://github.com/}"
+            ;;
+        git@github.com:*)
+            repository="${origin_url#git@github.com:}"
+            ;;
+        ssh://git@github.com/*)
+            repository="${origin_url#ssh://git@github.com/}"
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+
+    repository="${repository%/}"
+    printf '%s\n' "${repository%.git}"
+}
 
 # User-facing surface area. Add to this list when introducing new dirs that
 # affect what's visible in docs/screenshots. Patterns are anchored regex
@@ -31,6 +57,17 @@ USER_FACING_PATTERNS=(
 if ! git -C "$BIFROST_REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "error: bifrost repo not found at $BIFROST_REPO" >&2
     exit 2
+fi
+
+REPOSITORY_ID="${BIFROST_GITHUB_REPOSITORY:-${GITHUB_REPOSITORY:-}}"
+if [[ -z "$REPOSITORY_ID" ]]; then
+    REPOSITORY_ID=$(repository_from_origin)
+fi
+
+if [[ -n "$REPOSITORY_ID" && "${REPOSITORY_ID,,}" != "gobifrost/bifrost" ]]; then
+    echo "✓ upstream documentation check waived for fork $REPOSITORY_ID"
+    echo "  gobifrost.com is maintained by gobifrost/bifrost and is not a fork release gate."
+    exit 0
 fi
 
 if ! git -C "$DOCS_REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
