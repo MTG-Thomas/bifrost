@@ -116,6 +116,30 @@ async def publish_platform_job_update(job: PlatformJob) -> None:
         "type": "platform_job_updated",
         "job": public.model_dump(mode="json"),
     }
+    if job.notification_id is not None:
+        try:
+            description = job.phase or job.status.replace("_", " ").capitalize()
+            await get_notification_service().update_notification(
+                str(job.notification_id),
+                NotificationUpdate(
+                    status=_notification_status(job.status),
+                    description=description[:500],
+                    percent=job.progress_percent,
+                    error=job.error_message[:1000] if job.error_message else None,
+                    result=(
+                        {**(job.result or {}), "job_id": str(job.id)}
+                        if job.status == "succeeded"
+                        else None
+                    ),
+                ),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to update platform job notification projection",
+                extra={"platform_job_id": str(job.id)},
+                exc_info=True,
+            )
+
     for channel in (f"notification:{job.requested_by_user_id}", "notification:admins"):
         try:
             await pubsub_manager.broadcast(channel, message)
@@ -125,31 +149,6 @@ async def publish_platform_job_update(job: PlatformJob) -> None:
                 extra={"platform_job_id": str(job.id), "channel": channel},
                 exc_info=True,
             )
-
-    if job.notification_id is None:
-        return
-    try:
-        description = job.phase or job.status.replace("_", " ").capitalize()
-        await get_notification_service().update_notification(
-            str(job.notification_id),
-            NotificationUpdate(
-                status=_notification_status(job.status),
-                description=description[:500],
-                percent=job.progress_percent,
-                error=job.error_message[:1000] if job.error_message else None,
-                result=(
-                    {"job_id": str(job.id), **(job.result or {})}
-                    if job.status == "succeeded"
-                    else None
-                ),
-            ),
-        )
-    except Exception:
-        logger.warning(
-            "Failed to update platform job notification projection",
-            extra={"platform_job_id": str(job.id)},
-            exc_info=True,
-        )
 
 
 async def enqueue_platform_job(

@@ -67,6 +67,10 @@ test.describe("Chat attachments and model profiles", () => {
 		let showGenerating!: () => void;
 		let showResponding!: () => void;
 		let finishChat!: () => void;
+		let resolveInitialEvents!: () => void;
+		const initialEvents = new Promise<void>((resolve) => {
+			resolveInitialEvents = resolve;
+		});
 		const chatPayload = new Promise<Record<string, unknown>>((resolve) => {
 			resolveChat = resolve;
 		});
@@ -124,6 +128,7 @@ test.describe("Chat attachments and model profiles", () => {
 						reason: "automatic",
 					},
 				});
+				resolveInitialEvents();
 			}, 100);
 			showGenerating = () => {
 				sendRunEvent(4, "delta", "running", {
@@ -354,6 +359,7 @@ test.describe("Chat attachments and model profiles", () => {
 			path: "playwright-results/screenshots/chat-thinking.png",
 			fullPage: true,
 		});
+		await initialEvents;
 		showGenerating();
 		await expect(page.getByText("Generating Markdown…")).toBeVisible();
 		await expect(userMessage).toBeVisible();
