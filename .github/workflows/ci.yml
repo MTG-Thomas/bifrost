@@ -6,6 +6,8 @@ on:
     tags: ["v*"]
   pull_request:
     branches: [main]
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
     inputs:
       queue_post_merge:
@@ -115,8 +117,8 @@ jobs:
   build-candidate-images:
     if: >-
       (github.repository == 'MTG-Thomas/bifrost' || github.repository == 'Midtown-Technology-Group/bifrost') &&
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.event_name == 'merge_group' ||
+       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: ubuntu-latest
     name: Build candidate ${{ matrix.component }} image
     permissions:
@@ -156,13 +158,13 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
       - name: Compute immutable candidate identity
         id: identity
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           if [ "$(git rev-parse HEAD)" != "$HEAD_SHA" ]; then
@@ -202,7 +204,7 @@ jobs:
             ${{ matrix.version_arg }}=${{ steps.identity.outputs.version }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.event.pull_request.head.sha }}
+            org.opencontainers.image.revision=${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
             org.opencontainers.image.version=${{ steps.identity.outputs.version }}
             com.midtowntg.bifrost.source-tree=${{ steps.identity.outputs.tree_sha }}
             com.midtowntg.bifrost.candidate=true
@@ -232,7 +234,7 @@ jobs:
       - name: Verify candidate identity and signature
         env:
           EXPECTED_DIGEST: ${{ steps.build.outputs.digest }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           IMAGE: ghcr.io/${{ matrix.image }}
           TREE_SHA: ${{ steps.identity.outputs.tree_sha }}
           VERSION: ${{ steps.identity.outputs.version }}
@@ -249,7 +251,7 @@ jobs:
     if: >-
       always() &&
       (github.repository == 'MTG-Thomas/bifrost' || github.repository == 'Midtown-Technology-Group/bifrost') &&
-      github.event_name == 'pull_request'
+      (github.event_name == 'pull_request' || github.event_name == 'merge_group')
     needs: build-candidate-images
     runs-on: ubuntu-latest
     name: Candidate Images
@@ -272,6 +274,7 @@ jobs:
   publish-ci-test-images:
     if: >-
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'merge_group' ||
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest

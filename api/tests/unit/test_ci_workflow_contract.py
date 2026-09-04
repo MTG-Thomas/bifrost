@@ -15,6 +15,7 @@ def _repository_root() -> Path:
 
 REPO_ROOT = _repository_root()
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+CODEQL_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "codeql.yml"
 QUEUE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "serialized-merge-queue.yml"
 NIGHTLY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "nightly.yml"
 
@@ -25,13 +26,13 @@ def _load_workflow(path: Path) -> dict[str, Any]:
     return loaded
 
 
-def test_ci_retains_mtg_serialized_queue_boundary() -> None:
+def test_ci_supports_native_merge_groups_during_queue_cutover() -> None:
     workflow = _load_workflow(CI_WORKFLOW)
     triggers = workflow["on"]
     jobs = workflow["jobs"]
 
-    assert {"pull_request", "push", "workflow_dispatch"} <= triggers.keys()
-    assert "merge_group" not in triggers
+    assert {"merge_group", "pull_request", "push", "workflow_dispatch"} <= triggers.keys()
+    assert triggers["merge_group"]["types"] == ["checks_requested"]
     assert "build-dev-candidate" not in jobs
     assert "test-client-smoke" not in jobs
     assert "verify_merge_candidate.py" not in CI_WORKFLOW.read_text()
@@ -41,6 +42,9 @@ def test_ci_retains_mtg_serialized_queue_boundary() -> None:
     assert queue["concurrency"]["cancel-in-progress"] == "false"
     assert "advance" in queue["jobs"]
 
+    codeql_triggers = _load_workflow(CODEQL_WORKFLOW)["on"]
+    assert codeql_triggers["merge_group"]["types"] == ["checks_requested"]
+
 
 def test_mtg_candidate_images_are_promoted_without_rebuild() -> None:
     jobs = _load_workflow(CI_WORKFLOW)["jobs"]
@@ -48,9 +52,35 @@ def test_mtg_candidate_images_are_promoted_without_rebuild() -> None:
     promotion = jobs["build-dev"]
 
     assert "github.event_name == 'pull_request'" in candidates["if"]
+    assert "github.event_name == 'merge_group'" in candidates["if"]
     assert "MTG-Thomas/bifrost" in candidates["if"]
     assert "Midtown-Technology-Group/bifrost" in candidates["if"]
     assert "inputs.queue_post_merge" in promotion["if"]
+
+    checkout = next(
+        step for step in candidates["steps"]
+        if step["name"] == "Checkout exact pull-request head"
+    )
+    identity = next(
+        step for step in candidates["steps"]
+        if step["name"] == "Compute immutable candidate identity"
+    )
+    build = next(
+        step for step in candidates["steps"]
+        if step["name"] == "Build immutable candidate"
+    )
+    verify = next(
+        step for step in candidates["steps"]
+        if step["name"] == "Verify candidate identity and signature"
+    )
+    assert "github.event.merge_group.base_sha" in identity["env"]["BASE_SHA"]
+    for value in (
+        checkout["with"]["ref"],
+        identity["env"]["HEAD_SHA"],
+        verify["env"]["HEAD_SHA"],
+    ):
+        assert "github.sha" in value
+    assert "github.sha" in build["with"]["labels"]
 
     source = "\n".join(step.get("run", "") for step in promotion["steps"])
     assert "candidate_image.py promote" in source

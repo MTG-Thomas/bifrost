@@ -48,6 +48,33 @@ def test_required_ci_check_identity_change_is_rejected(tmp_path: Path):
     assert any("required CI check identity changed" in item for item in violations)
 
 
+def test_merge_group_trigger_is_required(tmp_path: Path):
+    workflow = _repo_root() / ".github/workflows/ci.yml"
+    mutated = tmp_path / "ci.yml"
+    mutated.write_text(
+        workflow.read_text(encoding="utf-8").replace(
+            "  merge_group:\n    types: [checks_requested]\n", "", 1
+        ),
+        encoding="utf-8",
+    )
+
+    assert any("merge_group trigger" in item for item in check_ci_workflow(mutated))
+
+
+def test_merge_group_trigger_rejects_other_activity_types(tmp_path: Path):
+    workflow = _repo_root() / ".github/workflows/ci.yml"
+    mutated = tmp_path / "ci.yml"
+    mutated.write_text(
+        workflow.read_text(encoding="utf-8").replace(
+            "types: [checks_requested]", "types: [destroyed]", 1
+        ),
+        encoding="utf-8",
+    )
+
+    violations = check_ci_workflow(mutated)
+    assert any("only checks_requested" in item for item in violations)
+
+
 def test_required_test_jobs_reject_preloaded_third_party_actions(tmp_path: Path):
     workflow = _repo_root() / ".github/workflows/ci.yml"
     original = workflow.read_text(encoding="utf-8")
