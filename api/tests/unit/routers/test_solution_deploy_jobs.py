@@ -13,6 +13,7 @@ from src.models.orm.solutions import Solution
 from src.routers.solutions import (
     _enqueue_solution_deploy_job,
     _run_deploy_job,
+    _source_accountability_organization_id,
     _solution_candidate_id,
 )
 
@@ -23,6 +24,16 @@ def test_solution_candidate_id_hashes_exact_staged_bytes(tmp_path):
     assert _solution_candidate_id(path) == (
         "sha256:e308919039cd35ee393feae0740fd24b356d6279fff339e18411316b7eb846e1"
     )
+
+
+def test_solution_accountability_uses_the_producer_organization(monkeypatch):
+    producer_organization_id = uuid4()
+    settings = SimpleNamespace(
+        workspace_source_release_oidc_organization_id=str(producer_organization_id)
+    )
+    monkeypatch.setattr("src.routers.solutions.get_settings", lambda: settings)
+
+    assert _source_accountability_organization_id() == str(producer_organization_id)
 
 
 @pytest.mark.asyncio

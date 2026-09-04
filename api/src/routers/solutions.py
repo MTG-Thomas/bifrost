@@ -36,6 +36,7 @@ from bifrost.solution_jobs import (
     DEPLOY_JOB_TIMEOUT_SECONDS,
 )
 from shared.logo_processing import is_logo_thumbnail_version
+from src.config import get_settings
 from src.core.auth import Context, CurrentSuperuser
 from src.models.contracts.solutions import (
     Solution as SolutionDTO,
@@ -94,6 +95,9 @@ from src.jobs.platform.solution_deploy import (
     SOLUTION_DEPLOY_DEFINITION,
     SolutionDeployPayload,
 )
+from src.services.github_actions_oidc import (
+    workspace_source_release_tracking_organization_id,
+)
 from src.services.platform_jobs import enqueue_platform_job, publish_platform_job_update
 from src.services.platform_job_memory_profiles import build_solution_memory_profile_key
 from src.services.solutions.deploy_job_storage import SolutionDeployJobStorage
@@ -115,6 +119,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/solutions", tags=["Solutions"])
+
+
+def _source_accountability_organization_id() -> str | None:
+    organization_id = workspace_source_release_tracking_organization_id(get_settings())
+    return str(organization_id) if organization_id is not None else None
 
 UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
 _ZIP_FILENAME_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -1875,9 +1884,7 @@ async def deploy_solution(
             options={
                 "force": force,
                 "candidate_id": actual_candidate_id,
-                "accountability_organization_id": (
-                    str(ctx.org_id) if ctx.org_id is not None else None
-                ),
+                "accountability_organization_id": _source_accountability_organization_id(),
             },
             requested_by_user_id=user.user_id,
             requested_by_email=user.email,
@@ -2365,9 +2372,7 @@ async def install_from_repo(
             organization_id=solution.organization_id,
             options={
                 "force": True,
-                "accountability_organization_id": (
-                    str(ctx.org_id) if ctx.org_id is not None else None
-                ),
+                "accountability_organization_id": _source_accountability_organization_id(),
             },
             requested_by_user_id=user.user_id,
             requested_by_email=user.email,
@@ -2510,9 +2515,7 @@ async def install_solution(
                 "replace_secrets": replace_secrets,
                 "replace_data": replace_data,
                 "reactivate": reactivate,
-                "accountability_organization_id": (
-                    str(ctx.org_id) if ctx.org_id is not None else None
-                ),
+                "accountability_organization_id": _source_accountability_organization_id(),
             },
             requested_by_user_id=user.user_id,
             requested_by_email=user.email,
