@@ -91,10 +91,15 @@ async def test_run_execution_emits_worker_span(monkeypatch):
     }
 
     execute = AsyncMock(return_value=result)
+    workspace_refresh = SimpleNamespace(generation="generation-1", cleared=1, kept=0)
     with (
         patch("bifrost.credentials.is_token_expired", return_value=False),
         patch("src.core.module_cache_sync.set_solution_context"),
         patch("src.core.module_cache_sync.clear_solution_context"),
+        patch(
+            "src.services.execution.simple_worker._clear_workspace_modules",
+            return_value=workspace_refresh,
+        ) as clear_workspace_modules,
         patch(
             "src.services.execution.virtual_import.get_virtual_finder",
             return_value=None,
@@ -128,6 +133,44 @@ async def test_run_execution_emits_worker_span(monkeypatch):
     assert span.attributes["bifrost.worker.cpu_total_seconds"] >= 0
     install_hook.assert_called_once_with()
     remove_hook.assert_called_once_with()
+    clear_workspace_modules.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_run_execution_clears_contexts_when_workspace_refresh_fails():
+    refresh_error = RuntimeError("workspace refresh failed")
+    with (
+        patch("bifrost.credentials.is_token_expired", return_value=False),
+        patch("src.core.module_cache_sync.set_solution_context"),
+        patch("src.core.module_cache_sync.set_workspace_release_context"),
+        patch("src.core.module_cache_sync.set_workspace_generation_context"),
+        patch("src.core.module_cache_sync.clear_solution_context") as clear_solution,
+        patch(
+            "src.core.module_cache_sync.clear_workspace_release_context"
+        ) as clear_release,
+        patch(
+            "src.core.module_cache_sync.clear_workspace_generation_context"
+        ) as clear_generation,
+        patch(
+            "src.services.execution.simple_worker._clear_workspace_modules",
+            side_effect=refresh_error,
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="workspace refresh failed"):
+            await worker._run_execution(
+                "exec-refresh-failure",
+                {
+                    "workspace_release_id": "sha256:" + "1" * 64,
+                    "workspace_release_runtime_storage_prefix": (
+                        "_workspace_releases/org/release/files/"
+                    ),
+                    "workspace_release_source_hashes": {"workflow.py": "2" * 64},
+                },
+            )
+
+    clear_solution.assert_called_once_with()
+    clear_release.assert_called_once_with()
+    clear_generation.assert_called_once_with()
 
 
 def test_run_in_worker_flushes_opentelemetry(monkeypatch):
