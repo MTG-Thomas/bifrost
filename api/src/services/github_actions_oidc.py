@@ -79,21 +79,6 @@ def workspace_source_release_tracking_expected(settings: Settings) -> bool:
     )
 
 
-def workspace_source_release_tracking_organization_id(
-    settings: Settings,
-) -> UUID | None:
-    """Return the organization that owns protected-source accountability."""
-    raw = settings.workspace_source_release_oidc_organization_id
-    if raw is None or not raw.strip():
-        return None
-    try:
-        return UUID(raw)
-    except ValueError as exc:
-        raise GitHubActionsOIDCError(
-            "BIFROST_WORKSPACE_SOURCE_RELEASE_OIDC_ORGANIZATION_ID must be a UUID"
-        ) from exc
-
-
 def _required_setting(value: str | int | None, name: str) -> str:
     if value is None or str(value).strip() == "":
         raise GitHubActionsOIDCError(
@@ -125,12 +110,16 @@ async def authenticate_workspace_source_release_producer(
         settings.workspace_source_release_oidc_workflow_ref,
         "BIFROST_WORKSPACE_SOURCE_RELEASE_OIDC_WORKFLOW_REF",
     )
-    _required_setting(
+    organization_id_raw = _required_setting(
         settings.workspace_source_release_oidc_organization_id,
         "BIFROST_WORKSPACE_SOURCE_RELEASE_OIDC_ORGANIZATION_ID",
     )
-    organization_id = workspace_source_release_tracking_organization_id(settings)
-    assert organization_id is not None
+    try:
+        organization_id = UUID(organization_id_raw)
+    except ValueError as exc:
+        raise GitHubActionsOIDCError(
+            "BIFROST_WORKSPACE_SOURCE_RELEASE_OIDC_ORGANIZATION_ID must be a UUID"
+        ) from exc
 
     try:
         header = jwt.get_unverified_header(token)
