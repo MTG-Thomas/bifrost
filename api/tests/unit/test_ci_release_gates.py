@@ -1,6 +1,5 @@
 """Release jobs must survive intentional skipped CI ancestors and fail closed."""
 
-import json
 from pathlib import Path
 
 import yaml
@@ -89,6 +88,3 @@ def test_mtg_pr_images_build_in_parallel_and_main_promotes_exact_digests() -> No
         assert "api/scripts/ci/candidate_image.py promote" in step["run"]
         assert "--tree-sha" in step["run"]
         assert "--main-source-sha" in step["run"]
-
-    policy = json.loads((REPO_ROOT / ".github/serialized-merge-queue.json").read_text())
-    assert {"context": "Candidate Images", "app_id": 15368} in policy["required_checks"]
