@@ -14,6 +14,7 @@ from src.services.github_actions_oidc import (
     authenticate_workspace_source_release_producer,
     workspace_source_release_producer_configured,
     workspace_source_release_tracking_expected,
+    workspace_source_release_tracking_organization_id,
 )
 
 REPOSITORY = "MTG-Thomas/bifrost-workspace"
@@ -59,6 +60,22 @@ def test_configuration_state_distinguishes_absent_partial_and_ready() -> None:
 
     assert workspace_source_release_tracking_expected(_settings()) is True
     assert workspace_source_release_producer_configured(_settings()) is True
+
+
+def test_tracking_organization_comes_from_the_pinned_producer_configuration() -> None:
+    assert str(workspace_source_release_tracking_organization_id(_settings())) == (
+        ORGANIZATION_ID
+    )
+    settings = SimpleNamespace(workspace_source_release_oidc_organization_id=None)
+    assert workspace_source_release_tracking_organization_id(settings) is None
+
+
+def test_tracking_organization_rejects_an_invalid_uuid() -> None:
+    settings = SimpleNamespace(
+        workspace_source_release_oidc_organization_id="not-a-uuid"
+    )
+    with pytest.raises(GitHubActionsOIDCError, match="must be a UUID"):
+        workspace_source_release_tracking_organization_id(settings)
 
 
 def _token(*, overrides: dict[str, object] | None = None):
