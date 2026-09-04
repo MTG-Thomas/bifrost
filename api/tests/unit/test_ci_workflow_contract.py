@@ -16,7 +16,6 @@ def _repository_root() -> Path:
 REPO_ROOT = _repository_root()
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 CODEQL_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "codeql.yml"
-QUEUE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "serialized-merge-queue.yml"
 NIGHTLY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "nightly.yml"
 
 
@@ -37,11 +36,6 @@ def test_ci_supports_native_merge_groups_during_queue_cutover() -> None:
     assert "test-client-smoke" not in jobs
     assert "verify_merge_candidate.py" not in CI_WORKFLOW.read_text()
 
-    queue = _load_workflow(QUEUE_WORKFLOW)
-    assert queue["concurrency"]["group"] == "serialized-merge-queue-main"
-    assert queue["concurrency"]["cancel-in-progress"] == "false"
-    assert "advance" in queue["jobs"]
-
     codeql_triggers = _load_workflow(CODEQL_WORKFLOW)["on"]
     assert codeql_triggers["merge_group"]["types"] == ["checks_requested"]
 
@@ -55,7 +49,7 @@ def test_mtg_candidate_images_are_promoted_without_rebuild() -> None:
     assert "github.event_name == 'merge_group'" in candidates["if"]
     assert "MTG-Thomas/bifrost" in candidates["if"]
     assert "Midtown-Technology-Group/bifrost" in candidates["if"]
-    assert "inputs.queue_post_merge" in promotion["if"]
+    assert promotion["if"] == "github.event_name == 'push' && github.ref == 'refs/heads/main'"
 
     checkout = next(
         step for step in candidates["steps"]

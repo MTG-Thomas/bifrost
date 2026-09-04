@@ -9,21 +9,10 @@ on:
   merge_group:
     types: [checks_requested]
   workflow_dispatch:
-    inputs:
-      queue_post_merge:
-        description: Publish the exact queue-merged main SHA without rerunning validation
-        required: false
-        type: boolean
-        default: false
-      queue_merge_sha:
-        description: Exact verified merge SHA expected by a queue post-merge run
-        required: false
-        type: string
 
 permissions: read-all
 
-# A new PR head supersedes its prior run. Push/tag runs publish artifacts and
-# must finish; the serialized queue itself has separate non-cancelling lock.
+# A new PR head supersedes its prior run. Merge-group, push, and tag runs must finish.
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -65,16 +54,6 @@ jobs:
       client_e2e_targets: ${{ steps.plan.outputs.client_e2e_targets }}
       mcp_conformance_mode: ${{ steps.plan.outputs.mcp_conformance_mode }}
     steps:
-      - name: Verify exact queue merge SHA
-        if: inputs.queue_post_merge
-        env:
-          EXPECTED_MERGE_SHA: ${{ inputs.queue_merge_sha }}
-        run: |
-          if [[ -z "$EXPECTED_MERGE_SHA" || "$GITHUB_SHA" != "$EXPECTED_MERGE_SHA" ]]; then
-            echo "Queue post-merge dispatch does not match the verified main SHA" >&2
-            exit 1
-          fi
-
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -342,7 +321,7 @@ jobs:
     needs: affected-test-plan
     # Skip the redundant push:main rerun; the merge queue already produced this
     # required check for the exact reviewed commit.
-    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main') && !inputs.queue_post_merge
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main')
     runs-on: ubuntu-latest
     name: Lint & Type Check
     permissions:
@@ -474,7 +453,7 @@ jobs:
     needs: affected-test-plan
     # Skip the redundant push:main rerun; the merge queue already produced this
     # required check for the exact reviewed commit.
-    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main') && !inputs.queue_post_merge
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main')
     runs-on: ubuntu-latest
     name: Client Unit Tests
     steps:
@@ -528,7 +507,7 @@ jobs:
   # =============================================================================
   test-unit:
     needs: [affected-test-plan, publish-ci-test-images]
-    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main') && !inputs.queue_post_merge
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main')
     runs-on: ubuntu-latest
     name: Unit Tests
     permissions:
@@ -609,7 +588,7 @@ jobs:
   # =============================================================================
   mcp-conformance:
     needs: [affected-test-plan, publish-ci-test-images]
-    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main') && !inputs.queue_post_merge
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main')
     runs-on: ubuntu-latest
     name: MCP Conformance
     permissions:
@@ -683,7 +662,7 @@ jobs:
   # =============================================================================
   test-e2e:
     needs: [affected-test-plan, publish-ci-test-images]
-    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main') && !inputs.queue_post_merge
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main')
     runs-on: ubuntu-latest
     name: E2E Tests (shard ${{ matrix.shard }}/${{ matrix.total }})
     permissions:
@@ -767,7 +746,7 @@ jobs:
   # =============================================================================
   test-client-e2e:
     needs: [affected-test-plan, publish-ci-test-images]
-    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main') && !inputs.queue_post_merge
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main')
     runs-on: ubuntu-latest
     name: Client E2E Tests
     permissions:
@@ -840,7 +819,7 @@ jobs:
   # Fails if any backend shard or the Playwright job failed or was cancelled.
   # (if: always()) so branch protection always sees a conclusive result.
   test-e2e-gate:
-    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main') && !inputs.queue_post_merge
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main')
     needs: [affected-test-plan, test-e2e, test-client-e2e, mcp-conformance]
     runs-on: ubuntu-latest
     name: E2E Tests
@@ -870,9 +849,8 @@ jobs:
   # proves tree equality. Upstream keeps its existing main-push build.
   # =============================================================================
   build-dev:
-    # Only fires on push: main. The serialized queue already gated the exact
-    # candidate tree; this lane publishes artifacts without repeating tests.
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || inputs.queue_post_merge
+    # Only fires on push: main after the native queue gates the exact candidate tree.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     name: Build Dev Images
     permissions:

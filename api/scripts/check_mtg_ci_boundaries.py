@@ -140,8 +140,7 @@ def check_ci_workflow(path: Path) -> list[str]:
                 ]
 
     expected_skip = (
-        "always() && (github.event_name != 'push' || github.ref != 'refs/heads/main') "
-        "&& !inputs.queue_post_merge"
+        "always() && (github.event_name != 'push' || github.ref != 'refs/heads/main')"
     )
     for job in QUEUE_SKIPPED_ON_MAIN:
         parsed = _job_block(lines, job)
@@ -185,24 +184,6 @@ def check_ci_workflow(path: Path) -> list[str]:
     return []
 
 
-def check_serialized_queue_workflow(path: Path) -> list[str]:
-    if not path.exists():
-        return [f"{path}: serialized merge queue workflow is missing"]
-    contents = path.read_text(encoding="utf-8")
-    required = [
-        'cron: "*/5 * * * *"',
-        "pull_request_target:",
-        "workflows: [CI, CodeQL]",
-        "group: serialized-merge-queue-main",
-        "cancel-in-progress: false",
-        "ref: main",
-        "persist-credentials: false",
-        "actions: write",
-        "SERIALIZED_MERGE_QUEUE_SSH_KEY",
-    ]
-    return [f"{path}: required queue invariant is missing: {marker}" for marker in required if marker not in contents]
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Check MTG fork CI boundaries that must survive upstream merges."
@@ -213,22 +194,15 @@ def main(argv: list[str] | None = None) -> int:
         default=Path(".github/workflows/ci.yml"),
         help="CI workflow to inspect.",
     )
-    parser.add_argument(
-        "--queue-workflow",
-        type=Path,
-        default=Path(".github/workflows/serialized-merge-queue.yml"),
-        help="Serialized queue workflow to inspect.",
-    )
     args = parser.parse_args(argv)
 
     try:
         workflow = _resolve_workflow_path(args.workflow)
-        queue_workflow = _resolve_workflow_path(args.queue_workflow)
     except ValueError as exc:
         print(f"MTG CI boundary check failed: {exc}", file=sys.stderr)
         return 2
 
-    violations = check_ci_workflow(workflow) + check_serialized_queue_workflow(queue_workflow)
+    violations = check_ci_workflow(workflow)
     if not violations:
         print("MTG CI boundary checks passed.")
         return 0
