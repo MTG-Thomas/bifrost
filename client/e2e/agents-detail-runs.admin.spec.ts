@@ -749,6 +749,9 @@ test.describe("Agent Detail — Runs Tab (admin)", () => {
 		try {
 			await page.setViewportSize({ width: 1440, height: 900 });
 			await page.goto(`/agents/${agent.id}`);
+			await expect(
+				page.getByText("Runs (7d)", { exact: true }),
+			).toBeVisible();
 
 			const main = page.locator("main");
 			const heading = page.getByRole("heading", { name: agent.name });
