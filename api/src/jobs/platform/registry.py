@@ -4,6 +4,7 @@ from src.jobs.execution_policy import (
     ExecutionOperationsPolicy,
     all_execution_policies,
 )
+from src.jobs.platform.application_deploy import APPLICATION_DEPLOY_DEFINITION
 from src.jobs.platform.application_publish import APPLICATION_PUBLISH_DEFINITION
 from src.jobs.platform.base import PlatformJobDefinition
 from src.jobs.platform.embedding_reindex import EMBEDDING_REINDEX_DEFINITION
@@ -34,6 +35,7 @@ from src.jobs.platform.workspace_release_prepare import (
 )
 
 _DEFINITIONS = {
+    APPLICATION_DEPLOY_DEFINITION.job_type: APPLICATION_DEPLOY_DEFINITION,
     APPLICATION_PUBLISH_DEFINITION.job_type: APPLICATION_PUBLISH_DEFINITION,
     OAUTH_REFRESH_DEFINITION.job_type: OAUTH_REFRESH_DEFINITION,
     WEBHOOK_RENEWAL_DEFINITION.job_type: WEBHOOK_RENEWAL_DEFINITION,

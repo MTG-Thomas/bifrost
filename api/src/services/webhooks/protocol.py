@@ -104,6 +104,16 @@ class RenewResult:
     """Updated state (merged with existing)."""
 
 
+@dataclass(frozen=True)
+class WebhookIntegrationAuth:
+    """Resolved, tenant-scoped credentials passed to a webhook adapter."""
+
+    integration_id: UUID
+    organization_id: UUID
+    entity_id: str
+    access_token: str = field(repr=False)
+
+
 @dataclass
 class ValidationResponse:
     """
@@ -188,6 +198,9 @@ class WebhookAdapter(ABC):
     requires_integration: str | None = None
     """Integration name required for this adapter (e.g., 'Microsoft')."""
 
+    requires_organization: bool = False
+    """Whether the adapter must authenticate in an organization/tenant context."""
+
     config_schema: dict[str, Any] = {}
     """JSON Schema for adapter configuration."""
 
@@ -209,7 +222,7 @@ class WebhookAdapter(ABC):
         Args:
             callback_url: Full URL for the webhook endpoint.
             config: Adapter-specific configuration from user.
-            integration: IntegrationData with OAuth credentials (if requires_integration).
+            integration: Resolved organization-scoped authentication, when required.
 
         Returns:
             SubscribeResult with external_id, state, and optional expires_at.
@@ -232,12 +245,21 @@ class WebhookAdapter(ABC):
         Args:
             external_id: ID from SubscribeResult.external_id.
             state: State dict from SubscribeResult.state.
-            integration: IntegrationData with OAuth credentials (if requires_integration).
+            integration: Resolved organization-scoped authentication, when required.
 
-        Note:
-            Should not raise exceptions - best effort cleanup.
+        Raises:
+            Exception: If the provider cannot confirm the subscription is gone.
+                Providers should treat an already-missing subscription as success.
         """
         pass
+
+    def get_public_metadata(
+        self,
+        config: dict[str, Any],
+        state: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Return non-secret provider details that are safe to show to operators."""
+        return {}
 
     @abstractmethod
     async def handle_request(
@@ -278,7 +300,7 @@ class WebhookAdapter(ABC):
 
         Args:
             operation: The operation name from x-dynamic-values.operation
-            integration: IntegrationData with OAuth credentials (if requires_integration)
+            integration: Resolved organization-scoped authentication, when required.
             current_config: Config values selected so far (for dependent fields)
 
         Returns:
@@ -294,6 +316,7 @@ class WebhookAdapter(ABC):
         self,
         external_id: str | None,
         state: dict[str, Any],
+        config: dict[str, Any],
         integration: Any | None,
     ) -> RenewResult | None:
         """
@@ -304,7 +327,8 @@ class WebhookAdapter(ABC):
         Args:
             external_id: ID from SubscribeResult.external_id.
             state: State dict from SubscribeResult.state.
-            integration: IntegrationData with OAuth credentials (if requires_integration).
+            config: Persisted adapter configuration for the subscription.
+            integration: Resolved organization-scoped authentication, when required.
 
         Returns:
             RenewResult with new expires_at and optional state updates.

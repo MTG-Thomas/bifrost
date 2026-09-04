@@ -78,6 +78,7 @@ def test_registry_lists_adapter_metadata_after_loading_custom_once(monkeypatch):
         "display_name": "Recording Adapter",
         "description": "Records registry interactions",
         "requires_integration": "Example",
+        "requires_organization": False,
         "config_schema": {"type": "object", "properties": {"mode": {"type": "string"}}},
         "supports_renewal": False,
     }

@@ -166,6 +166,17 @@ def test_client_e2e_always_starts_local_origin_proxies():
     assert "playwright-runner npx playwright test" not in client_e2e_function
 
 
+def test_client_docs_starts_local_origin_proxies():
+    """Docs captures need the same localhost secure-context proxy as other E2E runs."""
+    script = _find_repo_file("test.sh").read_text()
+    client_docs_function = script.split("client_docs() {", 1)[1].split(
+        "\n}\n\ncmd_ci()", 1
+    )[0]
+
+    assert "node e2e/support/run-playwright.mjs --project=docs" in client_docs_function
+    assert "npx playwright test --project=docs" not in client_docs_function
+
+
 def test_dev_image_installs_pyright_from_hash_pinned_lock():
     """Local Docker type-checks should not depend on host pyright installs."""
     dockerfile = _find_repo_file("api/Dockerfile.dev").read_text()

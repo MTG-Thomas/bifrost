@@ -11,6 +11,7 @@ from src.jobs.schedulers.execution_cleanup import (
     _execution_age_anchor,
     _is_restart_orphan,
 )
+from src.models import Conversation
 from src.models.orm.agent_runs import AgentRun
 
 cleanup = execution_cleanup
@@ -259,6 +260,7 @@ def _patch_cleanup_dependencies(monkeypatch, async_session_factory):
     monkeypatch.setattr(cleanup, "publish_execution_update", AsyncMock())
     monkeypatch.setattr(cleanup, "publish_history_update", AsyncMock())
     monkeypatch.setattr(cleanup, "publish_agent_run_update", AsyncMock())
+    monkeypatch.setattr(cleanup, "publish_chat_run_event", AsyncMock())
 
 
 async def _load_run(async_session_factory, run_id):
@@ -336,6 +338,49 @@ class TestExecutionCleanupAgentRuns:
         assert running_first.status == running_second.status == "timeout"
         assert fresh_first.status == fresh_second.status == "running"
         assert fresh_second.completed_at is None
+
+    async def test_cleanup_terminalizes_agentless_chat_and_publishes_terminal_event(
+        self,
+        db_session,
+        async_session_factory,
+        seed_user,
+        monkeypatch,
+    ) -> None:
+        _patch_cleanup_dependencies(monkeypatch, async_session_factory)
+        conversation = Conversation(
+            id=uuid4(),
+            user_id=seed_user.id,
+            title="Stale chat",
+        )
+        run = AgentRun(
+            id=uuid4(),
+            agent_id=None,
+            conversation_id=conversation.id,
+            trigger_type="chat",
+            status="running",
+            iterations_used=0,
+            tokens_used=0,
+            created_at=_stale_time(40),
+            started_at=_stale_time(40),
+        )
+        db_session.add_all([conversation, run])
+        await db_session.commit()
+
+        results = await cleanup.cleanup_stuck_executions()
+
+        assert results["agent_run_running_timeouts"] == 1
+        assert results["agent_run_total_cleaned"] == 1
+        reloaded = await _load_run(async_session_factory, run.id)
+        assert reloaded.status == "timeout"
+        assert reloaded.completed_at is not None
+        cleanup.publish_agent_run_update.assert_awaited_once()
+        cleanup.publish_chat_run_event.assert_awaited_once()
+        kwargs = cleanup.publish_chat_run_event.await_args.kwargs
+        assert kwargs["conversation_id"] == conversation.id
+        assert kwargs["run_id"] == str(run.id)
+        assert kwargs["kind"] == "error"
+        assert kwargs["status"] == "timeout"
+        assert kwargs["payload"]["run_status"] == "timeout"
 
 
 def test_execution_age_anchor_uses_scheduled_then_created_for_null_start() -> None:

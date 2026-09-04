@@ -84,6 +84,7 @@ class TestEventResponseBuilders:
             integration_id=integration_id,
             integration=SimpleNamespace(name="NinjaOne"),
             config={"ticket": "created"},
+            state={},
             external_id="sub-1",
             expires_at=_now(),
             rate_limit_per_minute=30,
@@ -220,11 +221,9 @@ class TestWebhookAdapterEndpoints:
 
     @pytest.mark.asyncio
     async def test_get_dynamic_values_calls_adapter_with_integration(self):
-        integration = SimpleNamespace(id=uuid4())
-        result = MagicMock()
-        result.scalar_one_or_none.return_value = integration
+        integration_id = uuid4()
+        resolved_integration = SimpleNamespace(id=integration_id)
         db = AsyncMock()
-        db.execute = AsyncMock(return_value=result)
         adapter = MagicMock()
         adapter.get_dynamic_values = AsyncMock(
             return_value=[{"value": "p1", "label": "Project 1"}]
@@ -233,11 +232,24 @@ class TestWebhookAdapterEndpoints:
         registry.get.return_value = adapter
         request = DynamicValuesRequest(
             operation="list_projects",
-            integration_id=integration.id,
+            integration_id=integration_id,
+            organization_id=uuid4(),
             current_config={"tenant": "mtg"},
         )
 
-        with patch.object(events, "get_adapter_registry", return_value=registry):
+        with (
+            patch.object(events, "get_adapter_registry", return_value=registry),
+            patch.object(
+                events,
+                "build_webhook_integration_credentials",
+                AsyncMock(return_value=SimpleNamespace()),
+            ) as build_credentials,
+            patch.object(
+                events,
+                "resolve_webhook_integration_auth",
+                AsyncMock(return_value=resolved_integration),
+            ),
+        ):
             response = await events.get_dynamic_values(
                 "generic", request, _ctx(), _user(), db
             )
@@ -245,8 +257,13 @@ class TestWebhookAdapterEndpoints:
         assert response.items == [{"value": "p1", "label": "Project 1"}]
         adapter.get_dynamic_values.assert_awaited_once_with(
             operation="list_projects",
-            integration=integration,
+            integration=resolved_integration,
             current_config={"tenant": "mtg"},
+        )
+        build_credentials.assert_awaited_once_with(
+            db,
+            integration_id,
+            request.organization_id,
         )
 
     @pytest.mark.asyncio

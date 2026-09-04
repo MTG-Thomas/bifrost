@@ -84,6 +84,7 @@
 | GET | `/api/applications/{app_id}/bundle-manifest` |
 | GET | `/api/applications/{app_id}/dependencies` |
 | PUT | `/api/applications/{app_id}/dependencies` |
+| POST | `/api/applications/{app_id}/deploy` |
 | GET | `/api/applications/{app_id}/dist/{path}` |
 | GET | `/api/applications/{app_id}/draft` |
 | PUT | `/api/applications/{app_id}/draft` |
@@ -126,7 +127,10 @@
 | GET | `/api/chat/conversations/{conversation_id}/attachments/{attachment_id}/content` |
 | GET | `/api/chat/conversations/{conversation_id}/messages` |
 | POST | `/api/chat/conversations/{conversation_id}/messages` |
+| GET | `/api/chat/conversations/{conversation_id}/state` |
 | GET | `/api/chat/model-profiles` |
+| POST | `/api/chat/runs` |
+| POST | `/api/chat/runs/{run_id}/cancel` |
 | GET | `/api/claims` |
 | POST | `/api/claims` |
 | DELETE | `/api/claims/{name}` |
@@ -164,6 +168,7 @@
 | GET | `/api/events/sources/{source_id}` |
 | PATCH | `/api/events/sources/{source_id}` |
 | GET | `/api/events/sources/{source_id}/events` |
+| POST | `/api/events/sources/{source_id}/resubscribe` |
 | GET | `/api/events/sources/{source_id}/subscriptions` |
 | POST | `/api/events/sources/{source_id}/subscriptions` |
 | DELETE | `/api/events/sources/{source_id}/subscriptions/{subscription_id}` |

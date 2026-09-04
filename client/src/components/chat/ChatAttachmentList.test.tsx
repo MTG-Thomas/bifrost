@@ -148,9 +148,9 @@ describe("ChatAttachmentList", () => {
 			"rounded-none",
 		);
 		const nextButton = screen.getByRole("button", { name: "Next media" });
-		expect(nextButton).toHaveClass("size-11", "shrink-0", "sm:size-7");
+		expect(nextButton).toHaveClass("size-12", "shrink-0", "sm:size-7");
 		expect(screen.getByRole("button", { name: "Download" })).toHaveClass(
-			"h-11",
+			"h-12",
 			"sm:h-7",
 		);
 		await user.click(nextButton);

@@ -39,7 +39,8 @@ export function buildWsUrl(): string {
   const base = t.baseUrl ? new URL(t.baseUrl) : new URL(window.location.href);
   const proto = base.protocol === "https:" ? "wss:" : "ws:";
   const url = new URL("/ws/connect", `${proto}//${base.host}`);
-  if (t.token) url.searchParams.set("token", t.token);
+	const token = t.getToken?.() ?? t.token;
+	if (token) url.searchParams.set("token", token);
   return url.toString();
 }
 
@@ -183,7 +184,8 @@ export function subscribeToTable(
     onMessage: (message) => {
       onEvent(message as TableChangeMessage);
       return !(
-        message.type === "error" || message.type === "subscription_revoked"
+				message.type === "error" ||
+				message.type === "subscription_revoked"
       );
     },
   });
@@ -208,7 +210,8 @@ export function subscribeToFiles(
     onMessage: (message) => {
       onEvent(message as FileChangeMessage);
       return !(
-        message.type === "error" || message.type === "subscription_revoked"
+				message.type === "error" ||
+				message.type === "subscription_revoked"
       );
     },
   });

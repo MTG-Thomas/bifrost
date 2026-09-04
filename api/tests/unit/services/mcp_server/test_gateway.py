@@ -597,7 +597,8 @@ async def test_execute_returns_auditable_envelope():
 
 @pytest.mark.asyncio
 async def test_workflow_dispatch_preserves_durable_metadata_and_domain_result():
-    service = MCPAgentGatewayService(_context())
+    context = _context()
+    service = MCPAgentGatewayService(context)
     agent = _agent()
     tool = _resolved_tool()
     execution_id = str(uuid4())
@@ -630,11 +631,13 @@ async def test_workflow_dispatch_preserves_durable_metadata_and_domain_result():
         "error_type": None,
     }
     assert execute.await_args.kwargs["sync"] is True
+    assert execute.await_args.kwargs["org_id"] == str(context.org_id)
 
 
 @pytest.mark.asyncio
 async def test_workflow_task_dispatch_returns_pending_durable_metadata():
-    service = MCPAgentGatewayService(_context())
+    context = _context()
+    service = MCPAgentGatewayService(context)
     agent = _agent()
     tool = _resolved_tool()
     execution_id = str(uuid4())
@@ -661,6 +664,7 @@ async def test_workflow_task_dispatch_returns_pending_durable_metadata():
     assert result["execution_id"] == execution_id
     assert result["status"] == "Pending"
     assert execute.await_args.kwargs["sync"] is False
+    assert execute.await_args.kwargs["org_id"] == str(context.org_id)
 
 
 @pytest.mark.asyncio

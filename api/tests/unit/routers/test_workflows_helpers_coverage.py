@@ -240,7 +240,10 @@ async def test_get_form_workflow_ids_collects_uuid_refs_and_skips_portable_refs(
 async def test_get_app_workflow_ids_resolves_file_dependencies_to_active_workflows():
     matched_id = uuid4()
     unmatched_id = uuid4()
-    app = SimpleNamespace(repo_prefix="apps/customer_portal")
+    app = SimpleNamespace(
+        repo_path="apps/customer_portal",
+        repo_prefix="apps/customer_portal",
+    )
     file_rows = [
         ("const workflow = 'sync_records';",),
         (None,),

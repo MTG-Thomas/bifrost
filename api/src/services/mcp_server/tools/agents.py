@@ -69,7 +69,7 @@ def _agent_repository(context: Any, db: Any) -> Any:
         session=db,
         org_id=org_id,
         user_id=user_id,
-        is_superuser=bool(context.is_platform_admin),
+        is_superuser=bool(context.has_scope_bypass),
         is_external=bool(getattr(context, "is_external", False)),
     )
 
@@ -88,7 +88,7 @@ async def _load_accessible_agent(
     if agent_id is not None:
         return await repo.get_agent_with_access_check(agent_id)
 
-    if context.is_platform_admin:
+    if context.has_scope_bypass:
         candidates = await repo.list_all_in_scope(
             OrgFilterType.ALL,
             active_only=False,
@@ -184,8 +184,6 @@ async def list_agents(context: Any) -> ToolResult:
 
     try:
         async with get_tool_db(context) as db:
-            # Determine org_id and admin status based on context
-            is_admin = context.is_platform_admin
             if context.org_id:
                 org_id = UUID(str(context.org_id)) if isinstance(context.org_id, str) else context.org_id
             else:
@@ -196,19 +194,20 @@ async def list_agents(context: Any) -> ToolResult:
             if hasattr(context, "user_id") and context.user_id:
                 user_id = UUID(str(context.user_id)) if isinstance(context.user_id, str) else context.user_id
 
+            scope_bypass = context.has_scope_bypass
             repo = AgentRepository(
                 session=db,
                 org_id=org_id,
                 user_id=user_id,
-                is_superuser=is_admin,
+                is_superuser=scope_bypass,
                 is_external=context.is_external,
             )
-
-            if is_admin:
-                # Platform admins see all agents using list_all_in_scope
-                agents = await repo.list_all_in_scope(OrgFilterType.ALL, active_only=True)
+            if scope_bypass:
+                agents = await repo.list_all_in_scope(
+                    OrgFilterType.ALL,
+                    active_only=True,
+                )
             else:
-                # Regular users use list_agents with built-in cascade + role-based access
                 agents = await repo.list_agents(active_only=True)
 
             agents_data = [

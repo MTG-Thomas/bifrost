@@ -14,7 +14,6 @@ from typing import Any
 
 import httpx
 
-from src.core.security import decrypt_secret
 from src.services.webhooks.protocol import (
     Deliver,
     HandleResult,
@@ -23,36 +22,11 @@ from src.services.webhooks.protocol import (
     SubscribeResult,
     ValidationResponse,
     WebhookAdapter,
+    WebhookIntegrationAuth,
     WebhookRequest,
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _get_access_token(integration: Any | None) -> str:
-    """Read a Graph access token from SDK-style or ORM-style integration data."""
-    if not integration:
-        raise ValueError("Microsoft integration with OAuth is required")
-
-    oauth = getattr(integration, "oauth", None)
-    access_token = getattr(oauth, "access_token", None)
-    if access_token:
-        return access_token
-
-    provider = getattr(integration, "oauth_provider", None)
-    tokens = getattr(provider, "tokens", None) if provider else None
-    token = next(iter(tokens or []), None)
-    encrypted_access_token = getattr(token, "encrypted_access_token", None)
-    if encrypted_access_token:
-        raw_token = (
-            encrypted_access_token.decode()
-            if isinstance(encrypted_access_token, bytes)
-            else encrypted_access_token
-        )
-        return decrypt_secret(raw_token)
-
-    raise ValueError("OAuth access token is required")
-
 
 class MicrosoftGraphAdapter(WebhookAdapter):
     """
@@ -69,13 +43,13 @@ class MicrosoftGraphAdapter(WebhookAdapter):
     Configuration:
         resource: Graph resource path (e.g., '/users/{user-id}/messages')
         change_types: List of change types to subscribe to
-        include_resource_data: Whether to include resource data in notifications
     """
 
     name = "microsoft_graph"
     display_name = "Microsoft Graph"
     description = "Webhooks for Microsoft 365 services (Mail, Calendar, Teams, etc.)"
     requires_integration = "Microsoft"
+    requires_organization = True
     renewal_interval = timedelta(hours=24)  # Check daily, renew before 72h expiry
 
     config_schema = {
@@ -89,7 +63,7 @@ class MicrosoftGraphAdapter(WebhookAdapter):
                 "x-dynamic-values": {
                     "operation": "list_users",
                     "value_path": "id",
-                    "label_path": "displayName",
+                    "label_path": "label",
                     "depends_on": [],
                 },
             },
@@ -114,12 +88,6 @@ class MicrosoftGraphAdapter(WebhookAdapter):
                 },
                 "default": ["created"],
                 "uniqueItems": True,
-            },
-            "include_resource_data": {
-                "type": "boolean",
-                "title": "Include Resource Data",
-                "description": "Include the changed resource data in notifications (requires additional permissions)",
-                "default": False,
             },
         },
     }
@@ -146,12 +114,12 @@ class MicrosoftGraphAdapter(WebhookAdapter):
 
     async def _list_users(self, integration: Any | None) -> list[dict[str, Any]]:
         """Fetch users from Microsoft Graph API."""
-        access_token = _get_access_token(integration)
+        auth = self._require_auth(integration)
 
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 "https://graph.microsoft.com/v1.0/users",
-                headers={"Authorization": f"Bearer {access_token}"},
+                headers={"Authorization": f"Bearer {auth.access_token}"},
                 params={"$select": "id,displayName,mail,userPrincipalName", "$top": "100"},
                 timeout=30.0,
             )
@@ -170,15 +138,47 @@ class MicrosoftGraphAdapter(WebhookAdapter):
             data = response.json()
             users = data.get("value", [])
 
-            # Return list of user objects with id and displayName
-            return [
-                {
-                    "id": user["id"],
-                    "displayName": user.get("displayName") or user.get("userPrincipalName", "Unknown"),
-                    "mail": user.get("mail"),
-                }
-                for user in users
-            ]
+            return [self._user_option(user) for user in users]
+
+    @staticmethod
+    def _user_option(user: dict[str, Any]) -> dict[str, Any]:
+        display_name = user.get("displayName")
+        principal_name = user.get("userPrincipalName") or user.get("mail")
+        if principal_name and display_name and principal_name != display_name:
+            label = f"{principal_name} · {display_name}"
+        else:
+            label = principal_name or display_name or "Unknown user"
+        return {
+            "id": user["id"],
+            "label": label,
+            "displayName": display_name,
+            "userPrincipalName": user.get("userPrincipalName"),
+            "mail": user.get("mail"),
+        }
+
+    async def _fetch_user_metadata(
+        self,
+        client: httpx.AsyncClient,
+        auth: WebhookIntegrationAuth,
+        user_id: str,
+    ) -> dict[str, Any]:
+        response = await client.get(
+            f"https://graph.microsoft.com/v1.0/users/{user_id}",
+            headers={"Authorization": f"Bearer {auth.access_token}"},
+            params={"$select": "id,displayName,mail,userPrincipalName"},
+            timeout=30.0,
+        )
+        if response.status_code != 200:
+            raise ValueError(
+                "Failed to resolve the selected Graph user: "
+                f"{self._error_message(response)}"
+            )
+        user = response.json()
+        return {
+            "user_display_name": user.get("displayName"),
+            "user_principal_name": user.get("userPrincipalName"),
+            "user_mail": user.get("mail"),
+        }
 
     def _list_resources(self, current_config: dict[str, Any]) -> list[dict[str, Any]]:
         """Return common Graph resource templates based on selected user."""
@@ -230,7 +230,7 @@ class MicrosoftGraphAdapter(WebhookAdapter):
 
         Calls POST /subscriptions to register the webhook with Graph API.
         """
-        access_token = _get_access_token(integration)
+        auth = self._require_auth(integration)
 
         # Generate client state for validation
         client_state = self.generate_secret(32)
@@ -247,16 +247,16 @@ class MicrosoftGraphAdapter(WebhookAdapter):
             "clientState": client_state,
         }
 
-        # Add resource data if requested (requires encryption certificate)
-        if config.get("include_resource_data"):
-            subscription_body["includeResourceData"] = True
-            # Note: Would need to add encryption certificate handling
-
         async with httpx.AsyncClient() as client:
+            user_metadata: dict[str, Any] = {}
+            user_id = config.get("user_id")
+            if user_id:
+                user_metadata = await self._fetch_user_metadata(client, auth, user_id)
+
             response = await client.post(
                 "https://graph.microsoft.com/v1.0/subscriptions",
                 headers={
-                    "Authorization": f"Bearer {access_token}",
+                    "Authorization": f"Bearer {auth.access_token}",
                     "Content-Type": "application/json",
                 },
                 json=subscription_body,
@@ -267,19 +267,14 @@ class MicrosoftGraphAdapter(WebhookAdapter):
                 data = response.json()
                 return SubscribeResult(
                     external_id=data["id"],
-                    state={"client_state": client_state},
+                    state={"client_state": client_state, **user_metadata},
                     expires_at=self.parse_datetime(data["expirationDateTime"]),
                 )
             else:
-                error_msg = response.text
-                try:
-                    error_data = response.json()
-                    if "error" in error_data:
-                        error_msg = error_data["error"].get("message", error_msg)
-                except (ValueError, KeyError) as e:
-                    # Response wasn't JSON or didn't have expected shape — fall back to raw text
-                    logger.debug(f"could not parse Graph subscribe error response as JSON: {e}")
-                raise ValueError(f"Failed to create Graph subscription: {error_msg}")
+                raise ValueError(
+                    "Failed to create Graph subscription: "
+                    f"{self._error_message(response)}"
+                )
 
     async def unsubscribe(
         self,
@@ -290,31 +285,46 @@ class MicrosoftGraphAdapter(WebhookAdapter):
         """
         Delete Graph subscription.
 
-        Best effort - doesn't raise on failure.
+        A missing subscription is already clean. Other provider failures are
+        raised so Bifrost does not delete its only record of an orphan.
         """
         if not external_id:
             return
 
-        try:
-            access_token = _get_access_token(integration)
-        except ValueError:
-            return
+        auth = self._require_auth(integration)
 
-        try:
-            async with httpx.AsyncClient() as client:
-                await client.delete(
-                    f"https://graph.microsoft.com/v1.0/subscriptions/{external_id}",
-                    headers={"Authorization": f"Bearer {access_token}"},
-                    timeout=30.0,
-                )
-        except Exception:
-            # Best effort - subscription may have already expired
-            pass
+        async with httpx.AsyncClient() as client:
+            response = await client.delete(
+                f"https://graph.microsoft.com/v1.0/subscriptions/{external_id}",
+                headers={"Authorization": f"Bearer {auth.access_token}"},
+                timeout=30.0,
+            )
+        if response.status_code not in {204, 404}:
+            raise ValueError(
+                "Failed to delete Graph subscription: "
+                f"{self._error_message(response)}"
+            )
+
+    def get_public_metadata(
+        self,
+        config: dict[str, Any],
+        state: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "provider": "Microsoft Graph",
+            "resource": config.get("resource"),
+            "change_types": config.get("change_types", []),
+            "user_id": config.get("user_id"),
+            "user_display_name": state.get("user_display_name"),
+            "user_principal_name": state.get("user_principal_name"),
+            "user_mail": state.get("user_mail"),
+        }
 
     async def renew(
         self,
         external_id: str | None,
         state: dict[str, Any],
+        config: dict[str, Any],
         integration: Any | None,
     ) -> RenewResult | None:
         """
@@ -325,9 +335,7 @@ class MicrosoftGraphAdapter(WebhookAdapter):
         if not external_id:
             return None
 
-        try:
-            access_token = _get_access_token(integration)
-        except ValueError:
+        if not isinstance(integration, WebhookIntegrationAuth):
             return None
 
         # Extend for another 3 days
@@ -337,7 +345,7 @@ class MicrosoftGraphAdapter(WebhookAdapter):
             response = await client.patch(
                 f"https://graph.microsoft.com/v1.0/subscriptions/{external_id}",
                 headers={
-                    "Authorization": f"Bearer {access_token}",
+                    "Authorization": f"Bearer {integration.access_token}",
                     "Content-Type": "application/json",
                 },
                 json={"expirationDateTime": new_expiration},
@@ -346,12 +354,27 @@ class MicrosoftGraphAdapter(WebhookAdapter):
 
             if response.status_code == 200:
                 data = response.json()
+                user_metadata: dict[str, Any] = {}
+                user_id = config.get("user_id")
+                if user_id:
+                    user_metadata = await self._fetch_user_metadata(
+                        client, integration, user_id
+                    )
                 return RenewResult(
                     expires_at=self.parse_datetime(data["expirationDateTime"]),
+                    state=user_metadata,
                 )
             else:
                 # Subscription may have expired - caller should recreate
                 return None
+
+    @staticmethod
+    def _require_auth(integration: Any | None) -> WebhookIntegrationAuth:
+        if not isinstance(integration, WebhookIntegrationAuth):
+            raise ValueError(
+                "Microsoft integration authentication could not be resolved for this organization"
+            )
+        return integration
 
     async def handle_request(
         self,
@@ -397,15 +420,14 @@ class MicrosoftGraphAdapter(WebhookAdapter):
         # Future: could batch process all notifications
         first_notification = notifications[0]
 
-        # Extract event type from change type
+        # Event identity comes from the configured collection, not Graph's
+        # notification resource. The latter ends in the changed object's UUID.
         event_type = first_notification.get("changeType")
-        resource = first_notification.get("resource")
-        if resource:
-            # Create more descriptive event type
-            # e.g., "messages.created", "events.updated"
-            resource_type = resource.split("/")[-1] if "/" in resource else resource
+        configured_resource = config.get("resource")
+        if configured_resource:
+            resource_type = configured_resource.rstrip("/").split("/")[-1]
             if event_type:
-                event_type = f"{resource_type}.{event_type}"
+                event_type = f"graph.{resource_type}.{event_type}"
 
         return Deliver(
             data={
@@ -420,3 +442,14 @@ class MicrosoftGraphAdapter(WebhookAdapter):
             event_type=event_type,
             raw_headers=request.headers,
         )
+
+    @staticmethod
+    def _error_message(response: httpx.Response) -> str:
+        error_msg = response.text
+        try:
+            error_data = response.json()
+            if "error" in error_data:
+                error_msg = error_data["error"].get("message", error_msg)
+        except (ValueError, KeyError) as exc:
+            logger.debug("could not parse Graph error response as JSON: %s", exc)
+        return error_msg

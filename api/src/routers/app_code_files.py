@@ -285,6 +285,15 @@ async def _read_authoritative_source(
     return (await repo.read(path)).decode("utf-8", errors="replace")
 
 
+def _server_source_prefix(app: Application) -> str:
+    if app.repo_path is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This App's source is local and is not stored by Bifrost.",
+        )
+    return app.repo_prefix
+
+
 # =============================================================================
 # S3-backed App File Endpoints
 # =============================================================================
@@ -313,7 +322,7 @@ async def list_app_files(
     repo = RepoStorage()
 
     # List source files from S3 (source of truth)
-    repo_prefix = app.repo_prefix
+    repo_prefix = _server_source_prefix(app)
     release_view = await active_workspace_release_file_view(ctx.db, ctx.org_id)
     source_paths = set(await repo.list(repo_prefix))
     if release_view is not None:
@@ -384,7 +393,7 @@ async def read_app_file(
     app_storage = AppStorageService()
 
     # Source from S3 (_repo/)
-    repo_path = f"{app.repo_prefix}{file_path}"
+    repo_path = f"{_server_source_prefix(app)}{file_path}"
     repo = RepoStorage()
     release_view = await active_workspace_release_file_view(ctx.db, ctx.org_id)
     if release_view is not None and release_view.governs(repo_path):
@@ -444,7 +453,7 @@ async def write_app_file(
     # Validate path conventions
     validate_file_path(file_path)
 
-    prefix = app.repo_prefix
+    prefix = _server_source_prefix(app)
     full_path = f"{prefix}{file_path}"
     source = data.source or ""
 
@@ -491,7 +500,7 @@ async def delete_app_file(
     app = await get_application_or_404(ctx, app_id)
     # Read-only for solution-managed apps (S3 delete bypasses the ORM backstop).
     await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
-    prefix = app.repo_prefix
+    prefix = _server_source_prefix(app)
     full_path = f"{prefix}{file_path}"
 
     await reject_release_governed_paths(ctx.db, ctx.org_id, [full_path])
@@ -658,7 +667,13 @@ async def get_bundle_manifest(
         css: str | None = None
         runtime_contract: str | None = None
         try:
-            html = (await SolutionAppBuilder().read_dist(app_id_str, "index.html")).decode()
+            html = (
+                await SolutionAppBuilder().read_dist(
+                    app_id_str,
+                    "index.html",
+                    deployment_id=app.active_deployment_id,
+                )
+            ).decode()
             parser = _IndexAssetParser()
             parser.feed(html)
             if parser.entry:
@@ -879,7 +894,9 @@ async def get_v2_dist_asset(
     app = await get_application_or_404(ctx, app_id)
     rel = path or "index.html"
     try:
-        data = await SolutionAppBuilder().read_dist(str(app.id), rel)
+        data = await SolutionAppBuilder().read_dist(
+            str(app.id), rel, deployment_id=app.active_deployment_id
+        )
     except ClientError as exc:
         # read_dist surfaces a missing key as the raw botocore ClientError from
         # get_object (Code=NoSuchKey). Only THAT is a 404 — anything else is a
