@@ -422,9 +422,31 @@ test.describe("Chat attachments and model profiles", () => {
 		await expect(
 			page.getByText("Document Agent", { exact: true }),
 		).toBeVisible();
-		await page
-			.getByRole("button", { name: /create_text_artifact/i })
-			.click();
+		const toolDetails = page.getByRole("button", {
+			name: /create_text_artifact/i,
+		});
+		// Freeze a partially expanded frame to exercise focus/scroll behavior
+		// deterministically, independent of how fast the CI browser renders.
+		const activityScrollTop = await toolDetails.evaluate((button) => {
+			const activity = button.closest<HTMLElement>(
+				'[aria-hidden="false"]',
+			)!;
+			const content = activity.firstElementChild as HTMLElement;
+			const expansion = activity.animate(
+				[{ gridTemplateRows: "0fr" }, { gridTemplateRows: "1fr" }],
+				{ duration: 300, fill: "both" },
+			);
+			try {
+				expansion.pause();
+				expansion.currentTime = 100;
+				button.scrollIntoView({ block: "nearest" });
+				return content.scrollTop;
+			} finally {
+				expansion.cancel();
+			}
+		});
+		expect(activityScrollTop).toBe(0);
+		await toolDetails.click();
 		await expect(
 			page.getByRole("heading", { name: "Result" }),
 		).toBeVisible();
