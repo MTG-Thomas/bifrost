@@ -57,6 +57,31 @@ def test_mtg_candidate_images_are_promoted_without_rebuild() -> None:
     assert "Midtown-Technology-Group/bifrost" in candidates["if"]
     assert "inputs.queue_post_merge" in promotion["if"]
 
+    checkout = next(
+        step for step in candidates["steps"]
+        if step["name"] == "Checkout exact pull-request head"
+    )
+    identity = next(
+        step for step in candidates["steps"]
+        if step["name"] == "Compute immutable candidate identity"
+    )
+    build = next(
+        step for step in candidates["steps"]
+        if step["name"] == "Build immutable candidate"
+    )
+    verify = next(
+        step for step in candidates["steps"]
+        if step["name"] == "Verify candidate identity and signature"
+    )
+    assert "github.event.merge_group.base_sha" in identity["env"]["BASE_SHA"]
+    for value in (
+        checkout["with"]["ref"],
+        identity["env"]["HEAD_SHA"],
+        verify["env"]["HEAD_SHA"],
+    ):
+        assert "github.sha" in value
+    assert "github.sha" in build["with"]["labels"]
+
     source = "\n".join(step.get("run", "") for step in promotion["steps"])
     assert "candidate_image.py promote" in source
     assert "--tree-sha" in source

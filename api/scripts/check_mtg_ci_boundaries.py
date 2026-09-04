@@ -100,8 +100,12 @@ def check_ci_workflow(path: Path) -> list[str]:
         return [f"{path}: workflow file does not exist"]
 
     lines = path.read_text(encoding="utf-8").splitlines()
-    if not any(line == "  merge_group:" for line in lines):
+    try:
+        merge_group_index = lines.index("  merge_group:")
+    except ValueError:
         return [f"{path}: native merge queue checks require the merge_group trigger."]
+    if lines[merge_group_index + 1].strip() != "types: [checks_requested]":
+        return [f"{path}: merge_group must handle only checks_requested."]
     if not any(line.strip() == EXPECTED_PR_CANCELLATION for line in lines):
         return [f"{path}: superseded pull-request runs must be cancelled without cancelling push runs."]
     for job, expected_name in REQUIRED_CI_JOB_NAMES.items():
