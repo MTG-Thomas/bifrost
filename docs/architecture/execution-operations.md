@@ -138,6 +138,7 @@ The registered definitions at this baseline are:
 | `artifact.retention_cleanup` | 30m | 2 | 1 | 128 MiB | Singleton maintenance |
 | `solution.export` | 60m | 2 | shared | 512 MiB | Standard isolated handler |
 | `solution.deploy` | 60m | 2 | shared | 512 MiB | Encrypted payload and learned memory profile |
+| `solution.deploy.reconcile` | 20m | 2 | shared | 512 MiB | Verify successful deployment and recover accountability evidence under the install lock |
 | `embedding.reindex` | 4h | 2 | 1 | 512 MiB | Serialized high-memory work |
 | `workspace.reimport` | 60m | 2 | 1 | 512 MiB | Serialized Workspace mutation |
 | `workspace.git` | 60m | 2 | 1 | 512 MiB | Serialized git operation |

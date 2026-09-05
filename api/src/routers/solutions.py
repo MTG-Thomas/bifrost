@@ -38,6 +38,7 @@ from bifrost.solution_jobs import (
 from shared.logo_processing import is_logo_thumbnail_version
 from src.config import get_settings
 from src.core.auth import Context, CurrentSuperuser
+from src.models.contracts.platform_jobs import PlatformJobAccepted, PlatformJobStatus
 from src.models.contracts.solutions import (
     Solution as SolutionDTO,
     SolutionAccessUserSummary,
@@ -98,7 +99,11 @@ from src.jobs.platform.solution_deploy import (
 from src.services.github_actions_oidc import (
     workspace_source_release_tracking_organization_id,
 )
-from src.services.platform_jobs import enqueue_platform_job, publish_platform_job_update
+from src.services.platform_jobs import (
+    enqueue_platform_job,
+    ensure_platform_job_notification,
+    publish_platform_job_update,
+)
 from src.services.platform_job_memory_profiles import build_solution_memory_profile_key
 from src.services.solutions.deploy_job_storage import SolutionDeployJobStorage
 from src.services.solutions.deploy import (
@@ -2526,3 +2531,54 @@ async def install_solution(
     finally:
         _cleanup_file(zip_path)
     return SolutionDeployEnqueued(deploy_job_id=job.id)
+
+
+@router.post(
+    "/{solution_id}/deploy-jobs/{deploy_job_id}/reconcile",
+    response_model=PlatformJobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Reconcile a successful Solution deployment's accountability (admin only)",
+)
+async def reconcile_solution_deployment(
+    solution_id: UUID, deploy_job_id: UUID, ctx: Context, user: CurrentSuperuser,
+    response: Response,
+) -> PlatformJobAccepted:
+    from src.jobs.platform.solution_accountability_reconcile import (
+        SOLUTION_ACCOUNTABILITY_RECONCILE_DEFINITION,
+        SolutionAccountabilityReconcilePayload,
+    )
+    from src.services.solutions.accountability_recovery import (
+        AccountabilityRecoveryConflict,
+        validate_recovery_deployment,
+    )
+
+    try:
+        solution, _, _ = await validate_recovery_deployment(
+            ctx.db, solution_id=solution_id, deploy_job_id=deploy_job_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Solution or deployment not found") from exc
+    except AccountabilityRecoveryConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    job, reused = await enqueue_platform_job(
+        ctx.db, SOLUTION_ACCOUNTABILITY_RECONCILE_DEFINITION,
+        SolutionAccountabilityReconcilePayload(solution_id=solution_id, deploy_job_id=deploy_job_id),
+        dedupe_key=f"{solution_id}:{deploy_job_id}",
+        resource_lock_key=f"solution:{solution_id}",
+        organization_id=solution.organization_id,
+        requested_by_user_id=user.user_id,
+        requested_by_email=user.email,
+        requested_by_name=user.name or user.email,
+        resource_type="solution",
+        resource_id=str(solution_id),
+        title="Reconcile Solution deployment accountability",
+        action_url=f"/solutions/{solution_id}",
+    )
+    await ensure_platform_job_notification(ctx.db, job)
+    await ctx.db.commit()
+    await publish_platform_job_update(job)
+    response.headers["Location"] = f"/api/platform-jobs/{job.id}"
+    return PlatformJobAccepted(
+        job_id=job.id, status=PlatformJobStatus(job.status),
+        reused=reused, notification_id=job.notification_id,
+    )
