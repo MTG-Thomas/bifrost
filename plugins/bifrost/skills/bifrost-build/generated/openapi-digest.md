@@ -509,6 +509,7 @@
 | POST | `/api/solutions/{solution_id}/capture/preview` |
 | GET | `/api/solutions/{solution_id}/deletion-summary` |
 | POST | `/api/solutions/{solution_id}/deploy` |
+| POST | `/api/solutions/{solution_id}/deploy-jobs/{deploy_job_id}/reconcile` |
 | POST | `/api/solutions/{solution_id}/deployments` |
 | GET | `/api/solutions/{solution_id}/deployments/capabilities` |
 | GET | `/api/solutions/{solution_id}/deployments/{deployment_id}` |
