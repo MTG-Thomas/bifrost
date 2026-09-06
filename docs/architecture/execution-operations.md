@@ -433,6 +433,17 @@ and PostgreSQL:
 4. prefetch-based admission keeps a saturated consumer at bounded concurrency;
 5. graceful drain waits for active work and acknowledges it before closing.
 
+Workflow consumers also drain work already handed to the child-process pool.
+The broker handler can finish before the workflow does, so an empty handler
+set alone is insufficient. Shutdown first closes admission, then waits for
+routing handlers, active children, and pending result persistence using one
+shared deadline. Monitoring and heartbeats remain active until that wait ends.
+Deadline expiry retains the existing durable worker-loss surrender behavior.
+Set `BIFROST_DRAIN_DEADLINE_SECONDS` below the orchestrator's termination grace
+period, with time left for process termination and durable cleanup. Hard kills
+and executions exceeding that window still require worker-loss recovery; this
+does not authorize replay of workflows with uncertain external effects.
+
 Each scenario captures queue state before and after, reconciles durable claim
 and effect counts, rejects unexpected poison, and writes
 `execution-reliability-gauntlet.json`. Cleanup deletes only the run's generated

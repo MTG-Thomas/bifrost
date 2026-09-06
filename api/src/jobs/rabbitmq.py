@@ -324,6 +324,7 @@ class _AbstractConsumer(ABC):
         if self._draining:
             return  # idempotent
         self._draining = True
+        expires_at = asyncio.get_running_loop().time() + deadline
 
         try:
             # Cancel the consumer: stops new deliveries, keeps channel open.
@@ -345,7 +346,7 @@ class _AbstractConsumer(ABC):
                 try:
                     await asyncio.wait_for(
                         asyncio.gather(*pending, return_exceptions=True),
-                        timeout=deadline,
+                        timeout=max(0.0, expires_at - asyncio.get_running_loop().time()),
                     )
                     logger.info(f"Drain complete for {self.queue_name}")
                 except asyncio.TimeoutError:
@@ -354,9 +355,15 @@ class _AbstractConsumer(ABC):
                         f"Drain deadline exceeded on {self.queue_name}: "
                         f"{len(still_running)} task(s) still running"
                     )
+            await self._drain_admitted_work(
+                max(0.0, expires_at - asyncio.get_running_loop().time())
+            )
         finally:
             # Always close channel + connection, even if cancelled mid-drain.
             await self.stop()
+
+    async def _drain_admitted_work(self, deadline: float) -> None:
+        """Wait for work handed off beyond the broker handler before teardown."""
 
     async def _on_message(self, message: IncomingMessage) -> None:
         """
