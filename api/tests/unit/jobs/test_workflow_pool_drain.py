@@ -107,3 +107,44 @@ async def test_cancelled_drain_still_stops_pool_with_owned_handles():
         await drain
     consumer._pool.stop.assert_awaited_once()
     assert consumer._pool.processes["child"] is handle
+
+
+@pytest.mark.asyncio
+async def test_stalled_handler_cancellation_cleanup_cannot_block_pool_surrender():
+    consumer = make_consumer()
+    handle = MagicMock()
+    consumer._pool.processes["owned-child"] = handle
+    handler_started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    async def blocked_handler(_body):
+        handler_started.set()
+        await asyncio.Event().wait()
+
+    async def stalled_retry(*_args, **_kwargs):
+        cleanup_started.set()
+        await release_cleanup.wait()
+
+    consumer.process_message = AsyncMock(side_effect=blocked_handler)
+    consumer._retry_or_poison = AsyncMock(side_effect=stalled_retry)
+    message = MagicMock()
+    message.body = b'{"execution_id": "owned-child"}'
+    message.message_id = "drain-stalled-cleanup"
+    message.ack = AsyncMock()
+    message.nack = AsyncMock()
+    await consumer._on_message(message)
+    handler = next(iter(consumer._inflight))
+    await handler_started.wait()
+    drain = asyncio.create_task(consumer.drain(deadline=0.01))
+    try:
+        await asyncio.wait_for(cleanup_started.wait(), timeout=1)
+        completed, _ = await asyncio.wait({drain}, timeout=0.2)
+        assert drain in completed, "Broker cancellation cleanup blocked pool surrender"
+        await drain
+        consumer._pool.stop.assert_awaited_once()
+        assert consumer._pool.processes["owned-child"] is handle
+        assert not handler.done()
+    finally:
+        release_cleanup.set()
+        await asyncio.gather(drain, handler, return_exceptions=True)
