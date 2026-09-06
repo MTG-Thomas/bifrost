@@ -91,6 +91,8 @@ from src.models.contracts.cli import (
     CLISessionRegisterRequest,
     CLISessionResponse,
     CLISessionResultRequest,
+    SDKIntegrationRequestSlotRequest,
+    SDKIntegrationRequestSlotResponse,
     SDKIntegrationsGetRequest,
     SDKIntegrationsGetResponse,
     SDKIntegrationsOAuthData,
@@ -741,6 +743,71 @@ async def cli_delete_config(
 # =============================================================================
 # SDK Integrations Endpoints
 # =============================================================================
+
+
+async def _request_slot_integration(
+    request: SDKIntegrationRequestSlotRequest,
+    current_user: CurrentUser,
+    db: AsyncSession,
+):
+    """Resolve caller scope before reading the shared integration policy.
+
+    External users cannot contend for global integration resources. Internal
+    SDK callers use the same organization validation as integrations.get.
+    Configuration values and credential material never leave this helper.
+    """
+    from src.repositories.integrations import IntegrationsRepository
+
+    await _resolve_sdk_org_id(current_user, request.scope, db)
+    if await _is_external_user_db(current_user, db):
+        raise HTTPException(status_code=403, detail="Integration request slots require an internal caller")
+    repo = IntegrationsRepository(db)
+    integration = await repo.get_integration_by_name(request.name)
+    if integration is None:
+        if request.solution and await _connection_is_declared(db, str(request.solution), request.name):
+            raise HTTPException(status_code=424, detail="Declared integration is not configured")
+        raise HTTPException(status_code=404, detail="Integration not found")
+    owner = f"{current_user.user_id}:{request.token}"
+    return repo, integration, owner
+
+
+@router.post("/integrations/request-slot/acquire", response_model=SDKIntegrationRequestSlotResponse)
+async def sdk_integration_request_slot_acquire(
+    request: SDKIntegrationRequestSlotRequest,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> SDKIntegrationRequestSlotResponse:
+    from src.services import integration_request_slots as slots
+
+    repo, integration, owner = await _request_slot_integration(request, current_user, db)
+    defaults = await repo.get_integration_defaults(integration.id, external=False)
+    try:
+        limit = slots.validate_limit(defaults.get(slots.SETTING))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if limit is None:
+        return SDKIntegrationRequestSlotResponse(
+            enabled=False, acquired=True, lease_remaining_seconds=0,
+            max_request_seconds=slots.MAX_REQUEST_SECONDS,
+        )
+    acquired, remaining = await slots.acquire(integration.id, owner, limit)
+    return SDKIntegrationRequestSlotResponse(
+        enabled=True, acquired=acquired, lease_remaining_seconds=remaining,
+        max_request_seconds=slots.MAX_REQUEST_SECONDS,
+    )
+
+
+@router.post("/integrations/request-slot/release", response_model=bool)
+async def sdk_integration_request_slot_release(
+    request: SDKIntegrationRequestSlotRequest,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> bool:
+    from src.services import integration_request_slots as slots
+
+    _, integration, owner = await _request_slot_integration(request, current_user, db)
+    await slots.release(integration.id, owner)
+    return True
 
 
 async def _connection_is_declared(
