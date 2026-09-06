@@ -6,19 +6,24 @@ import pytest
 
 
 @pytest.mark.e2e
-def test_shared_integration_admission_and_owner_release(e2e_client, platform_admin):
+def test_shared_integration_admission_and_owner_release(e2e_client, platform_admin, org1):
     headers = platform_admin.headers
     name = f"slots-{uuid4().hex}"
     created = e2e_client.post("/api/integrations", headers=headers, json={"name": name})
     assert created.status_code == 201, created.text
     integration_id = created.json()["id"]
-    bodies = [{"name": name, "scope": "global", "token": str(uuid4())} for _ in range(8)]
+    bodies = [{"name": name, "scope": "global" if i % 2 else str(org1["id"]), "token": str(uuid4())} for i in range(8)]
     try:
         configured = e2e_client.put(
             f"/api/integrations/{integration_id}/config", headers=headers,
             json={"config": {"request_concurrency_limit": 2}},
         )
         assert configured.status_code == 200, configured.text
+        mapping = e2e_client.post(
+            f"/api/integrations/{integration_id}/mappings", headers=headers,
+            json={"organization_id": str(org1["id"]), "entity_id": "example", "config": {"request_concurrency_limit": 100}},
+        )
+        assert mapping.status_code == 201, mapping.text
 
         def acquire(body):
             response = e2e_client.post("/api/sdk/integrations/request-slot/acquire", headers=headers, json=body)

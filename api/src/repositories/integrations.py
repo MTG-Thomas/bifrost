@@ -144,6 +144,29 @@ class IntegrationsRepository(BaseRepository[Integration]):
         )
         return result.unique().scalar_one_or_none()
 
+    async def get_request_slot_policy(self, name: str) -> tuple[UUID, object] | None:
+        """Read only the integration identity and global admission setting.
+
+        Admission polling must not load mappings or decrypt vendor credentials.
+        Organization overrides deliberately do not affect a shared limit.
+        """
+        result = await self.session.execute(
+            select(Integration.id, Config.value)
+            .outerjoin(Config, and_(
+                Config.integration_id == Integration.id,
+                Config.organization_id.is_(None),
+                Config.key == "request_concurrency_limit",
+            ))
+            .where(Integration.name == name, Integration.is_deleted.is_(False))
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        value = row[1]
+        if isinstance(value, dict) and "value" in value:
+            value = value["value"]
+        return row[0], value
+
     async def get_integration_by_name(self, name: str) -> Integration | None:
         """
         Get integration by name with relationships loaded.

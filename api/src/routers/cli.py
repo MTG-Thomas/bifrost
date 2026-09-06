@@ -754,7 +754,7 @@ async def _request_slot_integration(
 
     External users cannot contend for global integration resources. Internal
     SDK callers use the same organization validation as integrations.get.
-    Configuration values and credential material never leave this helper.
+    Only the integration identity and admission setting are read.
     """
     from src.repositories.integrations import IntegrationsRepository
 
@@ -762,13 +762,13 @@ async def _request_slot_integration(
     if await _is_external_user_db(current_user, db):
         raise HTTPException(status_code=403, detail="Integration request slots require an internal caller")
     repo = IntegrationsRepository(db)
-    integration = await repo.get_integration_by_name(request.name)
-    if integration is None:
+    policy = await repo.get_request_slot_policy(request.name)
+    if policy is None:
         if request.solution and await _connection_is_declared(db, str(request.solution), request.name):
             raise HTTPException(status_code=424, detail="Declared integration is not configured")
         raise HTTPException(status_code=404, detail="Integration not found")
     owner = f"{current_user.user_id}:{request.token}"
-    return repo, integration, owner
+    return policy[0], policy[1], owner
 
 
 @router.post("/integrations/request-slot/acquire", response_model=SDKIntegrationRequestSlotResponse)
@@ -779,10 +779,9 @@ async def sdk_integration_request_slot_acquire(
 ) -> SDKIntegrationRequestSlotResponse:
     from src.services import integration_request_slots as slots
 
-    repo, integration, owner = await _request_slot_integration(request, current_user, db)
-    defaults = await repo.get_integration_defaults(integration.id, external=False)
+    integration_id, setting, owner = await _request_slot_integration(request, current_user, db)
     try:
-        limit = slots.validate_limit(defaults.get(slots.SETTING))
+        limit = slots.validate_limit(setting)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if limit is None:
@@ -790,7 +789,7 @@ async def sdk_integration_request_slot_acquire(
             enabled=False, acquired=True, lease_remaining_seconds=0,
             max_request_seconds=slots.MAX_REQUEST_SECONDS,
         )
-    acquired, remaining = await slots.acquire(integration.id, owner, limit)
+    acquired, remaining = await slots.acquire(integration_id, owner, limit)
     return SDKIntegrationRequestSlotResponse(
         enabled=True, acquired=acquired, lease_remaining_seconds=remaining,
         max_request_seconds=slots.MAX_REQUEST_SECONDS,
@@ -805,8 +804,8 @@ async def sdk_integration_request_slot_release(
 ) -> bool:
     from src.services import integration_request_slots as slots
 
-    _, integration, owner = await _request_slot_integration(request, current_user, db)
-    await slots.release(integration.id, owner)
+    integration_id, _, owner = await _request_slot_integration(request, current_user, db)
+    await slots.release(integration_id, owner)
     return True
 
 

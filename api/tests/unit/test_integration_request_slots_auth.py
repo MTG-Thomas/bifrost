@@ -1,5 +1,4 @@
 """Admission uses the SDK's existing scope and external-caller gates."""
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -35,7 +34,7 @@ async def test_external_caller_cannot_contend_for_integration():
 async def test_declared_missing_integration_preserves_required_connection_error(monkeypatch):
     from src.repositories import integrations
     repo = AsyncMock()
-    repo.get_integration_by_name.return_value = None
+    repo.get_request_slot_policy.return_value = None
     monkeypatch.setattr(integrations, "IntegrationsRepository", lambda db: repo)
     monkeypatch.setattr(cli, "_is_external_user_db", AsyncMock(return_value=False))
     monkeypatch.setattr(cli, "_connection_is_declared", AsyncMock(return_value=True))
@@ -50,7 +49,7 @@ async def test_declared_missing_integration_preserves_required_connection_error(
 async def test_owner_token_is_bound_to_authenticated_principal(monkeypatch):
     from src.repositories import integrations
     repo = AsyncMock()
-    repo.get_integration_by_name.return_value = SimpleNamespace(id=uuid4())
+    repo.get_request_slot_policy.return_value = (uuid4(), 2)
     monkeypatch.setattr(integrations, "IntegrationsRepository", lambda db: repo)
     monkeypatch.setattr(cli, "_is_external_user_db", AsyncMock(return_value=False))
     request = SDKIntegrationRequestSlotRequest(name="Example", token=uuid4())
