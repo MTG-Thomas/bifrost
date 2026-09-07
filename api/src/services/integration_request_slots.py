@@ -5,6 +5,8 @@ A lease survives caller cancellation so uncertain requests retain their slot.
 """
 from __future__ import annotations
 
+from collections.abc import Awaitable
+from typing import Any, cast
 from uuid import UUID
 
 from src.core.cache import get_redis
@@ -41,10 +43,10 @@ def validate_limit(value: object) -> int | None:
 async def acquire(integration_id: UUID, owner: str, limit: int) -> tuple[bool, float]:
     key = f"bifrost:integration-request-slots:{integration_id}"
     async with get_redis() as redis:
-        result = await redis.eval(_ACQUIRE, 1, key, owner, limit, LEASE_SECONDS * 1000)
+        result = await cast(Awaitable[Any], redis.eval(_ACQUIRE, 1, key, owner, limit, LEASE_SECONDS * 1000))
     return bool(result[0]), float(result[1]) / 1000
 
 
 async def release(integration_id: UUID, owner: str) -> None:
     async with get_redis() as redis:
-        await redis.eval(_RELEASE, 1, f"bifrost:integration-request-slots:{integration_id}", owner)
+        await cast(Awaitable[Any], redis.eval(_RELEASE, 1, f"bifrost:integration-request-slots:{integration_id}", owner))

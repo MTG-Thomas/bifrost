@@ -11,22 +11,24 @@ from src.routers import cli
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("handler", [cli.sdk_integration_request_slot_acquire, cli.sdk_integration_request_slot_release])
 @pytest.mark.parametrize("scope", ["global", str(uuid4())])
-async def test_cross_org_and_global_denied_before_policy_read(monkeypatch, scope):
+async def test_cross_org_and_global_denied_before_policy_read(monkeypatch, scope, handler):
     monkeypatch.setattr(cli, "_is_provider_org", AsyncMock(return_value=False))
     user = UserPrincipal(user_id=uuid4(), email="user@example.test", organization_id=uuid4())
     request = SDKIntegrationRequestSlotRequest(name="Example", scope=scope, token=uuid4())
     with pytest.raises(HTTPException) as exc:
-        await cli._request_slot_integration(request, user, AsyncMock())
+        await handler(request, user, AsyncMock())
     assert exc.value.status_code == 403
 
 
 @pytest.mark.asyncio
-async def test_external_caller_cannot_contend_for_integration():
+@pytest.mark.parametrize("handler", [cli.sdk_integration_request_slot_acquire, cli.sdk_integration_request_slot_release])
+async def test_external_caller_cannot_contend_for_integration(handler):
     user = UserPrincipal(user_id=uuid4(), email="guest@example.test", organization_id=uuid4(), is_external=True)
     request = SDKIntegrationRequestSlotRequest(name="Example", token=uuid4())
     with pytest.raises(HTTPException) as exc:
-        await cli._request_slot_integration(request, user, AsyncMock())
+        await handler(request, user, AsyncMock())
     assert exc.value.status_code == 403
 
 

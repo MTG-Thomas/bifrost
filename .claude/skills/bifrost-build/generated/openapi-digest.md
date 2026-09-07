@@ -458,6 +458,8 @@
 | POST | `/api/sdk/integrations/get_mapping` |
 | POST | `/api/sdk/integrations/list_mappings` |
 | POST | `/api/sdk/integrations/refresh_token` |
+| POST | `/api/sdk/integrations/request-slot/acquire` |
+| POST | `/api/sdk/integrations/request-slot/release` |
 | POST | `/api/sdk/integrations/upsert_mapping` |
 | POST | `/api/sdk/knowledge/delete` |
 | GET | `/api/sdk/knowledge/get` |

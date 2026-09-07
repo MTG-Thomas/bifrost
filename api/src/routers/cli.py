@@ -750,7 +750,7 @@ async def _request_slot_integration(
     current_user: CurrentUser,
     db: AsyncSession,
 ):
-    """Resolve caller scope before reading the shared integration policy.
+    """Read shared integration policy after the route has resolved caller scope.
 
     External users cannot contend for global integration resources. Internal
     SDK callers use the same organization validation as integrations.get.
@@ -758,7 +758,6 @@ async def _request_slot_integration(
     """
     from src.repositories.integrations import IntegrationsRepository
 
-    await _resolve_sdk_org_id(current_user, request.scope, db)
     if await _is_external_user_db(current_user, db):
         raise HTTPException(status_code=403, detail="Integration request slots require an internal caller")
     repo = IntegrationsRepository(db)
@@ -779,6 +778,7 @@ async def sdk_integration_request_slot_acquire(
 ) -> SDKIntegrationRequestSlotResponse:
     from src.services import integration_request_slots as slots
 
+    await _resolve_sdk_org_id(current_user, request.scope, db)
     integration_id, setting, owner = await _request_slot_integration(request, current_user, db)
     try:
         limit = slots.validate_limit(setting)
@@ -804,6 +804,7 @@ async def sdk_integration_request_slot_release(
 ) -> bool:
     from src.services import integration_request_slots as slots
 
+    await _resolve_sdk_org_id(current_user, request.scope, db)
     integration_id, _, owner = await _request_slot_integration(request, current_user, db)
     await slots.release(integration_id, owner)
     return True
