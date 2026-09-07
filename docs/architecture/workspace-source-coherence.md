@@ -34,6 +34,21 @@ changeset activation whose final runtime proof fails remains `activated` and
 returns `failure_detail.phase=runtime_propagation`; callers must not retry the
 source mutation.
 
+## Immutable release imports
+
+An execution pinned to a Workspace release resolves every targeted module,
+package, and namespace against that release's source manifest. Concrete imports
+load verified bytes from its immutable storage prefix through the same reader
+as the entry workflow. Mutable resolver hits, misses, and namespace probes are
+not consulted. A declared module whose immutable bytes are unavailable fails
+closed; a path absent from the manifest is not a workspace import.
+
+This distinction matters immediately after activation: runtime source is ready
+before asynchronous history projection has populated the mutable workspace.
+New helpers must load during that interval, and old mutable helpers must never
+replace the version pinned by the execution. History completion is not an import
+prerequisite and must not be repaired by reactivating a coherent release.
+
 ## Release behavior
 
 `GET /api/workspace-repo-changesets/state` reports runtime mismatches separately
