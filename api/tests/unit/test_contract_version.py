@@ -261,7 +261,7 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # (2026-08-31). ADDITIVE: old clients ignore the extra response fields.
     # Workflow updates gained an optional execution retry policy (2026-09-03).
     # ADDITIVE: old clients omit it and workflows remain non-retryable by default.
-    "afdf39ae264e4715499e68dfc838df1b6d747abf4c8e1f2acc136173a3a019a3"
+    "ebf146c7cc6134873024300ab2bfaffec2ad0c441d15492cec666dc4dc03512a"
 )
 
 

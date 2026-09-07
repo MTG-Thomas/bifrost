@@ -929,6 +929,14 @@ async def update_integration_config(
             detail="Integration not found",
         )
 
+    from src.services.integration_request_slots import SETTING, validate_limit
+
+    if SETTING in request.config:
+        try:
+            validate_limit(request.config[SETTING])
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     # Save config with integration_id only (no org_id = defaults)
     await repo._save_config(
         integration_id=integration_id,

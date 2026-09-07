@@ -8,6 +8,13 @@ All methods are async and must be awaited.
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import time
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
+from uuid import uuid4
+
 from .client import get_client, raise_for_status_with_detail
 from .models import IntegrationData, IntegrationMappingResponse
 from ._context import resolve_scope, _execution_context
@@ -25,6 +32,84 @@ class integrations:
 
     All methods are async - await is required.
     """
+
+    @staticmethod
+    @asynccontextmanager
+    async def request_slot(
+        name: str,
+        scope: str | None = None,
+        *,
+        wait_timeout: float = 90,
+        request_timeout: float = 30,
+        reserve_http_calls: Callable[[int], None] | None = None,
+    ) -> AsyncIterator[None]:
+        """Bound one actual vendor request under shared integration admission.
+
+        The platform owns ``request_concurrency_limit`` in integration defaults.
+        All mappings share that integration's slots. Unset policy disables
+        admission. Explicit policy or API failure never permits an unguarded
+        request. A lease is retained after an uncertain request failure until
+        expiry; successful requests release it immediately. This method never
+        retries the caller's vendor operation.
+
+        Waiting is bounded to 90 seconds and admitted work to 30 seconds of
+        wall-clock time when configured, shorter than the server's 60-second lease. Use this
+        around each actual HTTP attempt, outside any vendor retry sleep.
+        ``reserve_http_calls`` can enforce an execution-wide HTTP budget. It
+        reserves three calls before each admission POST: the request, one
+        possible authentication refresh, and its retry. Admission POSTs do not
+        retry transient 5xx responses. A reservation failure prevents admission;
+        after successful work it leaves the lease to expire without replay.
+        """
+        if not 0 < wait_timeout <= 90 or not 0 < request_timeout <= 30:
+            raise ValueError("wait_timeout must be in (0, 90] and request_timeout in (0, 30]")
+        client = get_client()
+        body = {"name": name, "scope": resolve_scope(scope), "token": str(uuid4())}
+        ctx = _current_context()
+        solution_id = getattr(ctx, "solution_id", None) if ctx is not None else None
+        if solution_id:
+            body["solution"] = str(solution_id)
+        deadline = time.monotonic() + wait_timeout
+        while True:
+            started = time.monotonic()
+            remaining_wait = deadline - started
+            if remaining_wait <= 0:
+                raise TimeoutError("Timed out waiting for an integration request slot")
+            async with asyncio.timeout(remaining_wait):
+                if reserve_http_calls is not None:
+                    reserve_http_calls(3)
+                response = await client.post(
+                    "/api/sdk/integrations/request-slot/acquire", json=body, retry_safe=False,
+                )
+            raise_for_status_with_detail(response)
+            result = response.json()
+            if result["acquired"]:
+                break
+            # Small jitter avoids synchronized polling by a burst of workflows.
+            await asyncio.sleep(min(3 + (uuid4().int % 250) / 1000, max(0, deadline - time.monotonic())))
+        if not result["enabled"]:
+            yield
+            return
+        available = float(result["lease_remaining_seconds"]) - (time.monotonic() - started) - 5
+        allowed = min(request_timeout, float(result["max_request_seconds"]), available)
+        if allowed <= 0:
+            raise TimeoutError("Integration request slot expired before admission")
+        # If cancellation, timeout, or a transport error occurs, the vendor may
+        # still be processing. Preserve the slot for its remaining lease.
+        async with asyncio.timeout(allowed):
+            yield
+        try:
+            async with asyncio.timeout(5):
+                if reserve_http_calls is not None:
+                    reserve_http_calls(3)
+                released = await client.post(
+                    "/api/sdk/integrations/request-slot/release", json=body, retry_safe=False,
+                )
+                raise_for_status_with_detail(released)
+        except Exception:
+            # The vendor operation succeeded. Do not convert a cleanup failure
+            # into a failed workflow that an operator could replay.
+            logging.getLogger(__name__).warning("Integration slot release failed; lease will expire")
 
     @staticmethod
     async def get(

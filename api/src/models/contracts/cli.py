@@ -4,6 +4,7 @@ CLI contract models for Bifrost (sessions, file operations, config, oauth).
 
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -263,6 +264,24 @@ class SDKIntegrationsGetRequest(BaseModel):
     )
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class SDKIntegrationRequestSlotRequest(BaseModel):
+    """Request admission using server-owned integration policy."""
+
+    name: str = Field(min_length=1, max_length=255)
+    scope: str | None = None
+    token: UUID
+    solution: UUID | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class SDKIntegrationRequestSlotResponse(BaseModel):
+    enabled: bool
+    acquired: bool
+    lease_remaining_seconds: float = Field(ge=0)
+    max_request_seconds: float = Field(gt=0)
 
 
 class SDKIntegrationsOAuthData(BaseModel):

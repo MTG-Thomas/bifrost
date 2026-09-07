@@ -4949,6 +4949,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sdk/integrations/request-slot/acquire": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sdk Integration Request Slot Acquire */
+        post: operations["sdk_integration_request_slot_acquire_api_sdk_integrations_request_slot_acquire_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sdk/integrations/request-slot/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sdk Integration Request Slot Release */
+        post: operations["sdk_integration_request_slot_release_api_sdk_integrations_request_slot_release_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sdk/integrations/get": {
         parameters: {
             query?: never;
@@ -25344,6 +25378,34 @@ export interface components {
             content_hash: string;
         };
         /**
+         * SDKIntegrationRequestSlotRequest
+         * @description Request admission using server-owned integration policy.
+         */
+        SDKIntegrationRequestSlotRequest: {
+            /** Name */
+            name: string;
+            /** Scope */
+            scope?: string | null;
+            /**
+             * Token
+             * Format: uuid
+             */
+            token: string;
+            /** Solution */
+            solution?: string | null;
+        };
+        /** SDKIntegrationRequestSlotResponse */
+        SDKIntegrationRequestSlotResponse: {
+            /** Enabled */
+            enabled: boolean;
+            /** Acquired */
+            acquired: boolean;
+            /** Lease Remaining Seconds */
+            lease_remaining_seconds: number;
+            /** Max Request Seconds */
+            max_request_seconds: number;
+        };
+        /**
          * SDKIntegrationsDeleteMappingRequest
          * @description Request to delete a mapping via SDK.
          */
@@ -39669,6 +39731,72 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["CLIConfigDeleteRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": boolean;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sdk_integration_request_slot_acquire_api_sdk_integrations_request_slot_acquire_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SDKIntegrationRequestSlotRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SDKIntegrationRequestSlotResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sdk_integration_request_slot_release_api_sdk_integrations_request_slot_release_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SDKIntegrationRequestSlotRequest"];
             };
         };
         responses: {
