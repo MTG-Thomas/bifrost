@@ -107,3 +107,57 @@ async def test_unconfigured_integration_does_not_release(client):
     async with sdk.integrations.request_slot("Example"):
         pass
     assert client.post.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_reserves_auth_refresh_bound_for_every_admission_post(client):
+    reserved = []
+    async with sdk.integrations.request_slot("Example", reserve_http_calls=reserved.append):
+        pass
+    assert reserved == [3, 3]
+    assert all(call.kwargs["retry_safe"] is False for call in client.post.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_exhausted_admission_budget_prevents_http_call(client):
+    def reserve(_calls):
+        raise RuntimeError("budget exhausted")
+    with pytest.raises(RuntimeError, match="budget exhausted"):
+        async with sdk.integrations.request_slot("Example", reserve_http_calls=reserve):
+            pytest.fail("must not enter")
+    client.post.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_release_budget_exhaustion_preserves_success(client):
+    remaining = [3]
+    def reserve(calls):
+        if calls > remaining[0]:
+            raise RuntimeError("budget exhausted")
+        remaining[0] -= calls
+    async with sdk.integrations.request_slot("Example", reserve_http_calls=reserve):
+        pass
+    assert client.post.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retry_safe,attempts", [(False, 1), (True, 6)])
+async def test_sdk_post_transport_and_refresh_bound(monkeypatch, retry_safe, attempts):
+    from bifrost.client import BifrostClient
+    client_module = importlib.import_module("bifrost.client")
+    transport = AsyncMock()
+    transport.post.side_effect = [
+        httpx.Response(code, request=httpx.Request("POST", "https://example.test/slots"))
+        for _ in range(attempts) for code in (401, 503)
+    ]
+    concrete = object.__new__(BifrostClient)
+    concrete._access_token = "test-token"
+    concrete._get_async_client = lambda: transport
+    concrete._refresh_and_update = AsyncMock(return_value=True)
+    monkeypatch.setattr(client_module.asyncio, "sleep", AsyncMock())
+    result = await concrete.post("/api/sdk/integrations/request-slot/acquire", retry_safe=retry_safe)
+    assert result.status_code == 503
+    assert transport.post.await_count == 2 * attempts
+    assert concrete._refresh_and_update.await_count == attempts
+    # Each refresh coordinator action issues at most one HTTP request.
+    assert transport.post.await_count + concrete._refresh_and_update.await_count == 3 * attempts

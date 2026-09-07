@@ -16,7 +16,13 @@ Acquisition is atomic and uses Redis time. Tokens belong to the authenticated
 principal and expire after 60 seconds. Retrying acquisition with the same token
 returns its remaining lease without extending it. The SDK bounds waiting to
 90 seconds, polls at intervals of at least 3 seconds, and never retries the vendor
-operation. An admitted operation has a maximum 30-second wall-clock timeout, also
+operation. Admission POSTs disable transient 5xx retries; their authenticated SDK
+transport can make at most three HTTP calls: the initial request, one auth refresh,
+and its retry. An optional `reserve_http_calls` callback reserves that maximum
+before each acquire or release operation, allowing callers to enforce one shared
+HTTP budget across every poll and vendor attempt. A failed reservation prevents
+acquisition. On release after successful work, exhaustion retains the lease until
+expiry instead of converting a completed vendor write into a failed execution. An admitted operation has a maximum 30-second wall-clock timeout, also
 limited by the remaining lease after subtracting the acquisition round trip and
 five seconds of safety margin. This deadline applies only when admission is enabled.
 

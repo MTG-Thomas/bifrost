@@ -137,7 +137,7 @@ Event publishing operations (async).
 
 **`integrations.list_mappings(name: str, scope: str | None = None) -> list[IntegrationMappingResponse] | None`**
 
-**`integrations.request_slot(name: str, scope: str | None = None, wait_timeout: float = 90, request_timeout: float = 30) -> AsyncIterator[None]`**
+**`integrations.request_slot(name: str, scope: str | None = None, wait_timeout: float = 90, request_timeout: float = 30, reserve_http_calls: Callable[[int], None] | None = None) -> AsyncIterator[None]`**
   Bound one actual vendor request under shared integration admission.
 
 **`integrations.upsert_mapping(name: str, scope: str, entity_id: str, entity_name: str | None = None, config: dict | None = None) -> IntegrationMappingResponse`**

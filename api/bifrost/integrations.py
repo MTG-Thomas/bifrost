@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
@@ -41,6 +41,7 @@ class integrations:
         *,
         wait_timeout: float = 90,
         request_timeout: float = 30,
+        reserve_http_calls: Callable[[int], None] | None = None,
     ) -> AsyncIterator[None]:
         """Bound one actual vendor request under shared integration admission.
 
@@ -54,6 +55,11 @@ class integrations:
         Waiting is bounded to 90 seconds and admitted work to 30 seconds of
         wall-clock time when configured, shorter than the server's 60-second lease. Use this
         around each actual HTTP attempt, outside any vendor retry sleep.
+        ``reserve_http_calls`` can enforce an execution-wide HTTP budget. It
+        reserves three calls before each admission POST: the request, one
+        possible authentication refresh, and its retry. Admission POSTs do not
+        retry transient 5xx responses. A reservation failure prevents admission;
+        after successful work it leaves the lease to expire without replay.
         """
         if not 0 < wait_timeout <= 90 or not 0 < request_timeout <= 30:
             raise ValueError("wait_timeout must be in (0, 90] and request_timeout in (0, 30]")
@@ -70,8 +76,10 @@ class integrations:
             if remaining_wait <= 0:
                 raise TimeoutError("Timed out waiting for an integration request slot")
             async with asyncio.timeout(remaining_wait):
+                if reserve_http_calls is not None:
+                    reserve_http_calls(3)
                 response = await client.post(
-                    "/api/sdk/integrations/request-slot/acquire", json=body, retry_safe=True,
+                    "/api/sdk/integrations/request-slot/acquire", json=body, retry_safe=False,
                 )
             raise_for_status_with_detail(response)
             result = response.json()
@@ -92,8 +100,10 @@ class integrations:
             yield
         try:
             async with asyncio.timeout(5):
+                if reserve_http_calls is not None:
+                    reserve_http_calls(3)
                 released = await client.post(
-                    "/api/sdk/integrations/request-slot/release", json=body, retry_safe=True,
+                    "/api/sdk/integrations/request-slot/release", json=body, retry_safe=False,
                 )
                 raise_for_status_with_detail(released)
         except Exception:
